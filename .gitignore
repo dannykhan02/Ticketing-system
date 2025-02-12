@@ -3,4 +3,4 @@ __pycache__/
 .env
 config.py
 
-client_secret.json
+client_secrets.json
