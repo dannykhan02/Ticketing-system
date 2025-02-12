@@ -1,1 +1,6 @@
 __pycache__/
+# Ignore environment variables
+.env
+config.py
+
+client_secret.json
