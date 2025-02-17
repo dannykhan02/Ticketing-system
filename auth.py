@@ -1,13 +1,13 @@
 from flask import Blueprint, jsonify, request, url_for
 from flask_jwt_extended import (
-    create_access_token, get_jwt_identity, jwt_required
+    create_access_token,jwt_required, get_jwt_identity
 )
 from email_validator import validate_email, EmailNotValidError
 import phonenumbers as pn
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from uuid import uuid4
-from flask import session
+from flask import session  
 from model import db, User
 from datetime import timedelta
 from oauth_config import oauth
@@ -104,6 +104,9 @@ def register():
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({"msg": "Email already registered"}), 400
+    if User.query.filter_by(phone_number=phone).first():
+        return jsonify({"msg": "Phone number already registered"}), 400
+    
 
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, phone_number=phone, password=hashed_password, role=role)
@@ -114,7 +117,8 @@ def register():
 
 
 @auth_bp.route('/admin/register-admin', methods=['POST'])
-@role_required('ADMIN')
+@jwt_required()  # Ensures the request is authenticated
+@role_required('ADMIN')  # Ensures the user has the required role
 def register_admin():
     data = request.get_json()
     email = data.get("email")
@@ -130,6 +134,8 @@ def register_admin():
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
     if User.query.filter_by(email=email).first():
         return jsonify({"msg": "Email already registered"}), 400
+    if User.query.filter_by(phone_number=phone).first():
+        return jsonify({"msg": "Phone number already registered"}), 400
 
     # Hash password and create new admin user
     hashed_password = generate_password_hash(password)
@@ -166,6 +172,8 @@ def register_organizer():
     password = data.get("password")
     if not is_valid_email(email) or not is_valid_phone(phone) or not validate_password(password) or User.query.filter_by(email=email).first():
         return jsonify({"msg": "Invalid input or email already registered"}), 400
+    if User.query.filter_by(phone_number=phone).first():
+        return jsonify({"msg": "Phone number already registered"}), 400
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, phone_number=phone, password=hashed_password, role="ORGANIZER")
     db.session.add(new_user)
@@ -182,6 +190,8 @@ def register_security():
     password = data.get("password")
     if not is_valid_email(email) or not is_valid_phone(phone) or not validate_password(password) or User.query.filter_by(email=email).first():
         return jsonify({"msg": "Invalid input or email already registered"}), 400
+    if User.query.filter_by(phone_number=phone).first():
+        return jsonify({"msg": "Phone number already registered"}), 400
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, phone_number=phone, password=hashed_password, role="SECURITY")
     db.session.add(new_user)
@@ -239,6 +249,3 @@ def reset_password(token):
     db.session.commit()
 
     return jsonify({"msg": "Password reset successful"}), 200
-
-
-
