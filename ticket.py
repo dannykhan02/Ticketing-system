@@ -2,20 +2,78 @@ import os
 import qrcode
 import base64
 from io import BytesIO
+from itsdangerous import URLSafeSerializer
+from config import Config
 from email_utils import send_email
 from flask import request, jsonify
 from flask_restful import Resource
 from datetime import datetime
-from model import db, Ticket, Event, TicketType, User, UserRole
+from model import db, Ticket, Event, TicketType, User, TicketTypeEnum
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import TicketTypeEnum 
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class TicketUtils:
+    @staticmethod
+    def generate_qr_code(ticket, directory="qrcodes"):
+        """Generates a QR code with a secure encrypted URL and stores it in the specified directory."""
+        serializer = URLSafeSerializer(Config.SECRET_KEY)
+        encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
+        qr_code_data = f"http://127.0.0.1:5000/validate_ticket?id={encrypted_data}"
+        qr_code_img = qrcode.make(qr_code_data)
+
+        qr_directory = f"static/{directory}"
+        os.makedirs(qr_directory, exist_ok=True)
+        qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
+        qr_code_img.save(qr_code_path)
+
+        return qr_code_img, qr_code_path
+
+    @staticmethod
+    def send_confirmation_email(user, ticket, qr_code_path, is_new=True):
+        """Sends an email with the ticket details and QR code."""
+        event = ticket.event
+        ticket_type = ticket.ticket_type
+        event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
+        start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
+        end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
+
+        subject = f"🎟 {'Your' if is_new else 'Updated'} Ticket Confirmation - {event.name} 🎟"
+        body = f"""
+        Dear {user.email} ({user.phone_number}),
+
+        🎉 **Your Ticket Booking is {'Confirmed' if is_new else 'Updated'}!** 🎉
+
+        📌 **Event Details:**
+        - **Event:** {event.name}
+        - **Location:** {event.location}
+        - **Date:** {event_date}
+        - **Time:** {start_time} - {end_time}
+        - **Description:** {event.description}
+
+        🎟 **Your Ticket:**
+        - **Type:** {ticket_type.type_name}
+        - **Quantity:** {ticket.quantity}
+        - **Purchase Date:** {ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
+        - **Scanned:** {'Yes' if ticket.scanned else 'No'}
+
+        📩 **Your QR Code:**
+        Your {'unique' if is_new else 'updated'} QR code is attached to this email. Please present it at the entrance for seamless check-in.
+        """
+        try:
+            send_email(user.email, subject, body, attachment_path=qr_code_path)
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
 
 class TicketTypeResource(Resource):
     @jwt_required()
     def post(self):
         """Create a ticket type for an event (Only the event's organizer)."""
         try:
-            identity = get_jwt_identity()  # Get logged-in user's ID
+            identity = get_jwt_identity()
             user = User.query.get(identity)
 
             if not user:
@@ -27,29 +85,22 @@ class TicketTypeResource(Resource):
             data = request.get_json()
             required_fields = ["event_id", "type_name", "price", "quantity"]
 
-            # Check for missing fields
             for field in required_fields:
                 if field not in data:
                     return {"error": f"Missing field: {field}"}, 400
 
-            # Validate event
             event = Event.query.get(data["event_id"])
             if not event:
                 return {"error": "Event not found"}, 404
 
-            # Ensure the user is the organizer of this event
-            if not event or event.user_id != user.id: 
+            if event.user_id != user.id:
                 return {"error": "You can only create ticket types for your own events"}, 403
 
-            # Convert type_name to uppercase for consistency
             type_name = data["type_name"].upper()
-
-            # Validate type_name against TicketTypeEnum
             valid_types = [e.name for e in TicketTypeEnum]
             if type_name not in valid_types:
                 return {"error": f"Invalid type_name. Allowed values: {', '.join(valid_types)}"}, 400
 
-            # Validate price and quantity
             try:
                 price = float(data["price"])
                 quantity = int(data["quantity"])
@@ -59,10 +110,9 @@ class TicketTypeResource(Resource):
             if price <= 0 or quantity <= 0:
                 return {"error": "Price and quantity must be greater than zero"}, 400
 
-            # Create ticket type
             ticket_type = TicketType(
                 event_id=event.id,
-                type_name=type_name,  # Store uppercase type_name
+                type_name=type_name,
                 price=price,
                 quantity=quantity
             )
@@ -71,22 +121,22 @@ class TicketTypeResource(Resource):
             db.session.commit()
 
             return {"message": "Ticket type created successfully", "ticket_type": ticket_type.as_dict()}, 201
-        
+
         except Exception as e:
-            return {"error": str(e)}, 500
+            logger.error(f"Error creating ticket type: {e}")
+            return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def get(self, ticket_type_id=None):
-            """Retrieve all ticket types or a specific one."""
-            if ticket_type_id:
-                ticket_type = TicketType.query.get(ticket_type_id)
-                if not ticket_type:
-                    return {"message": "Ticket type not found"}, 404
-                return {"ticket_type": ticket_type.as_dict()}, 200
-            
-            ticket_types = TicketType.query.all()
-            return {"ticket_types": [ticket.as_dict() for ticket in ticket_types]}, 200
+        """Retrieve all ticket types or a specific one."""
+        if ticket_type_id:
+            ticket_type = TicketType.query.get(ticket_type_id)
+            if not ticket_type:
+                return {"message": "Ticket type not found"}, 404
+            return {"ticket_type": ticket_type.as_dict()}, 200
 
+        ticket_types = TicketType.query.all()
+        return {"ticket_types": [ticket.as_dict() for ticket in ticket_types]}, 200
 
     @jwt_required()
     def put(self, ticket_type_id):
@@ -105,29 +155,26 @@ class TicketTypeResource(Resource):
             if not ticket_type:
                 return {"error": "Ticket type not found"}, 404
 
-            # Ensure only the event organizer can update this ticket type
             event = Event.query.get(ticket_type.event_id)
-            if not event or event.user_id != user.id: 
+            if event.user_id != user.id:
                 return {"error": "Only the event organizer can update this ticket type"}, 403
 
             data = request.get_json()
             allowed_fields = ["type_name", "price", "quantity"]
 
-            # Update type_name if provided
             if "type_name" in data:
                 type_name = data["type_name"].upper()
                 if type_name not in [e.name for e in TicketTypeEnum]:
                     return {"error": f"Invalid type_name. Allowed values: {', '.join(e.name for e in TicketTypeEnum)}"}, 400
                 ticket_type.type_name = type_name
 
-            # Validate and update price and quantity
             for field in ["price", "quantity"]:
                 if field in data:
                     try:
                         if field == "price":
-                            data[field] = float(data[field])  # Ensure price is a float
+                            data[field] = float(data[field])
                         elif field == "quantity":
-                            data[field] = int(data[field])  # Ensure quantity is an integer
+                            data[field] = int(data[field])
                     except ValueError:
                         return {"error": f"Invalid data type for {field}"}, 400
 
@@ -140,8 +187,8 @@ class TicketTypeResource(Resource):
             return {"message": "Ticket type updated successfully", "ticket_type": ticket_type.as_dict()}, 200
 
         except Exception as e:
-            return {"error": str(e)}, 500
-
+            logger.error(f"Error updating ticket type: {e}")
+            return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def delete(self, ticket_type_id):
@@ -160,9 +207,8 @@ class TicketTypeResource(Resource):
             if not ticket_type:
                 return {"error": "Ticket type not found"}, 404
 
-            # Ensure only the event organizer can delete this ticket type
             event = Event.query.get(ticket_type.event_id)
-            if not event or event.user_id != user.id: 
+            if event.user_id != user.id:
                 return {"error": "Only the event organizer can delete this ticket type"}, 403
 
             db.session.delete(ticket_type)
@@ -170,11 +216,10 @@ class TicketTypeResource(Resource):
             return {"message": "Ticket type deleted successfully"}, 200
 
         except Exception as e:
-            return {"error": str(e)}, 500
- 
+            logger.error(f"Error deleting ticket type: {e}")
+            return {"error": "An internal error occurred"}, 500
 
 class TicketResource(Resource):
-
     @jwt_required()
     def get(self):
         """Retrieve all tickets booked by the authenticated user."""
@@ -193,11 +238,12 @@ class TicketResource(Resource):
             return {"tickets": [ticket.as_dict() for ticket in tickets]}, 200
 
         except Exception as e:
-            return {"error": str(e)}, 500
+            logger.error(f"Error retrieving tickets: {e}")
+            return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def post(self):
-        """Create a new ticket and send a QR code via email."""
+        """Create a new ticket for the authenticated user."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -207,89 +253,49 @@ class TicketResource(Resource):
 
             data = request.get_json()
             required_fields = ["event_id", "ticket_type_id", "quantity"]
-
-            # ✅ Validate request data
             if not all(field in data for field in required_fields):
-                return {"error": "Missing required fields: event_id, ticket_type_id, quantity"}, 400
+                return {"error": "Missing required fields"}, 400
 
             event = Event.query.get(data["event_id"])
             if not event:
                 return {"error": "Event not found"}, 404
 
             ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"], event_id=event.id).first()
-            if not ticket_type:
-                return {"error": "Invalid ticket type for this event"}, 400
+            if not ticket_type or data["quantity"] <= 0 or ticket_type.quantity < data["quantity"]:
+                return {"error": "Invalid ticket request"}, 400
 
-            if data["quantity"] <= 0:
-                return {"error": "Quantity must be at least 1"}, 400
-
-            # ✅ Check ticket availability
-            if ticket_type.quantity < data["quantity"]:
-                return {"error": "Not enough tickets available"}, 400
-
-            # ✅ Deduct available ticket quantity
             ticket_type.quantity -= data["quantity"]
 
-            # ✅ Create a new ticket
             ticket = Ticket(
                 user_id=user.id,
                 event_id=event.id,
                 ticket_type_id=ticket_type.id,
-                quantity=data["quantity"]
+                quantity=data["quantity"],
+                phone_number=user.phone_number,
+                email=user.email,
+                transaction_id=f"TXN-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                qr_code=None
             )
-
             db.session.add(ticket)
-            db.session.commit()  # Commit to get ticket ID for QR code
+            db.session.commit()
 
-            # ✅ Generate QR Code
-            qr_code_data = f"Ticket ID: {ticket.id}, Event: {event.name}, User: {user.email}, Type: {ticket_type.type_name}"
-            qr_code_img = qrcode.make(qr_code_data)
-
-            buffer = BytesIO()
-            qr_code_img.save(buffer, format="PNG")
-            qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
-
-            ticket.qr_code = qr_code_base64  # Store base64 QR code in DB
-
-            # ✅ Save QR Code as a file
-            qr_directory = "static/qrcodes"
-            os.makedirs(qr_directory, exist_ok=True)  # Ensure directory exists
-            qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
-
-            with open(qr_code_path, "wb") as f:
-                f.write(buffer.getvalue())
-
-            # ✅ Send Ticket Confirmation Email
-            subject = "Your Ticket Confirmation"
-            body = f"""
-            Dear {user.email} ({user.phone_number}),
-
-
-            Your ticket has been successfully booked!
-
-            Ticket ID: {ticket.id}
-            Event: {event.name}
-            Quantity: {ticket.quantity}
-
-            Please find your QR code attached.
-            """
-
-            try:
-                send_email(user.email, subject, body, attachment_path=qr_code_path)
-            except Exception as e:
-                print(f"Error sending email: {e}")
+            qr_code_img, qr_code_path = TicketUtils.generate_qr_code(ticket, directory="qrcodes")
+            with open(qr_code_path, "rb") as f:
+                ticket.qr_code = base64.b64encode(f.read()).decode()
 
             db.session.commit()
+            TicketUtils.send_confirmation_email(user, ticket, qr_code_path, is_new=True)
+
             return {"message": "Ticket created successfully", "ticket_id": ticket.id}, 201
 
         except Exception as e:
-            db.session.rollback()  # Rollback on error
-            print(f"Error creating ticket: {e}")
+            db.session.rollback()
+            logger.error(f"Error creating ticket: {e}")
             return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def put(self, ticket_id):
-        """Update a ticket's details (only the ticket owner can edit)."""
+        """Update an existing ticket's details for the authenticated user."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -298,96 +304,47 @@ class TicketResource(Resource):
                 return {"error": "User not found"}, 404
 
             ticket = Ticket.query.get(ticket_id)
-            if not ticket:
-                return {"error": "Ticket not found"}, 404
-
-            if ticket.user_id != user.id:
-                return {"error": "You can only edit your own tickets"}, 403
+            if not ticket or ticket.user_id != user.id:
+                return {"error": "Ticket not found or unauthorized"}, 404
 
             data = request.get_json()
-            allowed_fields = ["ticket_type_id", "quantity"]
+            required_fields = ["ticket_type_id", "quantity"]
+            if not all(field in data for field in required_fields):
+                return {"error": "Missing required fields: ticket_type_id, quantity"}, 400
 
-            if not any(field in data for field in allowed_fields):
-                return {"error": "Provide at least one field to update: ticket_type_id or quantity"}, 400
+            new_ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"]).first()
+            if not new_ticket_type:
+                return {"error": "Invalid ticket type"}, 400
 
-            updated = False
+            if data["quantity"] <= 0:
+                return {"error": "Quantity must be at least 1"}, 400
 
-            # ✅ Update Ticket Type
-            if "ticket_type_id" in data:
-                new_ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"], event_id=ticket.event_id).first()
-                if not new_ticket_type:
-                    return {"error": "Invalid ticket type for this event"}, 400
-                ticket.ticket_type_id = new_ticket_type.id
-                updated = True
+            if new_ticket_type.quantity < data["quantity"]:
+                return {"error": "Not enough tickets available"}, 400
 
-            # ✅ Update Quantity
-            if "quantity" in data:
-                if data["quantity"] <= 0:
-                    return {"error": "Quantity must be at least 1"}, 400
+            old_ticket_type = TicketType.query.get(ticket.ticket_type_id)
+            old_ticket_type.quantity += ticket.quantity
 
-                old_quantity = ticket.quantity
-                new_quantity = data["quantity"]
-                ticket_type = TicketType.query.get(ticket.ticket_type_id)
+            new_ticket_type.quantity -= data["quantity"]
 
-                if new_quantity > old_quantity:
-                    additional_tickets_needed = new_quantity - old_quantity
-                    if ticket_type.quantity < additional_tickets_needed:
-                        return {"error": "Not enough tickets available"}, 400
-                    ticket_type.quantity -= additional_tickets_needed
-                elif new_quantity < old_quantity:
-                    refunded_tickets = old_quantity - new_quantity
-                    ticket_type.quantity += refunded_tickets
+            ticket.ticket_type_id = new_ticket_type.id
+            ticket.quantity = data["quantity"]
+            ticket.purchase_date = datetime.utcnow()
 
-                ticket.quantity = new_quantity
-                updated = True
-
-            # ✅ Update QR Code and Send Email
-            if updated:
-                qr_code_data = f"Ticket ID: {ticket.id}, Event: {ticket.event.name}, User: {user.email}, Type: {ticket.ticket_type.type_name}"
-                qr_code_img = qrcode.make(qr_code_data)
-
-                buffer = BytesIO()
-                qr_code_img.save(buffer, format="PNG")
-                qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
-
-                ticket.qr_code = qr_code_base64  # Store base64 QR code in DB
-
-                # Save QR Code as a file
-                qr_directory = "static/qrcodes"
-                os.makedirs(qr_directory, exist_ok=True)  # Ensure directory exists
-                qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
-
-                with open(qr_code_path, "wb") as f:
-                    f.write(buffer.getvalue())
-
-                # ✅ Send Updated Ticket Email
-                subject = "Your Updated Ticket Information"
-                body = f"""
-                Dear {user.email} ({user.phone_number}),
-
-
-                Your ticket details have been updated successfully!
-
-                Ticket ID: {ticket.id}
-                Event: {ticket.event_id}
-                Quantity: {ticket.quantity}
-
-                Find your updated QR code attached.
-                """
-
-                try:
-                    send_email(user.email, subject, body, attachment_path=qr_code_path)
-                except Exception as e:
-                    print(f"Error sending email: {e}")
+            qr_code_img, qr_code_path = TicketUtils.generate_qr_code(ticket, directory="qrcode")
+            with open(qr_code_path, "rb") as f:
+                ticket.qr_code = base64.b64encode(f.read()).decode()
 
             db.session.commit()
-            return {"message": "Ticket updated successfully"}, 200
+            TicketUtils.send_confirmation_email(user, ticket, qr_code_path, is_new=False)
+
+            return {"message": "Ticket updated successfully", "ticket_id": ticket.id}, 200
 
         except Exception as e:
-            db.session.rollback()  # Rollback in case of error
-            print(f"Error updating ticket: {e}")
+            db.session.rollback()
+            logger.error(f"Error updating ticket: {e}")
             return {"error": "An internal error occurred"}, 500
-    
+
     @jwt_required()
     def delete(self, ticket_id):
         """Cancel a ticket (Only the ticket owner can delete)."""
@@ -409,18 +366,36 @@ class TicketResource(Resource):
             if ticket_type:
                 ticket_type.quantity += ticket.quantity
 
+            qr_code_paths = [
+                f"static/qrcode/ticket_{ticket.id}.png",
+                f"static/qrcodes/ticket_{ticket.id}.png"
+            ]
+
+            for path in qr_code_paths:
+                logger.info(f"Checking: {path} - Exists: {os.path.exists(path)}")
+
             db.session.delete(ticket)
             db.session.commit()
+
+            for path in qr_code_paths:
+                if os.path.exists(path):
+                    os.remove(path)
+                    logger.info(f"Deleted QR code: {path}")
+                else:
+                    logger.warning(f"File not found: {path}")
 
             return {"message": "Ticket cancelled successfully"}, 200
 
         except Exception as e:
-            return {"error": str(e)}, 500
-
-
-
+            logger.error(f"Error cancelling ticket: {e}")
+            return {"error": "An internal error occurred"}, 500
 
 def register_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
     api.add_resource(TicketTypeResource, "/ticket-types", "/ticket-types/<int:ticket_type_id>")
-    api.add_resource(TicketResource, "/tickets", "/tickets/<int:ticket_id>")
+    api.add_resource(
+        TicketResource,
+        "/tickets",
+        "/tickets/<int:ticket_id>",
+        methods=["GET", "POST", "PUT", "DELETE"]
+    )

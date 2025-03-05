@@ -1,8 +1,8 @@
-"""initial migrate
+"""Initial migrate
 
-Revision ID: 7ff997ad2f01
+Revision ID: 1adfade6cd31
 Revises: 
-Create Date: 2025-02-16 18:36:56.498138
+Create Date: 2025-02-21 00:55:10.291510
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '7ff997ad2f01'
+revision = '1adfade6cd31'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -49,7 +49,9 @@ def upgrade():
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_event_date'), 'event', ['date'], unique=False)
+    with op.batch_alter_table('event', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_event_date'), ['date'], unique=False)
+
     op.create_table('ticket_type',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('type_name', sa.Enum('REGULAR', 'VIP', 'STUDENT', name='tickettypeenum'), nullable=False),
@@ -61,7 +63,6 @@ def upgrade():
     )
     op.create_table('ticket',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('name', sa.Text(), nullable=False),
     sa.Column('phone_number', sa.String(length=255), nullable=False),
     sa.Column('email', sa.Text(), nullable=False),
     sa.Column('ticket_type_id', sa.Integer(), nullable=False),
@@ -95,7 +96,9 @@ def downgrade():
     op.drop_table('scan')
     op.drop_table('ticket')
     op.drop_table('ticket_type')
-    op.drop_index(op.f('ix_event_date'), table_name='event')
+    with op.batch_alter_table('event', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_event_date'))
+
     op.drop_table('event')
     op.drop_table('user')
     op.drop_table('transaction')

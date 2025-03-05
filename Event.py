@@ -1,7 +1,7 @@
 import json
 from flask import request, jsonify
 from flask_restful import Resource
-from datetime import datetime
+from datetime import datetime, timedelta
 from model import db, Event, User, UserRole
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
@@ -22,42 +22,49 @@ class EventResource(Resource):
     def post(self):
         """Create a new event (Only organizers can create events)."""
         try:
-            identity = get_jwt_identity()  # Identity is now just user.id
+            identity = get_jwt_identity()  # Get current user
             user = User.query.get(identity)
 
             if not user or user.role.value != "ORGANIZER":
                 return {"message": "Only organizers can create events"}, 403
 
             data = request.get_json()
-            required_fields = ["name", "description", "date", "start_time", "end_time", "location"]
+            required_fields = ["name", "description", "date", "start_time", "location"]
+            
+            # Check required fields (excluding `end_time` since it's optional)
             for field in required_fields:
                 if field not in data:
                     return {"message": f"Missing field: {field}"}, 400
 
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-            start_time = datetime.strptime(data["start_time"], "%H:%M").time()
-            end_time = datetime.strptime(data["end_time"], "%H:%M").time()
-
-            if start_time >= end_time:
-                return {"error": "Start time must be before end time"}, 400
+            start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
             
-            if event_date < datetime.utcnow().date():
-                return {"error": "Event date cannot be in the past"}, 400
+            # Handle `end_time`: Allow "Till Late" if missing
+            end_time = None
+            if "end_time" in data and data["end_time"]:  
+                end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
 
+            # Create Event instance
             event = Event(
                 name=data["name"],
                 description=data["description"],
                 date=event_date,
                 start_time=start_time,
-                end_time=end_time,
+                end_time=end_time,  # Allow `None`
                 location=data["location"],
                 image=data.get("image", None),
                 user_id=user.id
             )
 
+            # Validate time (handles overnight events and "Till Late")
+            event.validate_datetime()
+
             db.session.add(event)
             db.session.commit()
             return {"message": "Event created successfully", "event": event.as_dict()}, 201
+
+        except ValueError as e:  # Catch validation errors
+            return {"error": str(e)}, 400
         except Exception as e:
             return {"error": str(e)}, 500
 
@@ -99,16 +106,25 @@ class EventResource(Resource):
                 except ValueError:
                     return {"error": "Invalid start_time format. Use HH:MM"}, 400
 
-            # Validate and update end_time
+            # Validate and update end_time (optional)
             if "end_time" in data:
                 try:
                     event.end_time = datetime.strptime(data["end_time"], "%H:%M").time()
                 except ValueError:
                     return {"error": "Invalid end_time format. Use HH:MM"}, 400
+            else:
+                event.end_time = None  # No end_time means "Till Late"
 
-            # Ensure start_time is before end_time
-            if event.start_time and event.end_time and event.start_time >= event.end_time:
-                return {"error": "Start time must be before end time"}, 400
+            # Validate time logic (allowing overnight events)
+            if event.start_time and event.end_time:
+                start_datetime = datetime.combine(event.date, event.start_time)
+                end_datetime = datetime.combine(event.date, event.end_time)
+
+                if end_datetime <= start_datetime:  # Handles overnight cases
+                    end_datetime += timedelta(days=1)
+
+                if start_datetime >= end_datetime:
+                    return {"error": "Start time must be before end time"}, 400
 
             # Update other event attributes
             event.name = data.get("name", event.name)
@@ -122,6 +138,7 @@ class EventResource(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": f"An error occurred: {str(e)}"}, 500
+
 
     @jwt_required()
     def delete(self, event_id):

@@ -1,6 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+from datetime import datetime, timedelta
 import enum
 
 # Initialize SQLAlchemy
@@ -15,11 +15,17 @@ class UserRole(enum.Enum):
 
     def __str__(self):
         return self.value  
+
 class TicketTypeEnum(enum.Enum):
-    REGULAR = "REGULAR"
-    VIP = "VIP"
-    STUDENT = "STUDENT"
-    
+    REGULAR = "REGULAR"      
+    VIP = "VIP"              
+    STUDENT = "STUDENT"      
+    GROUP_OF_5 = "GROUP_OF_5"  
+    COUPLES = "COUPLES"      
+    EARLY_BIRD = "EARLY_BIRD"  
+    VVIP = "VVIP"            
+    GIVEAWAY = "GIVEAWAY"    
+
 
 class PaymentStatus(enum.Enum):
     PENDING = 'pending'
@@ -68,7 +74,7 @@ class Event(db.Model):
     description = db.Column(db.Text, nullable=False)
     date = db.Column(db.Date, nullable=False, index=True)  # Index for faster search
     start_time = db.Column(db.Time, nullable=False)
-    end_time = db.Column(db.Time, nullable=False)
+    end_time = db.Column(db.Time, nullable=True)  # Made nullable if optional
     location = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
@@ -90,11 +96,24 @@ class Event(db.Model):
 
     def validate_datetime(self):
         """Ensures start_time is before end_time and date is not in the past."""
-        if self.start_time >= self.end_time:
-            raise ValueError("Start time must be earlier than end time.")
-
         if self.date < datetime.utcnow().date():
             raise ValueError("Event date cannot be in the past.")
+
+        start_datetime = datetime.combine(self.date, self.start_time)
+
+        if self.end_time:
+            end_datetime = datetime.combine(self.date, self.end_time)
+
+            # Allow overnight events (e.g., 22:00 - 06:00)
+            if end_datetime <= start_datetime:
+                end_datetime += timedelta(days=1)
+
+            if start_datetime >= end_datetime:
+                raise ValueError("Start time must be before end time.")
+        else:
+            end_datetime = None  # No end time means "Till Late"
+
+        self.end_datetime = end_datetime  # Store for later use
 
     def as_dict(self):
         return {
@@ -103,7 +122,7 @@ class Event(db.Model):
             "description": self.description,
             "date": self.date.strftime("%Y-%m-%d"),  # Convert to string for JSON
             "start_time": self.start_time.strftime("%H:%M:%S"),  # Convert to HH:MM:SS
-            "end_time": self.end_time.strftime("%H:%M:%S"),  # Convert to HH:MM:SS
+            "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else "Till Late",  # Handle None
             "location": self.location,
             "image": self.image,
             "user_id": self.user_id
@@ -131,15 +150,15 @@ class TicketType(db.Model):
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    phone_number = db.Column(db.String(255), nullable=False)
-    email = db.Column(db.Text, nullable=False)
+    phone_number = db.Column(db.String(255), nullable=True)
+    email = db.Column(db.Text, nullable=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)  # Nullable for pending payments
     quantity = db.Column(db.Integer, nullable=False)
-    qr_code = db.Column(db.String(255), nullable=False)
-    scanned = db.Column(db.Boolean, nullable=False, default=False)
+    qr_code = db.Column(db.String(255), nullable=True)
+    scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  # New field
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
@@ -175,6 +194,7 @@ class Transaction(db.Model):
     amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
+    payment_method = db.Column(db.Enum('Mpesa', 'Paystack', name='payment_method_enum'), nullable=False)  # New field
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys='Ticket.transaction_id')
@@ -185,6 +205,7 @@ class Transaction(db.Model):
             "amount_paid": float(self.amount_paid),
             "payment_status": self.payment_status.value,
             "payment_reference": self.payment_reference,
+            "payment_method": self.payment_method,  # Added payment method
             "timestamp": self.timestamp.isoformat()
         }
 
