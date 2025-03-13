@@ -9,7 +9,6 @@ venv/
 .env
 
 # Configuration and secret files (DO NOT expose credentials)
-config.py
 client_secrets.json
 
 # Dependency files (if using Pipenv)
@@ -17,11 +16,11 @@ Pipfile.lock
 
 # Flask session and instance files
 flask_session/
-instance/
+
 
 
 # Log files
 *.log
 
 # OAuth and authentication config
-oauth_config.py
+

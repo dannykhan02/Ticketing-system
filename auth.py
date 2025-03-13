@@ -19,84 +19,58 @@ from config import Config
 # Authentication Blueprint
 auth_bp = Blueprint('auth', __name__)
 
-from uuid import uuid4
-from flask import session, redirect, url_for
-from oauth_config import oauth
-
-@auth_bp.route('/login/google')
-def google_login():
-    state = str(uuid4())  # Generate a unique state token
-    session["oauth_state"] = state  # Store state in session for verification
-    session.modified = True  # Mark session as modified
-
-    print(f"✅ Stored session state before redirect: {session.get('oauth_state')}")  # Debugging log
-
-    redirect_uri = Config.GOOGLE_REDIRECT_URI  # Ensure correct redirect URI
-    return oauth.google.authorize_redirect(redirect_uri, state=state)
-
-
-
-
 def generate_token(user):
-    """Generates a JWT token for the user"""
     return create_access_token(
-        identity=str(user.id),  # Convert user ID to string
+        identity=str(user.id),
         additional_claims={
             "email": user.email,
-            "role": str(user.role)  # Convert Enum to string if necessary
+            "role": str(user.role.value)
         },
         expires_delta=timedelta(days=30)
     )
 
+@auth_bp.route('/login/google')
+def google_login():
+    state = str(uuid4())
+    session["oauth_state"] = state
+    session.modified = True
+    redirect_uri = Config.GOOGLE_REDIRECT_URI
+    return oauth.google.authorize_redirect(redirect_uri, state=state)
 
 @auth_bp.route("/callback/google")
 def google_callback():
     try:
         received_state = request.args.get("state")
-        print(f"🔍 Received state from Google: {received_state}")
+        stored_state = session.pop("oauth_state", None)
 
-        # Retrieve stored session state BEFORE popping it
-        stored_state = session.get("oauth_state")
-        print(f"🔍 Stored session state BEFORE popping: {stored_state}")
-        
-        saved_state = session.pop("oauth_state", None)
-        print(f"🔍 Stored session state AFTER popping: {saved_state}")
-
-        if not saved_state or not received_state or saved_state != received_state:
-            print("❌ ERROR: Invalid state, possible CSRF attack.")
+        if not stored_state or not received_state or stored_state != received_state:
             return jsonify({"error": "Invalid state, possible CSRF attack"}), 400
 
-        # Exchange auth code for token
         token = oauth.google.authorize_access_token()
         user_info = oauth.google.get("userinfo").json()
 
         if not user_info or "email" not in user_info:
             return jsonify({"error": "Failed to retrieve user information"}), 400
 
-        # Process user login
         email = user_info["email"]
         name = user_info.get("name", "")
-
         user = User.query.filter_by(email=email).first()
+
         if not user:
-            user = User(email=email, name=name, role="ATTENDEE")
+            user = User(email=email, phone_number=name, role="ATTENDEE")
             db.session.add(user)
             db.session.commit()
 
         access_token = generate_token(user)
-
-        # Store user session
         session["user_id"] = user.id
         session["user_email"] = user.email
-        session["user_role"] = str(user.role)
-        session.modified = True  # Ensure session persists
+        session["user_role"] = str(user.role.value)
+        session.modified = True
 
-        print("✅ Login successful")
         return jsonify({"msg": "Login successful", "access_token": access_token}), 200
-
     except Exception as e:
-        print(f"❌ ERROR: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 
 def role_required(required_role):
@@ -239,8 +213,6 @@ def register_admin():
     return jsonify({"msg": "Admin registered successfully"}), 201
 
 
-
-
 @auth_bp.route('/login', methods=['POST'])
 def login():
     """Handles user authentication and token generation"""
@@ -259,11 +231,6 @@ def login():
     # Generate JWT token
     access_token = generate_token(user)
 
-    # Store user session in Redis
-    session["user_id"] = user.id
-    session["user_email"] = user.email
-    session["user_role"] = str(user.role)
-
     return jsonify({
         "message": "Login successful",
         "access_token": access_token,
@@ -276,9 +243,9 @@ def login():
 
 @auth_bp.route('/logout', methods=['POST'])
 def logout():
-    """Handles user logout by clearing the session"""
-    # session.clear()  # Remove all session data
+    """Handles user logout (JWT-based authentication does not require session clearing)"""
     return jsonify({"message": "Logout successful"}), 200
+
 
 @auth_bp.route('/admin/register-organizer', methods=['POST'])
 @jwt_required()

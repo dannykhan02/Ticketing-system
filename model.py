@@ -26,11 +26,19 @@ class TicketTypeEnum(enum.Enum):
     VVIP = "VVIP"            
     GIVEAWAY = "GIVEAWAY"    
 
-
 class PaymentStatus(enum.Enum):
     PENDING = 'pending'
     COMPLETED = 'completed'
     FAILED = 'failed'
+    REFUNDED = 'refunded'
+    CANCELED = 'canceled'
+    CHARGEBACK = 'chargeback'
+    ON_HOLD = 'on_hold'
+
+class PaymentMethod(enum.Enum):
+    MPESA = 'Mpesa'
+    PAYSTACK = 'Paystack'
+
 
 # User model
 class User(db.Model):
@@ -194,10 +202,10 @@ class Transaction(db.Model):
     amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
-    payment_method = db.Column(db.Enum('Mpesa', 'Paystack', name='payment_method_enum'), nullable=False)  # New field
+    payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)  # Changed to use an Enum
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
-    tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys='Ticket.transaction_id')
+    tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])  # Fixed foreign_keys
 
     def as_dict(self):
         return {
@@ -205,7 +213,7 @@ class Transaction(db.Model):
             "amount_paid": float(self.amount_paid),
             "payment_status": self.payment_status.value,
             "payment_reference": self.payment_reference,
-            "payment_method": self.payment_method,  # Added payment method
+            "payment_method": self.payment_method.value,  # Fixed retrieval
             "timestamp": self.timestamp.isoformat()
         }
 

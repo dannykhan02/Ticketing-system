@@ -1,64 +1,59 @@
 import os
-import redis
-from flask import Flask, jsonify, session
-from flask_jwt_extended import JWTManager
+import base64
+import datetime
+from flask import Flask, jsonify, request, session
 from flask_sqlalchemy import SQLAlchemy
-from flask_restful import Api
+from flask_restful import Api, Resource
+from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from flask_session import Session
-from config import Config  
-from model import db
+from dotenv import load_dotenv
+
+# Import modules
+from config import Config  # Ensure you have config.py with Paystack/M-Pesa credentials
+from model import db  # Ensure this is the only db instance
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
 from Event import register_event_resources
 from ticket import register_ticket_resources
 from scan import register_ticket_validation_resources
+from mpesa_intergration import register_mpesa_routes
+from paystack import register_paystack_routes
 from email_utils import mail
+from update_ngork import update_ngrok_urls  # Import the function
 
+# Load environment variables
+load_dotenv()
+
+# Ensure Ngrok URLs are updated before starting the app
+update_ngrok_urls()
+
+# Initialize Flask app
 app = Flask(__name__)
-app.config["DEBUG"] = True 
-app.config.from_object(Config)  # Load configuration from config.py
+app.config.from_object(Config)  # Load configuration
 
-app.secret_key = "2a14d2885c2bf272f56ba0f0903c62447ba97d31f7db1f56bf8f5cef99ec25d5"
+# ✅ Initialize database FIRST
+db.init_app(app)
 
-# Initialize extensions
+# ✅ Configure sessions (No Redis, using SQLAlchemy for session storage)
+app.config['SESSION_TYPE'] = 'sqlalchemy'
+app.config['SESSION_SQLALCHEMY'] = db  # Use the same db instance
+
+# ✅ Initialize Flask extensions
 Session(app)
 api = Api(app)
 jwt = JWTManager(app)
-db.init_app(app)
 migrate = Migrate(app, db)
-mail.init_app(app)  # Properly attach mail to Flask
-init_oauth(app)  # Initialize OAuth
+mail.init_app(app)
+init_oauth(app)
 
-# Debug Redis Connection
-try:
-    test_redis = redis.StrictRedis(host="localhost", port=6379, db=0)
-    test_redis.ping()
-    print("✅ Redis is connected.")
-except redis.ConnectionError:
-    print("❌ Redis is NOT connected! Check your Redis server.")
-
-@app.route("/set-session")
-def set_session():
-    session["test_key"] = "Hello Redis"
-    return "Session set!"
-
-@app.route("/get-session")
-def get_session():
-    return session.get("test_key", "No session found")
-
-# Register authentication blueprint
+# ✅ Register blueprints and resources
 app.register_blueprint(auth_bp, url_prefix="/auth")
-
-# Register resources
 register_event_resources(api)
 register_ticket_resources(api)
 register_ticket_validation_resources(api)
-
-# Error handling
-print("SESSION_TYPE:", app.config["SESSION_TYPE"])
-print("SESSION_PERMANENT:", app.config["SESSION_PERMANENT"])
-
+register_mpesa_routes(api)
+register_paystack_routes(api)
 
 if __name__ == "__main__":
     app.run(debug=True)
