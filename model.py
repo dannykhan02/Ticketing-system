@@ -14,21 +14,22 @@ class UserRole(enum.Enum):
     SECURITY = "SECURITY"
 
     def __str__(self):
-        return self.value  
+        return self.value
 
 class TicketTypeEnum(enum.Enum):
-    REGULAR = "REGULAR"      
-    VIP = "VIP"              
-    STUDENT = "STUDENT"      
-    GROUP_OF_5 = "GROUP_OF_5"  
-    COUPLES = "COUPLES"      
-    EARLY_BIRD = "EARLY_BIRD"  
-    VVIP = "VVIP"            
-    GIVEAWAY = "GIVEAWAY"    
+    REGULAR = "REGULAR"
+    VIP = "VIP"
+    STUDENT = "STUDENT"
+    GROUP_OF_5 = "GROUP_OF_5"
+    COUPLES = "COUPLES"
+    EARLY_BIRD = "EARLY_BIRD"
+    VVIP = "VVIP"
+    GIVEAWAY = "GIVEAWAY"
 
 class PaymentStatus(enum.Enum):
     PENDING = 'pending'
     COMPLETED = 'completed'
+    PAID = 'paid'
     FAILED = 'failed'
     REFUNDED = 'refunded'
     CANCELED = 'canceled'
@@ -39,7 +40,6 @@ class PaymentMethod(enum.Enum):
     MPESA = 'Mpesa'
     PAYSTACK = 'Paystack'
 
-
 # User model
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -48,9 +48,10 @@ class User(db.Model):
     role = db.Column(db.Enum(UserRole), nullable=False)
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
     phone_number = db.Column(db.String(255), nullable=False)
-    
+
     events = db.relationship('Event', backref='organizer', lazy=True)
     tickets = db.relationship('Ticket', backref='buyer', lazy=True)
+    transactions = db.relationship('Transaction', back_populates='user', lazy=True)
     scans = db.relationship('Scan', backref='scanner', lazy=True)
 
     def set_password(self, password):
@@ -136,7 +137,7 @@ class Event(db.Model):
             "user_id": self.user_id
         }
 
-#ticket_type model
+# TicketType model
 class TicketType(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
@@ -152,9 +153,8 @@ class TicketType(db.Model):
             "type_name": self.type_name.value,
             "price": self.price,
             "event_id": self.event_id,
-            "quantity": self.quantity  
+            "quantity": self.quantity
         }
-
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -163,13 +163,15 @@ class Ticket(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)  # Nullable for pending payments
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)
     quantity = db.Column(db.Integer, nullable=False)
     qr_code = db.Column(db.String(255), nullable=True)
     scanned = db.Column(db.Boolean, default=False)
-    purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)  # New field
+    purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
+    payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
     @property
@@ -190,11 +192,9 @@ class Ticket(db.Model):
             "qr_code": self.qr_code,
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
-            "total_price": self.total_price  # Include calculated total price
+            "merchant_request_id": self.merchant_request_id,  # New field
+            "total_price": self.total_price
         }
-
-
-
 
 # Transaction model
 class Transaction(db.Model):
@@ -202,10 +202,15 @@ class Transaction(db.Model):
     amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
-    payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)  # Changed to use an Enum
+    payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    merchant_request_id = db.Column(db.String(255), unique=True, nullable=False)  # New field
+    mpesa_receipt_number = db.Column(db.String(255), nullable=True)  # New field
 
-    tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])  # Fixed foreign_keys
+    user = db.relationship('User', back_populates='transactions')
+    tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
 
     def as_dict(self):
         return {
@@ -213,10 +218,12 @@ class Transaction(db.Model):
             "amount_paid": float(self.amount_paid),
             "payment_status": self.payment_status.value,
             "payment_reference": self.payment_reference,
-            "payment_method": self.payment_method.value,  # Fixed retrieval
-            "timestamp": self.timestamp.isoformat()
+            "payment_method": self.payment_method.value,
+            "timestamp": self.timestamp.isoformat(),
+            "merchant_request_id": self.merchant_request_id,
+            "mpesa_receipt_number": self.mpesa_receipt_number
         }
-
+    
 # Scan model
 class Scan(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -230,4 +237,4 @@ class Scan(db.Model):
             "ticket_id": self.ticket_id,
             "scanned_at": self.scanned_at.isoformat(),
             "scanned_by": self.scanned_by
-            }
+        }
