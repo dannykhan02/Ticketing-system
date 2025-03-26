@@ -206,8 +206,8 @@ class Transaction(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    merchant_request_id = db.Column(db.String(255), unique=True, nullable=False)  # New field
-    mpesa_receipt_number = db.Column(db.String(255), nullable=True)  # New field
+    merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
+    mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
     user = db.relationship('User', back_populates='transactions')
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])

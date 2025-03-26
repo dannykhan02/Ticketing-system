@@ -4,8 +4,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod
 from config import Config
 # Import Paystack functionalities
-# Removed direct import of InitializePayment and RefundPayment
-# from paystack import InitializePayment as PaystackInitializePayment, RefundPayment as PaystackRefundPayment
+from paystack import initialize_paystack_payment, refund_paystack_payment
 # Import M-Pesa functionalities
 from mpesa_intergration import STKPush, normalize_phone_number, RefundTransaction
 from email_utils import send_email
@@ -25,6 +24,7 @@ logger = logging.getLogger(__name__)
 def complete_ticket_operation(transaction):
     """Updates ticket status once payment is successful and sends confirmation email."""
     try:
+        logger.info(f"Completing ticket operation for Transaction ID: {transaction.id}")
         ticket = Ticket.query.filter_by(transaction_id=transaction.id).first()
         if not ticket:
             logging.error(f"Ticket with transaction ID {transaction.id} not found.")
@@ -35,7 +35,7 @@ def complete_ticket_operation(transaction):
         db.session.commit()
 
         # Log success
-        logging.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
+        logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
 
         # Generate QR code
         qr_code_img, qr_code_path = generate_qr_code(ticket)
@@ -45,7 +45,7 @@ def complete_ticket_operation(transaction):
         send_confirmation_email(user, ticket, qr_code_path)
 
     except Exception as e:
-        logging.error(f"Error updating ticket {transaction.id}: {str(e)}")
+        logger.error(f"Error updating ticket {transaction.id}: {str(e)}")
         raise  # Reraise exception to be handled at the route/controller level
 
 def generate_qr_code(ticket, directory="qrcodes"):
@@ -174,8 +174,8 @@ class TicketResource(Resource):
             # Calculate the total price
             amount = ticket_type.price * data["quantity"]
 
-            # Generate a unique transaction ID for the ticket
-            transaction_id = str(uuid.uuid4())[:8]
+            # Generate a unique transaction ID for the ticket (this will be a string initially)
+            temp_transaction_id = str(uuid.uuid4())[:8]
 
             # Store the initial ticket information with PENDING status
             new_ticket = Ticket(
@@ -185,11 +185,13 @@ class TicketResource(Resource):
                 phone_number=user.phone_number,
                 email=user.email,  # Assuming the user object has an email field
                 payment_status=PaymentStatus.PENDING,
-                transaction_id=transaction_id,
+                transaction_id=None,  # Initialize as None, will be updated with the Transaction ID
                 user_id=user.id  # Associate the ticket with the authenticated user
             )
             db.session.add(new_ticket)
-            db.session.commit()
+            db.session.commit() # Commit here to get the new_ticket.id
+
+            logger.info(f"Created Ticket ID: {new_ticket.id} with temporary Transaction ID: {temp_transaction_id}")
 
             # Process Payment
             if data["payment_method"] == "Mpesa":
@@ -201,12 +203,30 @@ class TicketResource(Resource):
                     "phone_number": user.phone_number,
                     "amount": amount,
                     "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
-                    "transaction_id": transaction_id # Pass the ticket's transaction ID
+                    "transaction_id": temp_transaction_id # Pass the temporary transaction ID
                 }
                 mpesa = STKPush()
                 response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
 
                 if status_code == 200:
+                    # Create a new transaction record for M-Pesa
+                    new_transaction = Transaction(
+                        amount_paid=amount,
+                        payment_status=PaymentStatus.PENDING,
+                        payment_method=PaymentMethod.MPESA,
+                        timestamp=datetime.datetime.now(),
+                        ticket_id=new_ticket.id,
+                        user_id=user.id,
+                        merchant_request_id=response.get('MerchantRequestID'),
+                        checkout_request_id=response.get('CheckoutRequestID')
+                    )
+                    db.session.add(new_transaction)
+                    db.session.commit()
+
+                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
+                    db.session.commit()
+
+                    logger.info(f"Created M-Pesa Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
                     return response, status_code
                 else:
                     # If STK Push fails, revert the ticket creation
@@ -219,51 +239,37 @@ class TicketResource(Resource):
                 if not user.email:
                     return {"error": "User email is required for Paystack payment"}, 400
 
-                # Prepare Paystack payment data for the /paystack/initialize endpoint
-                paystack_payload = {
-                    "amount": int(amount * 100),  # Paystack expects amount in kobo/cents
-                    "payment_method": "card"  # Or whichever method you intend to use initially
-                }
+                # Initialize Paystack payment using the imported function
+                paystack_response = initialize_paystack_payment(user.email, int(amount * 100))
 
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {request.headers.get('Authorization').split()[1]}" # Forward the JWT token
-                }
+                if isinstance(paystack_response, dict) and "authorization_url" in paystack_response:
+                    authorization_url = paystack_response["authorization_url"]
+                    reference = paystack_response["reference"]
 
-                paystack_initialize_url = f"http://127.0.0.1:5000/paystack/initialize" # Adjust URL if needed
-                try:
-                    response = requests.post(paystack_initialize_url, headers=headers, json=paystack_payload)
-                    response.raise_for_status()  # Raise an exception for bad status codes
-                    res_data = response.json()
-                    logger.info(f"Paystack Initialize Response from /tickets: {res_data}")
+                    # Create a new transaction for Paystack
+                    new_transaction = Transaction(
+                        amount_paid=amount,
+                        payment_status=PaymentStatus.PENDING,  # Will be updated by webhook
+                        payment_method=PaymentMethod.PAYSTACK,
+                        timestamp=datetime.datetime.now(),
+                        ticket_id=new_ticket.id,
+                        user_id=user.id,  # Set the user_id here
+                        payment_reference=reference
+                    )
+                    db.session.add(new_transaction)
+                    db.session.commit()
 
-                    if res_data.get("message") == "Payment initialized" and res_data.get("data"):
-                        # Create a new transaction for Paystack
-                        new_transaction = Transaction(
-                            amount_paid=amount,
-                            payment_status=PaymentStatus.PENDING,  # Will be updated by webhook
-                            payment_method=PaymentMethod.PAYSTACK,
-                            timestamp=datetime.datetime.now(),
-                            ticket_id=new_ticket.id,
-                            user_id=user.id,  # Set the user_id here
-                            payment_reference=res_data.get("data", {}).get("reference")
-                        )
-                        db.session.add(new_transaction)
-                        new_ticket.transaction_id = new_transaction.id
-                        db.session.commit()
-                        return res_data, response.status_code
+                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
+                    db.session.commit()
 
-                    else:
-                        logger.error(f"Paystack initialization failed: {res_data.get('message')}")
-                        db.session.delete(new_ticket)
-                        db.session.commit()
-                        return {"error": f"Paystack initialization failed: {res_data.get('message', 'Unknown error')}"}, response.status_code
-
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"Error communicating with Paystack initialize endpoint: {e}")
+                    logger.info(f"Created Paystack Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
+                    return {"message": "Payment initialized", "authorization_url": authorization_url, "reference": reference}, 200
+                else:
+                    # Handle errors from the Paystack initialization function
+                    logger.error(f"Paystack initialization failed: {paystack_response}")
                     db.session.delete(new_ticket)
                     db.session.commit()
-                    return {"error": f"Error communicating with Paystack: {e}"}, 500
+                    return paystack_response, 500
 
             else:
                 # If the payment method is invalid, delete the ticket and return an error
@@ -334,24 +340,17 @@ class TicketResource(Resource):
                                 return {"error": "Error initiating M-Pesa refund.", "details": refund_response}, 500
                         elif transaction.payment_method == PaymentMethod.PAYSTACK:
                             # Initiate Paystack refund for the price difference
-                            refund_data = {
-                                "reference": transaction.payment_reference,
-                                "amount": int(price_difference * 100) # Amount in kobo/cents
-                            }
-                            # You might need to import PaystackRefundPayment here if you haven't already
-                            from paystack import RefundPayment as PaystackRefundPayment
-                            paystack_refund = PaystackRefundPayment()
-                            refund_response, refund_status = paystack_refund.post(refund_data)
-
-                            if refund_response.get("status"):
+                            refund_amount = int(price_difference * 100) # Amount in kobo/cents
+                            refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
+                            if isinstance(refund_result, dict) and "error" not in refund_result:
                                 db.session.commit()
-                                return {"message": "Ticket quantity updated and Paystack refund initiated.", "refund_details": refund_response}, 200
+                                return {"message": "Ticket quantity updated and Paystack refund initiated.", "refund_details": refund_result}, 200
                             else:
                                 db.session.rollback()
-                                return {"error": "Error initiating Paystack refund.", "details": refund_response.get("message")}, 500
-                    else:
-                        db.session.commit() # If no transaction, just update quantity
-                        return {"message": "Ticket quantity updated."}, 200
+                                return {"error": "Error initiating Paystack refund.", "details": refund_result}, 500
+                        else:
+                            db.session.commit() # If no transaction, just update quantity
+                            return {"message": "Ticket quantity updated."}, 200
                 elif price_difference < 0: # Quantity increased, you might want to handle additional payment here
                     db.session.commit()
                     return {"message": "Ticket quantity updated, additional payment might be required."}, 200
@@ -416,16 +415,9 @@ class TicketResource(Resource):
                         return {"error": "Error initiating M-Pesa refund for cancellation.", "details": refund_response}, 500
                 elif transaction.payment_method == PaymentMethod.PAYSTACK:
                     # Initiate full Paystack refund
-                    refund_data = {
-                        "reference": transaction.payment_reference,
-                        "amount": int(float(ticket.total_price) * 100) # Amount in kobo/cents
-                    }
-                    # You might need to import PaystackRefundPayment here if you haven't already
-                    from paystack import RefundPayment as PaystackRefundPayment
-                    paystack_refund = PaystackRefundPayment()
-                    refund_response, refund_status = paystack_refund.post(refund_data)
-
-                    if refund_response.get("status"):
+                    refund_amount = int(float(ticket.total_price) * 100) # Amount in kobo/cents
+                    refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
+                    if isinstance(refund_result, dict) and "error" not in refund_result:
                         qr_code_paths = [
                             f"static/qrcodes/ticket_{ticket.id}.png",
                             f"static/qrcodes/ticket_{ticket.id}.png"
@@ -437,23 +429,23 @@ class TicketResource(Resource):
                             if os.path.exists(path):
                                 os.remove(path)
 
-                        return {"message": "Ticket cancelled and Paystack refund initiated.", "refund_details": refund_response}, 200
+                        return {"message": "Ticket cancelled and Paystack refund initiated.", "refund_details": refund_result}, 200
                     else:
-                        return {"error": "Error initiating Paystack refund for cancellation.", "details": refund_response.get("message")}, 500
-            else:
-                # If no transaction, just delete the ticket without refund
-                qr_code_paths = [
-                    f"static/qrcodes/ticket_{ticket.id}.png",
-                    f"static/qrcodes/ticket_{ticket.id}.png"
-                ]
-                db.session.delete(ticket)
-                db.session.commit()
+                        return {"error": "Error initiating Paystack refund for cancellation.", "details": refund_result}, 500
+                else:
+                    # If no transaction, just delete the ticket without refund
+                    qr_code_paths = [
+                        f"static/qrcodes/ticket_{ticket.id}.png",
+                        f"static/qrcodes/ticket_{ticket.id}.png"
+                    ]
+                    db.session.delete(ticket)
+                    db.session.commit()
 
-                for path in qr_code_paths:
-                    if os.path.exists(path):
-                        os.remove(path)
+                    for path in qr_code_paths:
+                        if os.path.exists(path):
+                            os.remove(path)
 
-                return {"message": "Ticket cancelled."}, 200
+                    return {"message": "Ticket cancelled."}, 200
 
         except Exception as e:
             db.session.rollback()
