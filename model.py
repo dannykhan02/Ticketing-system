@@ -44,10 +44,14 @@ class PaymentMethod(enum.Enum):
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), nullable=False, unique=True)
-    password = db.Column(db.String(255), nullable=False)
+    password = db.Column(db.String(255))
+    full_name = db.Column(db.String(100))  # New field for name storage
     role = db.Column(db.Enum(UserRole), nullable=False)
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
-    phone_number = db.Column(db.String(255), nullable=False)
+    phone_number = db.Column(db.String(255))  # Now strictly for phone numbers
+    
+    google_id = db.Column(db.String(255), unique=True)
+    is_oauth = db.Column(db.Boolean, default=False)
     
     events = db.relationship('Event', backref='organizer', lazy=True)
     tickets = db.relationship('Ticket', backref='buyer', lazy=True)
@@ -63,11 +67,11 @@ class User(db.Model):
         return {
             "id": self.id,
             "email": self.email,
+            "full_name": self.full_name,  # Include name in response
             "role": self.role.value,
             "phone_number": self.phone_number,
             "created_at": self.created_at.isoformat()
         }
-
     @staticmethod
     def validate_role(role):
         """Ensure role is stored in uppercase."""
