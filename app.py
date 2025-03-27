@@ -15,18 +15,18 @@ from model import db  # Ensure this is the only db instance
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
 from Event import register_event_resources
-from ticket import register_ticket_resources
+from ticket import register_ticket_resources, complete_ticket_operation # Import the function
 from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
+from ticket_type import register_ticket_type_resources
+from report import register_report_resources
 from email_utils import mail
-from update_ngork import update_ngrok_urls  # Import the function
+# Import the function
 
 # Load environment variables
 load_dotenv()
 
-# Ensure Ngrok URLs are updated before starting the app
-update_ngrok_urls()
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -52,8 +52,11 @@ app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
 register_ticket_validation_resources(api)
-register_mpesa_routes(api)
+# Pass the complete_ticket_operation function when registering M-Pesa routes
+register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
+register_ticket_type_resources(api)
+register_report_resources(api)
 
 if __name__ == "__main__":
     app.run(debug=True)

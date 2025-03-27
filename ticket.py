@@ -1,386 +1,368 @@
 from flask import request, jsonify
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, TicketTypeEnum
+from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod
 from config import Config
-from paystack import InitializePayment as PaystackInitializePayment, VerifyPayment as PaystackVerifyPayment, RefundPayment as PaystackRefundPayment
-from mpesa_intergration import STKPush as MpesaSTKPush, TransactionStatus as MpesaTransactionStatus, RefundTransaction as MpesaRefundTransaction
-import logging
-import base64
-import os
-from datetime import datetime
+# Import Paystack functionalities
+from paystack import initialize_paystack_payment, refund_paystack_payment
+# Import M-Pesa functionalities
+from mpesa_intergration import STKPush, normalize_phone_number, RefundTransaction
 from email_utils import send_email
-import qrcode
 from itsdangerous import URLSafeSerializer
+import qrcode
+import logging
+import os
+import datetime
+import uuid
+import base64
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class TicketUtils:
-    @staticmethod
-    def generate_qr_code(ticket, directory="qrcodes"):
-        """Generates a QR code with a secure encrypted URL and stores it in the specified directory."""
-        serializer = URLSafeSerializer(Config.SECRET_KEY)
-        encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
-        qr_code_data = f"http://127.0.0.1:5000/validate_ticket?id={encrypted_data}"
-        qr_code_img = qrcode.make(qr_code_data)
+def complete_ticket_operation(transaction):
+    """Updates ticket status once payment is successful and sends confirmation email."""
+    try:
+        logger.info(f"Completing ticket operation for Transaction ID: {transaction.id}")
+        ticket = Ticket.query.filter_by(transaction_id=transaction.id).first()
+        if not ticket:
+            logging.error(f"Ticket with transaction ID {transaction.id} not found.")
+            raise ValueError("Ticket not found")  # Raise exception instead of returning response
 
-        qr_directory = f"static/{directory}"
-        os.makedirs(qr_directory, exist_ok=True)
-        qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
-        qr_code_img.save(qr_code_path)
+        # Update ticket status
+        ticket.payment_status = PaymentStatus.PAID
+        db.session.commit()
 
-        return qr_code_img, qr_code_path
+        # Log success
+        logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
 
-    @staticmethod
-    def send_confirmation_email(user, ticket, qr_code_path, is_new=True):
-        """Sends an email with the ticket details and QR code."""
-        event = ticket.event
-        ticket_type = ticket.ticket_type
-        event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
-        start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
-        end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
+        # Generate QR code
+        qr_code_img, qr_code_path = generate_qr_code(ticket)
 
-        subject = f"🎟 {'Your' if is_new else 'Updated'} Ticket Confirmation - {event.name} 🎟"
-        body = f"""
-        Dear {user.email} ({user.phone_number}),
+        # Send confirmation email
+        user = User.query.get(ticket.user_id)
+        send_confirmation_email(user, ticket, qr_code_path)
 
-        🎉 **Your Ticket Booking is {'Confirmed' if is_new else 'Updated'}!** 🎉
+    except Exception as e:
+        logger.error(f"Error updating ticket {transaction.id}: {str(e)}")
+        raise  # Reraise exception to be handled at the route/controller level
 
-        📌 **Event Details:**
-        - **Event:** {event.name}
-        - **Location:** {event.location}
-        - **Date:** {event_date}
-        - **Time:** {start_time} - {end_time}
-        - **Description:** {event.description}
+def generate_qr_code(ticket, directory="qrcodes"):
+    """Generates a QR code with a secure encrypted URL and stores it in the specified directory."""
+    serializer = URLSafeSerializer(Config.SECRET_KEY)
+    encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
+    qr_code_data = f"http://127.0.0.1:5000/validate_ticket?id={encrypted_data}"
+    qr_code_img = qrcode.make(qr_code_data)
 
-        🎟 **Your Ticket:**
-        - **Type:** {ticket_type.type_name}
-        - **Quantity:** {ticket.quantity}
-        - **Purchase Date:** {ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
-        - **Scanned:** {'Yes' if ticket.scanned else 'No'}
-        - **Amount Paid:** {ticket.amount_paid}
-        - **Payment Method:** {ticket.transaction.payment_method}
+    qr_directory = f"static/{directory}"
+    os.makedirs(qr_directory, exist_ok=True)
+    qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
+    qr_code_img.save(qr_code_path)
 
-        📩 **Your QR Code:**
-        Your {'unique' if is_new else 'updated'} QR code is attached to this email. Please present it at the entrance for seamless check-in.
-        """
-        try:
-            send_email(user.email, subject, body, attachment_path=qr_code_path)
-        except Exception as e:
-            logger.error(f"Error sending email: {e}")
+    return qr_code_img, qr_code_path
 
+def send_confirmation_email(user, ticket, qr_code_path, is_new=True):
+    """Sends an email with the ticket details and QR code."""
+    event = ticket.event
+    ticket_type = ticket.ticket_type
+    event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
+    start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
+    end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
 
-class TicketTypeResource(Resource):
-    @jwt_required()
-    def post(self):
-        """Create a ticket type for an event (Only the event's organizer)."""
-        try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
+    subject = f"🎟 {'Your' if is_new else 'Updated'} Ticket Confirmation - {event.name} 🎟"
+    body = f"""
+    Dear {user.email} ({user.phone_number}),
 
-            if not user:
-                return {"error": "User not found"}, 404
+    🎉 **Your Ticket Booking is {'Confirmed' if is_new else 'Updated'}!** 🎉
 
-            if user.role.value != "ORGANIZER":
-                return {"error": "Only organizers can create ticket types"}, 403
+    📌 **Event Details:**
+    - **Event:** {event.name}
+    - **Location:** {event.location}
+    - **Date:** {event_date}
+    - **Time:** {start_time} - {end_time}
+    - **Description:** {event.description}
 
-            data = request.get_json()
-            required_fields = ["event_id", "type_name", "price", "quantity"]
+    🎟 **Your Ticket:**
+    - **Type:** {ticket_type.type_name}
+    - **Quantity:** {ticket.quantity}
+    - **Purchase Date:** {ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
+    - **Scanned:** {'Yes' if ticket.scanned else 'No'}
+    - **Amount Paid:** {ticket.total_price}
+    - **Payment Method:** {ticket.transaction.payment_method.value if ticket.transaction else 'Pending'}
 
-            for field in required_fields:
-                if field not in data:
-                    return {"error": f"Missing field: {field}"}, 400
-
-            event = Event.query.get(data["event_id"])
-            if not event:
-                return {"error": "Event not found"}, 404
-
-            if event.user_id != user.id:
-                return {"error": "You can only create ticket types for your own events"}, 403
-
-            type_name = data["type_name"].upper()
-            valid_types = [e.name for e in TicketTypeEnum]
-            if type_name not in valid_types:
-                return {"error": f"Invalid type_name. Allowed values: {', '.join(valid_types)}"}, 400
-
-            try:
-                price = float(data["price"])
-                quantity = int(data["quantity"])
-            except ValueError:
-                return {"error": "Price must be a valid number and quantity must be an integer"}, 400
-
-            if price <= 0 or quantity <= 0:
-                return {"error": "Price and quantity must be greater than zero"}, 400
-
-            ticket_type = TicketType(
-                event_id=event.id,
-                type_name=type_name,
-                price=price,
-                quantity=quantity
-            )
-
-            db.session.add(ticket_type)
-            db.session.commit()
-
-            return {"message": "Ticket type created successfully", "ticket_type": ticket_type.as_dict()}, 201
-
-        except Exception as e:
-            logger.error(f"Error creating ticket type: {e}")
-            return {"error": "An internal error occurred"}, 500
-
-    @jwt_required()
-    def get(self, ticket_type_id=None):
-        """Retrieve all ticket types or a specific one."""
-        if ticket_type_id:
-            ticket_type = TicketType.query.get(ticket_type_id)
-            if not ticket_type:
-                return {"message": "Ticket type not found"}, 404
-            return {"ticket_type": ticket_type.as_dict()}, 200
-
-        ticket_types = TicketType.query.all()
-        return {"ticket_types": [ticket.as_dict() for ticket in ticket_types]}, 200
-
-    @jwt_required()
-    def put(self, ticket_type_id):
-        """Update a ticket type (Only the event organizer can update)."""
-        try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
-
-            if not user:
-                return {"error": "User not found"}, 404
-
-            if user.role.value != "ORGANIZER":
-                return {"error": "Only organizers can update ticket types"}, 403
-
-            ticket_type = TicketType.query.get(ticket_type_id)
-            if not ticket_type:
-                return {"error": "Ticket type not found"}, 404
-
-            event = Event.query.get(ticket_type.event_id)
-            if event.user_id != user.id:
-                return {"error": "Only the event organizer can update this ticket type"}, 403
-
-            data = request.get_json()
-            allowed_fields = ["type_name", "price", "quantity"]
-
-            if "type_name" in data:
-                type_name = data["type_name"].upper()
-                if type_name not in [e.name for e in TicketTypeEnum]:
-                    return {"error": f"Invalid type_name. Allowed values: {', '.join(e.name for e in TicketTypeEnum)}"}, 400
-                ticket_type.type_name = type_name
-
-            for field in ["price", "quantity"]:
-                if field in data:
-                    try:
-                        if field == "price":
-                            data[field] = float(data[field])
-                        elif field == "quantity":
-                            data[field] = int(data[field])
-                    except ValueError:
-                        return {"error": f"Invalid data type for {field}"}, 400
-
-                    if data[field] <= 0:
-                        return {"error": f"{field.capitalize()} must be greater than zero"}, 400
-
-                    setattr(ticket_type, field, data[field])
-
-            db.session.commit()
-            return {"message": "Ticket type updated successfully", "ticket_type": ticket_type.as_dict()}, 200
-
-        except Exception as e:
-            logger.error(f"Error updating ticket type: {e}")
-            return {"error": "An internal error occurred"}, 500
-
-    @jwt_required()
-    def delete(self, ticket_type_id):
-        """Delete a ticket type (Only the event organizer can delete)."""
-        try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
-
-            if not user:
-                return {"error": "User not found"}, 404
-
-            if user.role.value != "ORGANIZER":
-                return {"error": "Only organizers can delete ticket types"}, 403
-
-            ticket_type = TicketType.query.get(ticket_type_id)
-            if not ticket_type:
-                return {"error": "Ticket type not found"}, 404
-
-            event = Event.query.get(ticket_type.event_id)
-            if event.user_id != user.id:
-                return {"error": "Only the event organizer can delete this ticket type"}, 403
-
-            db.session.delete(ticket_type)
-            db.session.commit()
-            return {"message": "Ticket type deleted successfully"}, 200
-
-        except Exception as e:
-            logger.error(f"Error deleting ticket type: {e}")
-            return {"error": "An internal error occurred"}, 500
+    📩 **Your QR Code:**
+    Your {'unique' if is_new else 'updated'} QR code is attached to this email. Please present it at the entrance for seamless check-in.
+    """
+    try:
+        send_email(user.email, subject, body, attachment_path=qr_code_path)
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
 
 
 class TicketResource(Resource):
+
     @jwt_required()
-    def get(self):
-        """Retrieve all tickets booked by the authenticated user."""
+    def get(self, ticket_id=None):
+        """Get a specific ticket or all tickets for the authenticated user."""
         try:
-            identity = get_jwt_identity()
+            identity = get_jwt_identity()  # Get authenticated user ID
             user = User.query.get(identity)
 
             if not user:
                 return {"error": "User not found"}, 404
 
-            tickets = Ticket.query.filter_by(user_id=user.id).all()
-
-            if not tickets:
-                return {"message": "No tickets found"}, 200
-
-            return {"tickets": [ticket.as_dict() for ticket in tickets]}, 200
+            if ticket_id:
+                ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+                if not ticket:
+                    return {"error": "Ticket not found or does not belong to you"}, 404
+                return {"ticket_id": ticket.id, "status": ticket.payment_status.value}, 200
+            else:
+                tickets = Ticket.query.filter_by(user_id=user.id).all()
+                ticket_list = [{"ticket_id": ticket.id, "status": ticket.payment_status.value} for ticket in tickets]
+                return jsonify(ticket_list), 200
 
         except Exception as e:
-            logger.error(f"Error retrieving tickets: {e}")
+            logger.error(f"Error checking ticket status: {e}")
             return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def post(self):
-        """Create a new ticket for the authenticated user after payment."""
+        """Create a new ticket for the authenticated user after successful payment."""
         try:
+            # Get the authenticated user's identity
             identity = get_jwt_identity()
             user = User.query.get(identity)
 
+            # Log the user object for debugging
+            logger.info(f"Authenticated user: {user}")
+
+            # Ensure the user exists
             if not user:
                 return {"error": "User not found"}, 404
 
+            # Ensure the user is an attendee
+            if user.role != UserRole.ATTENDEE:
+                return {"error": "Only attendees can purchase tickets"}, 403
+
+            # Parse and validate the request data
             data = request.get_json()
-            required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method", "transaction_id"]
+            required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]
             if not all(field in data for field in required_fields):
                 return {"error": "Missing required fields"}, 400
 
+            # Validate the event
             event = Event.query.get(data["event_id"])
             if not event:
                 return {"error": "Event not found"}, 404
 
+            # Validate the ticket type
             ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"], event_id=event.id).first()
-            if not ticket_type or data["quantity"] <= 0 or ticket_type.quantity < data["quantity"]:
-                return {"error": "Invalid ticket request"}, 400
+            if not ticket_type:
+                return {"error": "Ticket type not found for this event"}, 404
 
-            # Verify payment
-            transaction = Transaction.query.filter_by(payment_reference=data["transaction_id"]).first()
-            if not transaction or transaction.payment_status != PaymentStatus.SUCCESS:
-                return {"error": "Payment not verified or failed"}, 400
-
-            ticket_type.quantity -= data["quantity"]
-
-            ticket = Ticket(
-                user_id=user.id,
-                event_id=event.id,
-                ticket_type_id=ticket_type.id,
-                quantity=data["quantity"],
-                phone_number=user.phone_number,
-                email=user.email,
-                transaction_id=data["transaction_id"],
-                qr_code=None,
-                amount_paid=transaction.amount_paid  # Include amount paid
-            )
-            db.session.add(ticket)
-            db.session.commit()
-
-            qr_code_img, qr_code_path = TicketUtils.generate_qr_code(ticket, directory="qrcodes")
-            with open(qr_code_path, "rb") as f:
-                ticket.qr_code = base64.b64encode(f.read()).decode()
-
-            db.session.commit()
-            TicketUtils.send_confirmation_email(user, ticket, qr_code_path, is_new=True)
-
-            return {"message": "Ticket created successfully", "ticket_id": ticket.id}, 201
-
-        except Exception as e:
-            db.session.rollback()
-            logger.error(f"Error creating ticket: {e}")
-            return {"error": "An internal error occurred"}, 500
-
-    @jwt_required()
-    def put(self, ticket_id):
-        """Update an existing ticket's details for the authenticated user after payment."""
-        try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
-
-            if not user:
-                return {"error": "User not found"}, 404
-
-            ticket = Ticket.query.get(ticket_id)
-            if not ticket or ticket.user_id != user.id:
-                return {"error": "Ticket not found or unauthorized"}, 404
-
-            data = request.get_json()
-            required_fields = ["ticket_type_id", "quantity", "payment_method", "transaction_id"]
-            if not all(field in data for field in required_fields):
-                return {"error": "Missing required fields: ticket_type_id, quantity, payment_method, transaction_id"}, 400
-
-            new_ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"]).first()
-            if not new_ticket_type:
-                return {"error": "Invalid ticket type"}, 400
+            # Check ticket availability
+            if ticket_type.quantity == 0:
+                return {"error": "Tickets for this type are sold out"}, 400
 
             if data["quantity"] <= 0:
                 return {"error": "Quantity must be at least 1"}, 400
 
-            if new_ticket_type.quantity < data["quantity"]:
-                return {"error": "Not enough tickets available"}, 400
+            if ticket_type.quantity < data["quantity"]:
+                return {"error": f"Only {ticket_type.quantity} tickets are available"}, 400
 
-            # Verify payment
-            transaction = Transaction.query.filter_by(payment_reference=data["transaction_id"]).first()
-            if not transaction or transaction.payment_status != PaymentStatus.SUCCESS:
-                return {"error": "Payment not verified or failed"}, 400
+            # Calculate the total price
+            amount = ticket_type.price * data["quantity"]
 
-            # Handle refund if the new quantity is less than the original
-            if data["quantity"] < ticket.quantity:
-                refund_amount = (ticket.quantity - data["quantity"]) * ticket.ticket_type.price
-                # Process refund logic here
-                if transaction.payment_method == 'Paystack':
-                    refund_response = PaystackRefundPayment.post({
-                        "reference": transaction.payment_reference,
-                        "amount": refund_amount
-                    })
-                    if refund_response.get("status"):
-                        transaction.payment_status = PaymentStatus.REFUNDED
-                        db.session.commit()
-                    else:
-                        return {"error": "Failed to initiate refund with Paystack", "details": refund_response.get("message", "Unknown error")}, 400
-                elif transaction.payment_method == 'Mpesa':
-                    refund_response = MpesaRefundTransaction.post({
-                        "transaction_id": transaction.payment_reference,
-                        "amount": refund_amount
-                    })
-                    if refund_response.get("ResponseCode") == "0":
-                        transaction.payment_status = PaymentStatus.REFUNDED
-                        db.session.commit()
-                    else:
-                        return {"error": "Failed to initiate refund with M-Pesa", "details": refund_response.get("ResponseDescription", "Unknown error")}, 400
+            # Generate a unique transaction ID for the ticket (this will be a string initially)
+            temp_transaction_id = str(uuid.uuid4())[:8]
 
-            old_ticket_type = TicketType.query.get(ticket.ticket_type_id)
-            old_ticket_type.quantity += ticket.quantity
+            # Store the initial ticket information with PENDING status
+            new_ticket = Ticket(
+                event_id=event.id,
+                ticket_type_id=ticket_type.id,
+                quantity=data["quantity"],
+                phone_number=user.phone_number,
+                email=user.email,  # Assuming the user object has an email field
+                payment_status=PaymentStatus.PENDING,
+                transaction_id=None,  # Initialize as None, will be updated with the Transaction ID
+                user_id=user.id  # Associate the ticket with the authenticated user
+            )
+            db.session.add(new_ticket)
+            db.session.commit() # Commit here to get the new_ticket.id
 
-            new_ticket_type.quantity -= data["quantity"]
+            logger.info(f"Created Ticket ID: {new_ticket.id} with temporary Transaction ID: {temp_transaction_id}")
 
-            ticket.ticket_type_id = new_ticket_type.id
-            ticket.quantity = data["quantity"]
-            ticket.purchase_date = datetime.utcnow()
-            ticket.amount_paid = transaction.amount_paid  # Update amount paid
+            # Process Payment
+            if data["payment_method"] == "Mpesa":
+                if "phone_number" not in data or normalize_phone_number(data["phone_number"]) != normalize_phone_number(user.phone_number):
+                    return {"error": "Phone number must be the registered one"}, 400
 
-            qr_code_img, qr_code_path = TicketUtils.generate_qr_code(ticket, directory="qrcodes")
-            with open(qr_code_path, "rb") as f:
-                ticket.qr_code = base64.b64encode(f.read()).decode()
+                # Initiate STK Push using the imported class
+                mpesa_data = {
+                    "phone_number": user.phone_number,
+                    "amount": amount,
+                    "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
+                    "transaction_id": temp_transaction_id # Pass the temporary transaction ID
+                }
+                mpesa = STKPush()
+                response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
+
+                if status_code == 200:
+                    # Create a new transaction record for M-Pesa
+                    new_transaction = Transaction(
+                        amount_paid=amount,
+                        payment_status=PaymentStatus.PENDING,
+                        payment_method=PaymentMethod.MPESA,
+                        timestamp=datetime.datetime.now(),
+                        ticket_id=new_ticket.id,
+                        user_id=user.id,
+                        merchant_request_id=response.get('MerchantRequestID'),
+                        checkout_request_id=response.get('CheckoutRequestID')
+                    )
+                    db.session.add(new_transaction)
+                    db.session.commit()
+
+                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
+                    db.session.commit()
+
+                    logger.info(f"Created M-Pesa Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
+                    return response, status_code
+                else:
+                    # If STK Push fails, revert the ticket creation
+                    db.session.delete(new_ticket)
+                    db.session.commit()
+                    return response, status_code
+
+            elif data["payment_method"] == "Paystack":
+                # Ensure the user has a valid email
+                if not user.email:
+                    return {"error": "User email is required for Paystack payment"}, 400
+
+                # Initialize Paystack payment using the imported function
+                paystack_response = initialize_paystack_payment(user.email, int(amount * 100))
+
+                if isinstance(paystack_response, dict) and "authorization_url" in paystack_response:
+                    authorization_url = paystack_response["authorization_url"]
+                    reference = paystack_response["reference"]
+
+                    # Create a new transaction for Paystack
+                    new_transaction = Transaction(
+                        amount_paid=amount,
+                        payment_status=PaymentStatus.PENDING,  # Will be updated by webhook
+                        payment_method=PaymentMethod.PAYSTACK,
+                        timestamp=datetime.datetime.now(),
+                        ticket_id=new_ticket.id,
+                        user_id=user.id,  # Set the user_id here
+                        payment_reference=reference
+                    )
+                    db.session.add(new_transaction)
+                    db.session.commit()
+
+                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
+                    db.session.commit()
+
+                    logger.info(f"Created Paystack Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
+                    return {"message": "Payment initialized", "authorization_url": authorization_url, "reference": reference}, 200
+                else:
+                    # Handle errors from the Paystack initialization function
+                    logger.error(f"Paystack initialization failed: {paystack_response}")
+                    db.session.delete(new_ticket)
+                    db.session.commit()
+                    return paystack_response, 500
+
+            else:
+                # If the payment method is invalid, delete the ticket and return an error
+                db.session.delete(new_ticket)
+                db.session.commit()
+                return {"error": "Invalid payment method"}, 400
+
+        except Exception as e:
+            # Rollback the session in case of an error
+            db.session.rollback()
+            logger.error(f"Error initializing payment: {e}")
+            return {"error": "An internal error occurred"}, 500
+
+    @jwt_required()
+    def put(self, ticket_id):
+        """Update a ticket (Only the ticket owner can update)."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user:
+                return {"error": "User not found"}, 404
+
+            ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+
+            if not ticket:
+                return {"error": "Ticket not found or does not belong to you"}, 404
+
+            data = request.get_json()
+            original_quantity = ticket.quantity
+
+            if "quantity" in data:
+                new_quantity = data["quantity"]
+
+                if ticket.email is not None:  # Check if email is present
+                    return {"error": "Tickets for which confirmation emails have been sent cannot have their quantity reduced or be cancelled for a refund."}, 400
+
+                if new_quantity <= 0:
+                    return {"error": "Quantity must be at least 1"}, 400
+
+                ticket_type = TicketType.query.get(ticket.ticket_type_id)
+                if not ticket_type:
+                    return {"error": "Ticket type not found"}, 404
+
+                original_total_price = ticket.total_price
+                ticket.quantity = new_quantity
+                new_total_price = ticket.total_price
+
+                price_difference = original_total_price - new_total_price
+
+                transaction = ticket.transaction
+                if price_difference > 0:  # Quantity reduced, initiate refund
+                    if transaction:
+                        if transaction.payment_method == PaymentMethod.MPESA:
+                            # Initiate M-Pesa refund for the price difference
+                            refund_data = {
+                                "transaction_id": transaction.merchant_request_id,
+                                "amount": float(price_difference)
+                            }
+                            mpesa_refund = RefundTransaction()
+                            refund_response, refund_status = mpesa_refund.post(refund_data)
+
+                            if refund_status == 200:
+                                db.session.commit()
+                                return {"message": "Ticket quantity updated and M-Pesa refund initiated.", "refund_details": refund_response}, 200
+                            else:
+                                db.session.rollback()
+                                return {"error": "Error initiating M-Pesa refund.", "details": refund_response}, 500
+                        elif transaction.payment_method == PaymentMethod.PAYSTACK:
+                            # Initiate Paystack refund for the price difference
+                            refund_amount = int(price_difference * 100) # Amount in kobo/cents
+                            refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
+                            if isinstance(refund_result, dict) and "error" not in refund_result:
+                                db.session.commit()
+                                return {"message": "Ticket quantity updated and Paystack refund initiated.", "refund_details": refund_result}, 200
+                            else:
+                                db.session.rollback()
+                                return {"error": "Error initiating Paystack refund.", "details": refund_result}, 500
+                        else:
+                            db.session.commit() # If no transaction, just update quantity
+                            return {"message": "Ticket quantity updated."}, 200
+                elif price_difference < 0: # Quantity increased, you might want to handle additional payment here
+                    db.session.commit()
+                    return {"message": "Ticket quantity updated, additional payment might be required."}, 200
+                else:
+                    db.session.commit()
+                    return {"message": "Ticket quantity updated."}, 200
+
+            if "status" in data:
+                pass # You might want to handle other status updates here if needed
 
             db.session.commit()
-            TicketUtils.send_confirmation_email(user, ticket, qr_code_path, is_new=False)
-
-            return {"message": "Ticket updated successfully", "ticket_id": ticket.id}, 200
+            return {"message": "Ticket updated successfully"}, 200
 
         except Exception as e:
             db.session.rollback()
@@ -397,40 +379,80 @@ class TicketResource(Resource):
             if not user:
                 return {"error": "User not found"}, 404
 
-            ticket = Ticket.query.get(ticket_id)
+            ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+
             if not ticket:
-                return {"error": "Ticket not found"}, 404
+                return {"error": "Ticket not found or does not belong to you"}, 404
 
-            if ticket.user_id != user.id:
-                return {"error": "You can only cancel your own tickets"}, 403
+            if ticket.email is not None: # Check if email is present
+                return {"error": "Tickets for which confirmation emails have been sent cannot be cancelled for a refund."}, 400
 
-            ticket_type = TicketType.query.get(ticket.ticket_type_id)
-            if ticket_type:
-                ticket_type.quantity += ticket.quantity
+            transaction = ticket.transaction
+            if transaction:
+                if transaction.payment_method == PaymentMethod.MPESA:
+                    # Initiate full M-Pesa refund
+                    refund_data = {
+                        "transaction_id": transaction.merchant_request_id,
+                        "amount": float(ticket.total_price)
+                    }
+                    mpesa_refund = RefundTransaction()
+                    refund_response, refund_status = mpesa_refund.post(refund_data)
 
-            qr_code_paths = [
-                f"static/qrcodes/ticket_{ticket.id}.png",
-                f"static/qrcodes/ticket_{ticket.id}.png"
-            ]
+                    if refund_status == 200:
+                        qr_code_paths = [
+                            f"static/qrcodes/ticket_{ticket.id}.png",
+                            f"static/qrcodes/ticket_{ticket.id}.png"
+                        ]
+                        db.session.delete(ticket)
+                        db.session.commit()
 
-            db.session.delete(ticket)
-            db.session.commit()
+                        for path in qr_code_paths:
+                            if os.path.exists(path):
+                                os.remove(path)
 
-            for path in qr_code_paths:
-                if os.path.exists(path):
-                    os.remove(path)
-                    logger.info(f"Deleted QR code: {path}")
+                        return {"message": "Ticket cancelled and M-Pesa refund initiated.", "refund_details": refund_response}, 200
+                    else:
+                        return {"error": "Error initiating M-Pesa refund for cancellation.", "details": refund_response}, 500
+                elif transaction.payment_method == PaymentMethod.PAYSTACK:
+                    # Initiate full Paystack refund
+                    refund_amount = int(float(ticket.total_price) * 100) # Amount in kobo/cents
+                    refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
+                    if isinstance(refund_result, dict) and "error" not in refund_result:
+                        qr_code_paths = [
+                            f"static/qrcodes/ticket_{ticket.id}.png",
+                            f"static/qrcodes/ticket_{ticket.id}.png"
+                        ]
+                        db.session.delete(ticket)
+                        db.session.commit()
+
+                        for path in qr_code_paths:
+                            if os.path.exists(path):
+                                os.remove(path)
+
+                        return {"message": "Ticket cancelled and Paystack refund initiated.", "refund_details": refund_result}, 200
+                    else:
+                        return {"error": "Error initiating Paystack refund for cancellation.", "details": refund_result}, 500
                 else:
-                    logger.warning(f"File not found: {path}")
+                    # If no transaction, just delete the ticket without refund
+                    qr_code_paths = [
+                        f"static/qrcodes/ticket_{ticket.id}.png",
+                        f"static/qrcodes/ticket_{ticket.id}.png"
+                    ]
+                    db.session.delete(ticket)
+                    db.session.commit()
 
-            return {"message": "Ticket cancelled successfully"}, 200
+                    for path in qr_code_paths:
+                        if os.path.exists(path):
+                            os.remove(path)
+
+                    return {"message": "Ticket cancelled."}, 200
 
         except Exception as e:
+            db.session.rollback()
             logger.error(f"Error cancelling ticket: {e}")
             return {"error": "An internal error occurred"}, 500
-
 
 def register_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
     api.add_resource(TicketResource, "/tickets", "/tickets/<int:ticket_id>")
-    api.add_resource(TicketTypeResource, "/ticket-types", "/ticket-types/<int:ticket_type_id>")
+    pass
