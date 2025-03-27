@@ -20,6 +20,7 @@ from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
+from report import register_report_resources
 from email_utils import mail
 # Import the function
 
@@ -55,6 +56,7 @@ register_ticket_validation_resources(api)
 register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
 register_ticket_type_resources(api)
+register_report_resources(api)
 
 if __name__ == "__main__":
     app.run(debug=True)
