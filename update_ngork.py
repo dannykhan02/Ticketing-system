@@ -27,7 +27,7 @@ def update_ngrok_urls():
                         file.write(f"PAYSTACK_CALLBACK_URL={public_url}/paystack/callback\n")
                         updated = True
                     elif line.startswith("CALLBACK_URL="):
-                        file.write(f"CALLBACK_URL={public_url}/stk\n")
+                        file.write(f"CALLBACK_URL={public_url}/mpesa/callback\n")
                         updated = True
                     else:
                         file.write(line)
@@ -37,11 +37,11 @@ def update_ngrok_urls():
                     file.write(f"PAYSTACK_CALLBACK_URL={public_url}/paystack/callback\n")
                     updated = True
                 if not any(line.startswith("CALLBACK_URL=") for line in lines):
-                    file.write(f"CALLBACK_URL={public_url}/stk\n")
+                    file.write(f"CALLBACK_URL={public_url}/mpesa/callback\n")
                     updated = True
 
             if updated:
-                print(f"✅ Updated .env with Ngrok URL:\n  - Paystack: {public_url}/paystack/callback\n  - M-Pesa: {public_url}/stk")
+                print(f"✅ Updated .env with Ngrok URL:\n  - Paystack: {public_url}/paystack/callback\n  - M-Pesa: {public_url}/mpesa/callback")
             else:
                 print("✅ .env file is already up to date.")
 
