@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, url_for, session
+from flask import Blueprint, jsonify, request, url_for, session, redirect
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity, get_jwt, jwt_required, create_access_token
 from email_validator import validate_email, EmailNotValidError
 import re
@@ -32,37 +32,31 @@ def generate_token(user):
 
 @auth_bp.route('/login/google')
 def google_login():
-    state = str(uuid4())
-    session["oauth_state"] = state
-    session.modified = True
-    redirect_uri = Config.GOOGLE_REDIRECT_URI
-    return oauth.google.authorize_redirect(redirect_uri, state=state)
+    """Initiates Google login, relying on Authlib for state management."""
+    session['next_url'] = request.args.get('next')
+    return oauth.google.authorize_redirect(Config.GOOGLE_REDIRECT_URI)
 
 @auth_bp.route("/callback/google")
 def google_callback():
+    """Handles the Google callback, relying on Authlib for state verification."""
     try:
-        received_state = request.args.get("state")
-        stored_state = session.pop("oauth_state", None)
-
-        if not stored_state or not received_state or stored_state != received_state:
-            return jsonify({"error": "Invalid state, possible CSRF attack"}), 400
-
         token = oauth.google.authorize_access_token()
         user_info = oauth.google.get("userinfo").json()
 
-        if not user_info or "email" not in user_info:
-            return jsonify({"error": "Failed to retrieve user information"}), 400
+        logger.info(f"Google User Info: {user_info}")
 
-        email = user_info["email"]
-        name = user_info.get("name", "")
+        email = user_info.get("email")
+        if not email:
+            return jsonify({"error": "Email not found in Google response"}), 400
+
         user = User.query.filter_by(email=email).first()
 
         if not user:
-            user = User(email=email, phone_number=name, role="ATTENDEE")
+            user = User(email=email, phone_number=user_info.get("name", ""), role="ATTENDEE")
             db.session.add(user)
             db.session.commit()
 
-        access_token = generate_token(user)
+        access_token = create_access_token(identity=user.id)
         session["user_id"] = user.id
         session["user_email"] = user.email
         session["user_role"] = str(user.role.value)
@@ -70,7 +64,9 @@ def google_callback():
 
         return jsonify({"msg": "Login successful", "access_token": access_token}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error during Google OAuth callback: {e}")
+        return jsonify({"error": "Failed to authenticate with Google", "details": str(e)}), 400
+
 
 def role_required(required_role):
     def decorator(fn):

@@ -88,8 +88,8 @@ class Event(db.Model):
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
-    ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
-    tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
+    ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete-orphan")
+    tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete-orphan")
 
     def __init__(self, name, description, date, start_time, end_time, location, image, user_id):
         self.name = name
@@ -163,16 +163,16 @@ class Ticket(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), unique=True, nullable=True)
     quantity = db.Column(db.Integer, nullable=False)
     qr_code = db.Column(db.String(255), nullable=True)
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
 
-    transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
+    transaction = db.relationship('Transaction', back_populates='ticket', foreign_keys=[transaction_id], cascade="all, delete-orphan", single_parent=True)
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
-    scans = db.relationship('Scan', backref='ticket', lazy=True)
+    scans = db.relationship('Scan', backref='ticket', lazy=True, cascade="all, delete-orphan")
 
     @property
     def total_price(self):
@@ -192,7 +192,7 @@ class Ticket(db.Model):
             "qr_code": self.qr_code,
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
-            "merchant_request_id": self.merchant_request_id,  # New field
+            "merchant_request_id": self.merchant_request_id,
             "total_price": self.total_price
         }
 
@@ -204,13 +204,18 @@ class Transaction(db.Model):
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
     user = db.relationship('User', back_populates='transactions')
-    tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
+    ticket = db.relationship('Ticket', back_populates='transaction', uselist=False)
+
+    def __init__(self, *args, **kwargs):
+        if 'ticket_id' in kwargs:
+            raise TypeError("'ticket_id' is no longer a valid keyword argument for the Transaction model. "
+                            "Please associate the Transaction with the Ticket object using the 'ticket' relationship.")
+        super(Transaction, self).__init__(*args, **kwargs)
 
     def as_dict(self):
         return {
@@ -223,7 +228,7 @@ class Transaction(db.Model):
             "merchant_request_id": self.merchant_request_id,
             "mpesa_receipt_number": self.mpesa_receipt_number
         }
-    
+
 # Scan model
 class Scan(db.Model):
     id = db.Column(db.Integer, primary_key=True)

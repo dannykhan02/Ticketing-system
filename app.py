@@ -22,11 +22,10 @@ from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from report import register_report_resources
 from email_utils import mail
-# Import the function
+from admin import register_admin_resources # Import the admin resources
 
 # Load environment variables
 load_dotenv()
-
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -44,6 +43,7 @@ Session(app)
 api = Api(app)
 jwt = JWTManager(app)
 migrate = Migrate(app, db)
+mail = mail  # No need to re-initialize here as it's done later
 mail.init_app(app)
 init_oauth(app)
 
@@ -54,9 +54,11 @@ register_ticket_resources(api)
 register_ticket_validation_resources(api)
 # Pass the complete_ticket_operation function when registering M-Pesa routes
 register_mpesa_routes(api, complete_ticket_operation)
-register_paystack_routes(api)
+# Pass the complete_ticket_operation function when registering Paystack routes
+register_paystack_routes(api, complete_ticket_operation)
 register_ticket_type_resources(api)
 register_report_resources(api)
+register_admin_resources(api) # Register the admin resources
 
 if __name__ == "__main__":
     app.run(debug=True)

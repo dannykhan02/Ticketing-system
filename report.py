@@ -99,6 +99,3 @@ def register_report_resources(api):
     """Registers the ReportResource routes with Flask-RESTful API."""
     api.add_resource(ReportResource, "/event/<int:event_id>/report")
 
-if __name__ == '__main__':
-    # Example usage would typically be through your Flask application routes
-    pass

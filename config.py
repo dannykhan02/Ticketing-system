@@ -52,3 +52,6 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     PERMANENT_SESSION_LIFETIME = 3600
+
+    # Auto Delete Configuration
+    AUTO_DELETE_EVENT_DAYS = os.getenv("AUTO_DELETE_EVENT_DAYS", "90")

@@ -19,7 +19,8 @@ def initialize_paystack_payment(email, amount):
     """Initializes a Paystack payment and returns the authorization URL and reference."""
     url = "https://api.paystack.co/transaction/initialize"
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
-    payload = {"email": email, "amount": amount, "callback_url": PAYSTACK_CALLBACK_URL}
+    # Amount should be in kobo (cents for other currencies)
+    payload = {"email": email, "amount": int(amount * 100), "callback_url": PAYSTACK_CALLBACK_URL}
 
     try:
         response = requests.post(url, headers=headers, json=payload)
@@ -32,8 +33,9 @@ def initialize_paystack_payment(email, amount):
                 "reference": res_data["data"]["reference"]
             }
         else:
-            logger.error(f"Paystack initialization failed: {res_data.get('message')}")
-            return {"error": "Failed to initialize payment", "details": res_data.get("message", "Unknown error")}, 400
+            error_message = res_data.get("message", "Unknown error")
+            logger.error(f"Paystack initialization failed: {error_message}")
+            return {"error": "Failed to initialize payment", "details": error_message}, 400
     except requests.exceptions.RequestException as e:
         logger.error(f"Error communicating with Paystack API: {e}")
         return {"error": f"Error communicating with Paystack: {e}"}, 500
@@ -50,8 +52,9 @@ def verify_paystack_payment(reference):
         if res_data.get("status") and res_data.get("data") and res_data["data"]["status"] == "success":
             return res_data["data"]
         else:
-            logger.error(f"Paystack verification failed for {reference}: {res_data.get('message')}")
-            return {"error": "Payment verification failed", "details": res_data.get("message", "Unknown error")}, 400
+            error_message = res_data.get("message", "Unknown error")
+            logger.error(f"Paystack verification failed for {reference}: {error_message}")
+            return {"error": "Payment verification failed", "details": error_message}, 400
     except requests.exceptions.RequestException as e:
         logger.error(f"Error communicating with Paystack API for verification: {e}")
         return {"error": f"Error communicating with Paystack: {e}"}, 500
@@ -60,7 +63,8 @@ def refund_paystack_payment(reference, amount):
     """Initiates a Paystack refund for a given transaction reference and amount."""
     url = "https://api.paystack.co/refund"
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
-    payload = {"transaction": reference, "amount": amount} # Amount in kobo/cents
+    # Amount should be in kobo (cents for other currencies)
+    payload = {"transaction": reference, "amount": int(amount * 100)}
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
@@ -69,8 +73,9 @@ def refund_paystack_payment(reference, amount):
         if res_data.get("status"):
             return res_data["data"]
         else:
-            logger.error(f"Paystack refund failed for {reference}: {res_data.get('message')}")
-            return {"error": "Refund initiation failed", "details": res_data.get("message", "Unknown error")}, 400
+            error_message = res_data.get("message", "Unknown error")
+            logger.error(f"Paystack refund failed for {reference}: {error_message}")
+            return {"error": "Refund initiation failed", "details": error_message}, 400
     except requests.exceptions.RequestException as e:
         logger.error(f"Error communicating with Paystack API for refund: {e}")
         return {"error": f"Error communicating with Paystack: {e}"}, 500
@@ -87,18 +92,30 @@ class VerifyPayment(Resource):
 class RefundPayment(Resource):
     @jwt_required()
     def post(self):
-        """Initiates a Paystack refund."""
+        """Initiates a Paystack refund and updates the transaction status."""
         data = request.get_json()
         reference = data.get("reference")
         amount = data.get("amount")
         if not reference or amount is None:
             return {"error": "Missing payment reference or refund amount"}, 400
+
         refund_result = refund_paystack_payment(reference, amount)
         if "error" in refund_result:
             return refund_result, 400
-        return refund_result, 200
+
+        # Update the transaction status to REFUNDED
+        transaction = Transaction.query.filter_by(payment_reference=reference).first()
+        if transaction:
+            transaction.payment_status = PaymentStatus.REFUNDED
+            db.session.commit()
+            return {"message": "Refund initiated successfully", "data": refund_result}, 200
+        else:
+            return {"error": "Transaction not found for the given reference"}, 404
 
 class PaystackCallback(Resource):
+    def __init__(self, complete_ticket_operation_func):
+        self.complete_ticket_operation = complete_ticket_operation_func
+
     def post(self):
         signature = request.headers.get('X-Paystack-Signature')
 
@@ -135,8 +152,8 @@ class PaystackCallback(Resource):
                             db.session.commit()
                             logger.info(f"Payment successful for reference: {reference}. Triggering ticket completion.")
                             try:
-                                from ticket import complete_ticket_operation  # Import here to avoid circular import
-                                complete_ticket_operation(transaction)
+                                # Ensure complete_ticket_operation is defined and accessible
+                                self.complete_ticket_operation(transaction)
                             except Exception as e:
                                 logger.error(f"Error in complete_ticket_operation: {e}")
                                 return {"error": "Error completing ticket operation", "details": str(e)}, 500
@@ -158,7 +175,7 @@ class PaystackCallback(Resource):
             logger.error(f"Error processing Paystack callback: {e}")
             return {"error": "Error processing callback", "details": str(e)}, 500
 
-def register_paystack_routes(api):
+def register_paystack_routes(api, complete_ticket_operation_func):
     api.add_resource(VerifyPayment, '/paystack/verify/<string:reference>')
-    api.add_resource(PaystackCallback, '/paystack/callback')
+    api.add_resource(PaystackCallback, '/paystack/callback', resource_class_kwargs={'complete_ticket_operation_func': complete_ticket_operation_func})
     api.add_resource(RefundPayment, '/paystack/refund')

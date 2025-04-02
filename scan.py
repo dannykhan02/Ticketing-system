@@ -148,22 +148,31 @@ class TicketValidationResource(Resource):
             return None
 
     def extract_ticket_data(self, qr_code_content):
+        """Extracts ticket data from QR code content."""
         serializer = URLSafeSerializer(Config.SECRET_KEY)
         try:
-            logger.info(f"🔍 Raw QR Code Content: {qr_code_content}")  # Debugging Step 1
-
-            # Ensure only encrypted part is extracted
+            logger.info(f"🔍 Raw QR Code Content: {qr_code_content}")
+            
+            # Extract the encrypted data from the URL
             if "?id=" in qr_code_content:
-                qr_code_content = qr_code_content.split("?id=")[-1]
-
-            logger.info(f"🔍 Extracted Encrypted Data: {qr_code_content}")  # Debugging Step 2
-
-            data = serializer.loads(qr_code_content)
-
-            logger.info(f"✅ Successfully Extracted: {data}")  # Debugging Step 3
-            return data.get("ticket_id"), data.get("event_id")
+                encrypted_data = qr_code_content.split("?id=")[1]
+            else:
+                encrypted_data = qr_code_content
+                
+            logger.info(f"🔍 Extracted Encrypted Data: {encrypted_data}")
+            
+            # Decrypt and validate the data
+            data = serializer.loads(encrypted_data)
+            
+            # Ensure required fields are present
+            if not all(k in data for k in ["ticket_id", "event_id"]):
+                raise ValueError("Missing required fields in ticket data")
+                
+            logger.info(f"✅ Successfully Extracted Data: {data}")
+            return data["ticket_id"], data["event_id"]
+            
         except Exception as e:
-            logger.error(f"❌ Error extracting ticket data: {str(e)}")  # Debugging Step 4
+            logger.error(f"❌ Error extracting ticket data: {str(e)}")
             return None, None
 
     def find_qr_code_path(self, ticket_id):

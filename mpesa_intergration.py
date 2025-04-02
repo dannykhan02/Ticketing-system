@@ -27,6 +27,7 @@ if not all([CONSUMER_KEY, CONSUMER_SECRET, BUSINESS_SHORTCODE, PASSKEY, CALLBACK
 
 # Configure logging for debugging
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def get_access_token():
     """Fetches the access token from M-Pesa API."""
@@ -62,53 +63,65 @@ def normalize_phone_number(phone_number):
     else:
         return None  # Invalid number
 
-class STKPush(Resource):
+def initiate_stk_push(phone_number, amount, ticket_id, temp_transaction_id):
+    """Initiates an STK Push for M-Pesa payment."""
+    # Normalize the phone number
+    phone_number = normalize_phone_number(phone_number)
+    if not phone_number:
+        raise ValueError("Invalid phone number format")
+
+    # Get access token for M-Pesa API
+    access_token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    password = base64.b64encode(f"{BUSINESS_SHORTCODE}{PASSKEY}{timestamp}".encode()).decode()
+
+    payload = {
+        "BusinessShortCode": BUSINESS_SHORTCODE,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": amount,
+        "PartyA": phone_number,
+        "PartyB": BUSINESS_SHORTCODE,
+        "PhoneNumber": phone_number,
+        "CallBackURL": CALLBACK_URL,
+        "AccountReference": temp_transaction_id,  # Use the temporary transaction ID
+        "TransactionDesc": f"Payment for ticket ID {ticket_id}"
+    }
+
+    response = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+                            json=payload, headers=headers)
+    response_data = response.json()
+
+    # Log the response to inspect its structure
+    logger.info(f"STK Push response: {response_data}")
+
+    return response_data
+
+class STKPushResource(Resource):
     @jwt_required()
-    def post(self, mpesa_data):
+    def post(self):
         """Initiates STK Push for ticket payment."""
-        phone_number = mpesa_data.get("phone_number")
-        amount = mpesa_data.get("amount")
-        ticket_id = mpesa_data.get("ticket_id")
-        transaction_id = mpesa_data.get("transaction_id")
+        data = request.get_json()
+        phone_number = data.get("phone_number")
+        amount = data.get("amount")
+        ticket_id = data.get("ticket_id")
+        temp_transaction_id = data.get("temp_transaction_id")  # Expecting the temporary transaction ID
 
         # Normalize the phone number
         phone_number = normalize_phone_number(phone_number)
         if not phone_number:
             return {"error": "Invalid phone number format"}, 400
 
-        if not phone_number or not amount or not ticket_id or not transaction_id:
-            return {"error": "Phone number, amount, ticket_id, and transaction_id are required"}, 400
+        if not phone_number or not amount or not ticket_id or not temp_transaction_id:
+            return {"error": "Phone number, amount, ticket_id, and temp_transaction_id are required"}, 400
 
-        # Get access token for M-Pesa API
-        access_token = get_access_token()
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
-        }
-
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        password = base64.b64encode(f"{BUSINESS_SHORTCODE}{PASSKEY}{timestamp}".encode()).decode()
-
-        payload = {
-            "BusinessShortCode": BUSINESS_SHORTCODE,
-            "Password": password,
-            "Timestamp": timestamp,
-            "TransactionType": "CustomerPayBillOnline",
-            "Amount": amount,
-            "PartyA": phone_number,
-            "PartyB": BUSINESS_SHORTCODE,
-            "PhoneNumber": phone_number,
-            "CallBackURL": CALLBACK_URL,
-            "AccountReference": transaction_id,  # Use the ticket's transaction ID
-            "TransactionDesc": f"Payment for ticket ID {ticket_id}"
-        }
-
-        response = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
-                                 json=payload, headers=headers)
-        response_data = response.json()
-
-        # Log the response to inspect its structure
-        logging.info(f"STK Push response: {response_data}")
+        response_data = initiate_stk_push(phone_number, amount, ticket_id, temp_transaction_id)
 
         if response_data.get("ResponseCode") == "0":
             merchant_request_id = response_data.get("MerchantRequestID")
@@ -133,98 +146,60 @@ class STKCallback(Resource):
     def post(self):
         """Handles the callback from M-Pesa for STK Push."""
         data = request.get_json()
-        logging.info(f"STK Callback received: {data}")
+        logger.info(f"STK Callback received: {data}")
 
         if not data or "Body" not in data or "stkCallback" not in data["Body"]:
+            logger.error("Invalid callback data format")
             return {"error": "Invalid callback data"}, 400
 
         callback_data = data["Body"]["stkCallback"]
         result_code = callback_data.get("ResultCode", -1)
         result_desc = callback_data.get("ResultDesc", "Unknown response")
+        merchant_request_id = callback_data.get("MerchantRequestID", None)
 
-        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item",)
+        logger.info(f"MerchantRequestID from callback: {merchant_request_id}")
+        logger.info(f"ResultCode from callback: {result_code}")
+        logger.info(f"ResultDesc from callback: {result_desc}")
+
+        # Extract metadata
+        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item", [])
         amount = next((item["Value"] for item in callback_metadata if item["Name"] == "Amount"), 0)
         mpesa_receipt_number = next((item["Value"] for item in callback_metadata if item["Name"] == "MpesaReceiptNumber"), "")
         transaction_date = next((item["Value"] for item in callback_metadata if item["Name"] == "TransactionDate"), "")
         phone_number = next((item["Value"] for item in callback_metadata if item["Name"] == "PhoneNumber"), "")
-        merchant_request_id = callback_data.get("MerchantRequestID", None)
 
-        logging.info(f"MerchantRequestID: {merchant_request_id}")
+        # Find the existing transaction using the merchant_request_id
+        transaction = Transaction.query.filter_by(merchant_request_id=merchant_request_id).first()
 
-        # Check if a transaction with this merchant_request_id already exists
-        existing_transaction = Transaction.query.filter_by(merchant_request_id=merchant_request_id).first()
+        if transaction:
+            if transaction.payment_status == PaymentStatus.COMPLETED:
+                logger.info(f"Callback received for already completed transaction with MerchantRequestID: {merchant_request_id}")
+                self.complete_ticket_operation(transaction)
+                return {"message": "Callback already processed"}, 200
 
-        if existing_transaction:
-            logging.info(f"Transaction with MerchantRequestID {merchant_request_id} already processed.")
-            return {"message": "Callback already processed"}, 200  # Or perhaps a 204 No Content
-
-        if result_code == 0:
-            # Payment Successful
-            payment_status = PaymentStatus.COMPLETED
-            logging.info(f"Payment Success: {mpesa_receipt_number}")
-
-            # Find the ticket using the merchant_request_id
-            ticket = Ticket.query.filter_by(merchant_request_id=merchant_request_id).first()
-            if not ticket:
-                logging.error(f"Ticket not found for MerchantRequestID: {merchant_request_id}")
-                return {"error": "Ticket not found"}, 404
-
-            user_id = ticket.user_id
-
-            # Create a new transaction record
-            transaction = Transaction(
-                amount_paid=amount,
-                payment_status=payment_status,
-                payment_reference=mpesa_receipt_number,
-                payment_method=PaymentMethod.MPESA,
-                timestamp=datetime.datetime.strptime(str(transaction_date), "%Y%m%d%H%M%S"),
-                ticket_id=ticket.id,
-                user_id=user_id,
-                merchant_request_id=merchant_request_id,
-                mpesa_receipt_number=mpesa_receipt_number
-            )
-            db.session.add(transaction)
-            db.session.commit()
-
-            # Update the ticket's transaction ID
-            ticket.transaction_id = transaction.id
-            db.session.commit()
-
-            # Reduce ticket quantity
-            ticket_type = TicketType.query.get(ticket.ticket_type_id)
-            if ticket_type:
-                ticket_type.quantity -= ticket.quantity
+            if result_code == 0:
+                # Payment Successful
+                logger.info(f"Payment Success for MerchantRequestID: {merchant_request_id}, MpesaReceiptNumber: {mpesa_receipt_number}")
+                transaction.payment_status = PaymentStatus.COMPLETED
+                transaction.payment_reference = mpesa_receipt_number
+                transaction.timestamp = datetime.datetime.strptime(str(transaction_date), "%Y%m%d%H%M%S")
+                transaction.mpesa_receipt_number = mpesa_receipt_number
+                transaction.amount_paid = amount
                 db.session.commit()
+                logger.info(f"Transaction ID {transaction.id} updated to COMPLETED.")
+                self.complete_ticket_operation(transaction)
+                return {"message": "Payment successful and ticket operation completed"}, 200
             else:
-                logging.error(f"Ticket type not found for ticket ID: {ticket.id}")
-
-            # Update ticket status and send confirmation
-            self.complete_ticket_operation(transaction)
-
-            return {"message": "Payment successful and ticket operation completed"}, 200
-
-        else:
-            # Payment failed
-            error_message = result_desc
-            if result_code == 1:
-                error_message = "Insufficient funds"
-            elif result_code == 1032:
-                error_message = "Request cancelled by user"
-            elif result_code == 1037:
-                error_message = "Transaction timeout"
-            elif result_code == 2001:
-                error_message = "Insufficient funds"
-            elif result_code == 2006:
-                error_message = "User did not enter PIN"
-            # Add more result codes and messages as needed
-
-            # Find the ticket and potentially update its status to FAILED
-            ticket = Ticket.query.filter_by(merchant_request_id=merchant_request_id).first()
-            if ticket:
-                ticket.payment_status = PaymentStatus.FAILED
+                # Payment failed
+                error_message = result_desc
+                logger.error(f"Payment failed for MerchantRequestID {merchant_request_id}: Result Code: {result_code}, Description: {error_message}")
+                transaction.payment_status = PaymentStatus.FAILED
                 db.session.commit()
-
-            return {"error": "Payment failed", "details": error_message}, 400
+                logger.info(f"Transaction ID {transaction.id} updated to FAILED.")
+                return {"error": "Payment failed", "details": error_message}, 400
+        else:
+            logger.error(f"Transaction not found for MerchantRequestID: {merchant_request_id}")
+            return {"error": "Transaction not found"}, 404
 
 class TransactionStatus(Resource):
     @jwt_required()
@@ -261,10 +236,10 @@ class RefundTransaction(Resource):
         """Initiates a refund for an M-Pesa transaction."""
         try:
             data = request.get_json()
-            transaction_id = data.get("transaction_id")
+            merchant_request_id = data.get("transaction_id") # Expecting MerchantRequestID here
             amount = data.get("amount")
-            if not transaction_id or not amount:
-                return {"error": "Missing transaction_id or amount"}, 400
+            if not merchant_request_id or not amount:
+                return {"error": "Missing transaction_id (MerchantRequestID) or amount"}, 400
 
             # Get access token for M-Pesa API
             access_token = get_access_token()
@@ -279,7 +254,7 @@ class RefundTransaction(Resource):
                 "Initiator": "testapi",
                 "SecurityCredential": "your_security_credential",  # Replace with actual security credential
                 "CommandID": "TransactionReversal",
-                "TransactionID": transaction_id,
+                "TransactionID": merchant_request_id, # Use MerchantRequestID for reversal
                 "Amount": amount,
                 "ReceiverParty": BUSINESS_SHORTCODE,
                 "ReceiverIdentifierType": "11",
@@ -291,21 +266,22 @@ class RefundTransaction(Resource):
             url = "https://sandbox.safaricom.co.ke/mpesa/reversal/v1/request"
             response = requests.post(url, json=payload, headers=headers)
             res_data = response.json()
-            logging.info(f"M-Pesa Refund Response: {res_data}")
+            logger.info(f"M-Pesa Refund Response: {res_data}")
             if res_data.get("ResponseCode") == "0":
-                transaction = Transaction.query.filter_by(merchant_request_id=transaction_id).first()
+                transaction = Transaction.query.filter_by(merchant_request_id=merchant_request_id).first()
                 if transaction:
                     transaction.payment_status = PaymentStatus.REFUNDED
                     db.session.commit()
-                return {"message": "Refund initiated successfully", "data": res_data}, 200
+                    return {"message": "Refund initiated successfully", "data": res_data}, 200
+                return {"error": "Transaction not found for the given MerchantRequestID"}, 404
             return {"error": "Failed to initiate refund", "details": res_data.get("ResponseDescription", "Unknown error")}, 400
         except Exception as e:
-            logging.error(f"Error initiating refund: {str(e)}")
+            logger.error(f"Error initiating refund: {str(e)}")
             return {"error": "An error occurred", "details": str(e)}, 500
 
 def register_mpesa_routes(api, complete_ticket_operation_func):
     """Register M-Pesa routes with the API."""
-    api.add_resource(STKPush, "/mpesa/stkpush")
+    api.add_resource(STKPushResource, "/mpesa/stkpush")
     api.add_resource(STKCallback, "/mpesa/stk", resource_class_kwargs={'complete_ticket_operation_func': complete_ticket_operation_func})
     api.add_resource(TransactionStatus, "/mpesa/status")
     api.add_resource(RefundTransaction, "/mpesa/refund")
