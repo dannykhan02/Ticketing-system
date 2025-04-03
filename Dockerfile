@@ -1,17 +1,23 @@
-# Use an official Python image that allows package installation
 FROM python:3.11-slim
 
-# Set the working directory
+# Install necessary libraries
+RUN apt-get update && apt-get install -y \
+    libzbar0 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies (including zbar)
-RUN apt-get update && apt-get install -y libzbar0
-
-# Copy your project files
+# Copy project files
 COPY . .
 
-# Install dependencies (use pip or poetry)
-RUN pip install -r requirements.txt
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Command to run the app
-CMD ["gunicorn", "app:app"]
+# Expose the app port (if necessary)
+EXPOSE 8000
+
+# Run the app
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:8000", "app:app"]
