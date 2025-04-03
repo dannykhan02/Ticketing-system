@@ -81,4 +81,3 @@ zipp==3.20.2
 
 
 
-apt-get update && apt-get install -y libzbar0
