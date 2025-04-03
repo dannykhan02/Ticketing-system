@@ -23,7 +23,7 @@ from ticket_type import register_ticket_type_resources
 from report import register_report_resources
 from email_utils import mail
 # Import the function
-
+import os
 # Load environment variables
 load_dotenv()
 
@@ -38,7 +38,9 @@ db.init_app(app)
 # ✅ Configure sessions (No Redis, using SQLAlchemy for session storage)
 app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db  # Use the same db instance
-
+DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL") or os.getenv("INTERNAL_DATABASE_URL") or \
+               'sqlite:///' + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'app.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 # ✅ Initialize Flask extensions
 Session(app)
 api = Api(app)
