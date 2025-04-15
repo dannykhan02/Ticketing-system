@@ -6,7 +6,6 @@ import phonenumbers as pn
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from uuid import uuid4
-from flask import session
 from model import db, User, UserRole
 from datetime import timedelta
 from oauth_config import oauth
@@ -40,7 +39,7 @@ def google_login():
     session.modified = True
     redirect_uri = Config.GOOGLE_REDIRECT_URI
     return oauth.google.authorize_redirect(
-        redirect_uri, 
+        redirect_uri,
         state=state,
         nonce=nonce  # Send nonce to Google
     )
@@ -94,11 +93,10 @@ def google_callback():
                 "role": str(user.role.value)
             }
         }), 200
-        
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
-
 
 def role_required(required_role):
     def decorator(fn):
@@ -178,6 +176,7 @@ def register():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
+    full_name = data.get("full_name")  # Extract full_name
     role = "ATTENDEE"
 
     # Validate Email
@@ -204,7 +203,7 @@ def register():
     hashed_password = generate_password_hash(password)
 
     # Create and Save New User
-    new_user = User(email=email, phone_number=phone, password=hashed_password, role=role)
+    new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role=role)
     db.session.add(new_user)
     db.session.commit()
 
@@ -216,7 +215,7 @@ def register_first_admin():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
-    
+    full_name = data.get("full_name")  # Extract full_name
 
     if not is_valid_email(email):
         return jsonify({"msg": "Invalid email address"}), 400
@@ -228,7 +227,7 @@ def register_first_admin():
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
     hashed_password = generate_password_hash(password)
-    new_admin = User(email=email, phone_number=phone, password=hashed_password, role=UserRole.ADMIN)
+    new_admin = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role=UserRole.ADMIN)
     db.session.add(new_admin)
     db.session.commit()
 
@@ -241,6 +240,7 @@ def register_admin():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
+    full_name = data.get("full_name")  # Extract full_name
 
     # Validate Email
     if not is_valid_email(email):
@@ -264,7 +264,7 @@ def register_admin():
 
     # Hash password and create new admin user
     hashed_password = generate_password_hash(password)
-    new_admin = User(email=email, phone_number=phone, password=hashed_password, role="ADMIN")
+    new_admin = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="ADMIN")
     db.session.add(new_admin)
     db.session.commit()
 
@@ -316,10 +316,11 @@ def register_organizer():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
+    full_name = data.get("full_name")  # Extract full_name
 
     # Validate required fields
-    if not email or not phone or not password:
-        return jsonify({"msg": "Email, phone, and password are required"}), 400
+    if not email or not phone or not password or not full_name:
+        return jsonify({"msg": "Email, phone, password, and full name are required"}), 400
 
     # Validate email
     if not is_valid_email(email):
@@ -346,7 +347,7 @@ def register_organizer():
         hashed_password = generate_password_hash(password)
 
         # Create a new organizer user
-        new_user = User(email=email, phone_number=phone, password=hashed_password, role="ORGANIZER")
+        new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="ORGANIZER")
         db.session.add(new_user)
         db.session.commit()
 
@@ -369,10 +370,11 @@ def register_security():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
+    full_name = data.get("full_name")  # Extract full_name
 
     # Validate required fields
-    if not email or not phone or not password:
-        return jsonify({"msg": "Email, phone, and password are required"}), 400
+    if not email or not phone or not password or not full_name:
+        return jsonify({"msg": "Email, phone, password, and full name are required"}), 400
 
     # Validate email
     if not is_valid_email(email):
@@ -399,7 +401,7 @@ def register_security():
         hashed_password = generate_password_hash(password)
 
         # Create a new security user
-        new_user = User(email=email, phone_number=phone, password=hashed_password, role="SECURITY")
+        new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="SECURITY")
         db.session.add(new_user)
         db.session.commit()
 
