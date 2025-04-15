@@ -6,6 +6,7 @@ import phonenumbers as pn
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from uuid import uuid4
+from flask import session
 from model import db, User, UserRole
 from datetime import timedelta
 from oauth_config import oauth
@@ -33,44 +34,71 @@ def generate_token(user):
 @auth_bp.route('/login/google')
 def google_login():
     state = str(uuid4())
+    nonce = str(uuid4())  # Generate a random nonce
     session["oauth_state"] = state
+    session["oauth_nonce"] = nonce  # Store nonce in session
     session.modified = True
     redirect_uri = Config.GOOGLE_REDIRECT_URI
-    return oauth.google.authorize_redirect(redirect_uri, state=state)
+    return oauth.google.authorize_redirect(
+        redirect_uri, 
+        state=state,
+        nonce=nonce  # Send nonce to Google
+    )
 
 @auth_bp.route("/callback/google")
 def google_callback():
     try:
+        # Verify state first
         received_state = request.args.get("state")
         stored_state = session.pop("oauth_state", None)
+        stored_nonce = session.pop("oauth_nonce", None)
 
         if not stored_state or not received_state or stored_state != received_state:
             return jsonify({"error": "Invalid state, possible CSRF attack"}), 400
 
+        # Get token and verify nonce
         token = oauth.google.authorize_access_token()
-        user_info = oauth.google.get("userinfo").json()
+        user_info = oauth.google.parse_id_token(token, nonce=stored_nonce)
 
-        if not user_info or "email" not in user_info:
-            return jsonify({"error": "Failed to retrieve user information"}), 400
-
+        # Extract user information
         email = user_info["email"]
-        name = user_info.get("name", "")
-        user = User.query.filter_by(email=email).first()
+        google_id = user_info["sub"]
+        name = user_info.get("name", "Google User")
+
+        # Find or create user
+        user = User.query.filter(
+            (User.google_id == google_id) | (User.email == email)
+        ).first()
 
         if not user:
-            user = User(email=email, phone_number=name, role="ATTENDEE")
+            user = User(
+                email=email,
+                google_id=google_id,
+                full_name=name,  # Store name properly
+                phone_number=None,  # Leave phone number empty
+                is_oauth=True,
+                role=UserRole.ATTENDEE
+            )
             db.session.add(user)
             db.session.commit()
 
         access_token = generate_token(user)
-        session["user_id"] = user.id
-        session["user_email"] = user.email
-        session["user_role"] = str(user.role.value)
-        session.modified = True
-
-        return jsonify({"msg": "Login successful", "access_token": access_token}), 200
+        return jsonify({
+            "msg": "Login successful",
+            "access_token": access_token,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "phone_number": user.phone_number,  # Will be None
+                "role": str(user.role.value)
+            }
+        }), 200
+        
     except Exception as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
 
 def role_required(required_role):
     def decorator(fn):
