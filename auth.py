@@ -438,7 +438,7 @@ def forgot_password():
 
     return jsonify({"msg": "Reset link sent to your email"}), 200
 
-# 📌 Endpoint: Reset Password (Verifies Token & Updates Password)
+#  Endpoint: Reset Password (Verifies Token & Updates Password)
 @auth_bp.route('/reset-password/<token>', methods=['POST'])
 def reset_password(token):
     from itsdangerous import URLSafeTimedSerializer
