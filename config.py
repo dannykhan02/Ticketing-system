@@ -16,7 +16,7 @@ class Config:
     # Google OAuth
     GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "default-client-id")
     GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "default-client-secret")
-    GOOGLE_REDIRECT_URI = "https://ticketing-system-ax5p.onrender.com/"
+    GOOGLE_REDIRECT_URI = "https://ticketing-system-ax5p.onrender.com/auth/callback/google"
     GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configuration"
 
     # Email settings
