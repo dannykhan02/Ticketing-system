@@ -31,7 +31,7 @@ load_dotenv()
 app = Flask(__name__)
 app.config.from_object(Config)
 
-# ✅ Enable CORS for all origins with credentials support
+
 CORS(app, supports_credentials=True)
 
 # ✅ Configure and initialize database
