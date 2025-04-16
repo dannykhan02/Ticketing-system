@@ -7,6 +7,7 @@ from flask_restful import Api, Resource
 from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from flask_session import Session
+from flask_cors import CORS  # Import CORS
 from dotenv import load_dotenv
 
 # Import modules
@@ -27,10 +28,12 @@ import os
 # Load environment variables
 load_dotenv()
 
-
 # Initialize Flask app
 app = Flask(__name__)
 app.config.from_object(Config)  # Load configuration
+
+# Initialize CORS
+CORS(app)  # Enable CORS for all routes
 
 # ✅ Initialize database FIRST
 db.init_app(app)
