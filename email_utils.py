@@ -1,11 +1,37 @@
 import mimetypes
 from flask_mail import Mail, Message
 from config import Config
+from flask import current_app
+import logging
 
 # Initialize Mail (but attach it to the Flask app later)
 mail = Mail()
 
-def send_email(recipient, subject, body, attachment_path=None):
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def send_email(to, subject, body, html=False):
+    """Send an email with the given subject and body."""
+    try:
+        msg = Message(
+            subject,
+            recipients=[to],
+            sender=Config.MAIL_DEFAULT_SENDER
+        )
+        
+        if html:
+            msg.html = body
+        else:
+            msg.body = body
+            
+        current_app.mail.send(msg)
+        logger.info(f"Email sent successfully to {to}")
+    except Exception as e:
+        logger.error(f"Error sending email to {to}: {str(e)}")
+        raise
+
+def send_email_with_attachment(recipient, subject, body, attachment_path=None):
     """Function to send an email with an optional attachment."""
     msg = Message(
         subject=subject,

@@ -16,6 +16,7 @@ import datetime
 import uuid
 import base64
 import requests
+import io
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +29,7 @@ def complete_ticket_operation(transaction):
         ticket = Ticket.query.filter_by(transaction_id=transaction.id).first()
         if not ticket:
             logging.error(f"Ticket with transaction ID {transaction.id} not found.")
-            raise ValueError("Ticket not found")  # Raise exception instead of returning response
+            raise ValueError("Ticket not found")
 
         # Update ticket status
         ticket.payment_status = PaymentStatus.PAID
@@ -38,32 +39,42 @@ def complete_ticket_operation(transaction):
         logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
 
         # Generate QR code
-        qr_code_img, qr_code_path = generate_qr_code(ticket)
+        qr_code_data, qr_code_image = generate_qr_code(ticket)
 
         # Send confirmation email
         user = User.query.get(ticket.user_id)
-        send_confirmation_email(user, ticket, qr_code_path)
+        send_confirmation_email(user, ticket, qr_code_data, qr_code_image)
 
     except Exception as e:
         logger.error(f"Error updating ticket {transaction.id}: {str(e)}")
-        raise  # Reraise exception to be handled at the route/controller level
+        raise
 
-def generate_qr_code(ticket, directory="qrcodes"):
-    """Generates a QR code with a secure encrypted URL and stores it in the specified directory."""
+def generate_qr_code(ticket):
+    """Generates a QR code with a secure encrypted URL and returns it as a base64-encoded image."""
     serializer = URLSafeSerializer(Config.SECRET_KEY)
     encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
     qr_code_data = f"http://127.0.0.1:5000/validate_ticket?id={encrypted_data}"
-    qr_code_img = qrcode.make(qr_code_data)
+    
+    # Generate QR code image
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(qr_code_data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convert to base64
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    
+    return qr_code_data, img_str
 
-    qr_directory = f"static/{directory}"
-    os.makedirs(qr_directory, exist_ok=True)
-    qr_code_path = f"{qr_directory}/ticket_{ticket.id}.png"
-    qr_code_img.save(qr_code_path)
-
-    return qr_code_img, qr_code_path
-
-def send_confirmation_email(user, ticket, qr_code_path, is_new=True):
-    """Sends an email with the ticket details and QR code."""
+def send_confirmation_email(user, ticket, qr_code_data, qr_code_image, is_new=True):
+    """Sends an email with the ticket details and embedded QR code."""
     event = ticket.event
     ticket_type = ticket.ticket_type
     event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
@@ -92,10 +103,13 @@ def send_confirmation_email(user, ticket, qr_code_path, is_new=True):
     - **Payment Method:** {ticket.transaction.payment_method.value if ticket.transaction else 'Pending'}
 
     📩 **Your QR Code:**
-    Your {'unique' if is_new else 'updated'} QR code is attached to this email. Please present it at the entrance for seamless check-in.
+    <img src="data:image/png;base64,{qr_code_image}" alt="Ticket QR Code" style="display:block; margin:20px auto; width:200px; height:200px;">
+    
+    Your {'unique' if is_new else 'updated'} QR code is also available as text: {qr_code_data}
+    Please present this code at the entrance for seamless check-in.
     """
     try:
-        send_email(user.email, subject, body, attachment_path=qr_code_path)
+        send_email(user.email, subject, body, html=True)
     except Exception as e:
         logger.error(f"Error sending email: {e}")
 
