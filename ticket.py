@@ -53,7 +53,7 @@ def generate_qr_code(ticket):
     """Generates a QR code with a secure encrypted URL and returns it as a base64-encoded image."""
     serializer = URLSafeSerializer(Config.SECRET_KEY)
     encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
-    qr_code_data = f"http://127.0.0.1:5000/validate_ticket?id={encrypted_data}"
+    qr_code_data = f"https://ticketing-system-994g.onrender.com/validate_ticket?id={encrypted_data}"
     
     # Generate QR code image
     qr = qrcode.QRCode(
