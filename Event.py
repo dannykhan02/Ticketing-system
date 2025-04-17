@@ -172,7 +172,7 @@ class OrganizerEventsResource(Resource):
         print(f"Fetched events: {events}")  # Add this line
         event_list = [event.as_dict() for event in events]
         print(f"Event list: {event_list}")  # Add this line
-        return jsonify(event_list), 200
+        return event_list, 200
 
 
 def register_event_resources(api):
