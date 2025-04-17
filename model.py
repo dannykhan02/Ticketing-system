@@ -173,6 +173,7 @@ class Ticket(db.Model):
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
+    payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
@@ -197,6 +198,7 @@ class Ticket(db.Model):
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
             "merchant_request_id": self.merchant_request_id,  # New field
+            "payment_status": self.payment_status.value, 
             "total_price": self.total_price
         }
 
@@ -208,7 +210,7 @@ class Transaction(db.Model):
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True)
+    ticket_id = db.Column(db.Integer,db.ForeignKey('ticket.id', use_alter=True, name='fk_transaction_ticket'),nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
