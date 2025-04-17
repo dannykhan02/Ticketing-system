@@ -169,7 +169,9 @@ class OrganizerEventsResource(Resource):
         if not user or user.role.value != "ORGANIZER":
             return {"message": "Only organizers can access their events"}, 403
         events = Event.query.filter_by(user_id=user.id).all()
+        print(f"Fetched events: {events}")  # Add this line
         event_list = [event.as_dict() for event in events]
+        print(f"Event list: {event_list}")  # Add this line
         return jsonify(event_list), 200
 
 
