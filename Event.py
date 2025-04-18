@@ -175,7 +175,7 @@ class OrganizerEventsResource(Resource):
         events = Event.query.filter_by(user_id=user.id).all()
         print(f"Fetched events: {events}")  # Add this line
         event_list = [event.as_dict() for event in events]
-        print(f"Event list: {event_list}")  # Add this line
+        print(f"Event list: {event_list}")  
         return event_list, 200
 
 
