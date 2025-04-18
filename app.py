@@ -31,8 +31,12 @@ load_dotenv()
 app = Flask(__name__)
 app.config.from_object(Config)
 
-
-CORS(app, supports_credentials=True)
+# Configure CORS with specific settings
+CORS(app, 
+     origins= ["http://localhost:8080", "https://ticketing-system-994g.onrender.com"],
+     supports_credentials=True,
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"])
 
 # ✅ Configure and initialize database
 db.init_app(app)
