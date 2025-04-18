@@ -53,7 +53,7 @@ class User(db.Model):
     google_id = db.Column(db.String(255), unique=True)
     is_oauth = db.Column(db.Boolean, default=False)
     
-    events = db.relationship('Event', backref='organizer', lazy=True)
+    
     tickets = db.relationship('Ticket', backref='buyer', lazy=True)
     transactions = db.relationship('Transaction', back_populates='user', lazy=True)
     scans = db.relationship('Scan', backref='scanner', lazy=True)
@@ -95,7 +95,7 @@ class Organizer(db.Model):
     updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     user = db.relationship('User', backref=db.backref('organizer_profile', uselist=False))
-    events = db.relationship('Event', backref='organizer_profile', lazy=True)
+    events = db.relationship('Event', backref='organizer', lazy=True)
 
     def as_dict(self):
         return {
@@ -126,6 +126,8 @@ class Event(db.Model):
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
 
+
+    
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
 
