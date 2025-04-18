@@ -34,7 +34,7 @@ class EventResource(Resource):
             organizer = Organizer.query.filter_by(user_id=user.id).first()
             data = request.get_json()
             required_fields = ["name", "description", "date", "start_time", "location"]
-            
+
             # Check required fields (excluding `end_time` since it's optional)
             for field in required_fields:
                 if field not in data:
@@ -42,10 +42,10 @@ class EventResource(Resource):
 
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
             start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
-            
+
             # Handle `end_time`: Allow "Till Late" if missing
             end_time = None
-            if "end_time" in data and data["end_time"]:  
+            if "end_time" in data and data["end_time"]:
                 end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
 
             # Create Event instance
@@ -101,7 +101,7 @@ class EventResource(Resource):
                         return {"error": "Event date cannot be in the past"}, 400
                     event.date = event_date
                 except ValueError:
-                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
+                    return {"error": "Invalid date format. Use-MM-DD"}, 400
 
             # Validate and update start_time
             if "start_time" in data:
@@ -143,7 +143,6 @@ class EventResource(Resource):
             db.session.rollback()
             return {"error": f"An error occurred: {str(e)}"}, 500
 
-
     @jwt_required()
     def delete(self, event_id):
         """Delete an event (Only the event creator can delete it)."""
@@ -165,7 +164,24 @@ class EventResource(Resource):
             return {"error": str(e)}, 500
 
 
+class OrganizerEventsResource(Resource):
+    @jwt_required()
+    def get(self):
+        """Retrieve events created by the logged-in organizer."""
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+        if not user or user.role.value != "ORGANIZER":
+            return {"message": "Only organizers can access their events"}, 403
+        events = Event.query.filter_by(user_id=user.id).all()
+        print(f"Fetched events: {events}")  # Add this line
+        event_list = [event.as_dict() for event in events]
+        print(f"Event list: {event_list}")  # Add this line
+        return event_list, 200
+
+
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
+    api.add_resource(OrganizerEventsResource, "/api/organizer/events")
+
 # 📌 Endpoint: Register Event
