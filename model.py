@@ -80,6 +80,40 @@ class User(db.Model):
             role = role.upper()
         return UserRole(role)
 
+class Organizer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
+    company_name = db.Column(db.String(255), nullable=False)
+    company_logo = db.Column(db.String(255), nullable=True)
+    company_description = db.Column(db.Text, nullable=True)
+    website = db.Column(db.String(255), nullable=True)
+    social_media_links = db.Column(db.JSON, nullable=True)  # Store social media links as JSON
+    business_registration_number = db.Column(db.String(255), nullable=True)
+    tax_id = db.Column(db.String(255), nullable=True)
+    address = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user = db.relationship('User', backref=db.backref('organizer_profile', uselist=False))
+    events = db.relationship('Event', backref='organizer_profile', lazy=True)
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "company_name": self.company_name,
+            "company_logo": self.company_logo,
+            "company_description": self.company_description,
+            "website": self.website,
+            "social_media_links": self.social_media_links,
+            "business_registration_number": self.business_registration_number,
+            "tax_id": self.tax_id,
+            "address": self.address,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "events_count": len(self.events)
+        }
+
 # Event model
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -90,12 +124,12 @@ class Event(db.Model):
     end_time = db.Column(db.Time, nullable=True)  # Made nullable if optional
     location = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
 
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
 
-    def __init__(self, name, description, date, start_time, end_time, location, image, user_id):
+    def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id):
         self.name = name
         self.description = description
         self.date = date
@@ -103,7 +137,7 @@ class Event(db.Model):
         self.end_time = end_time
         self.location = location
         self.image = image
-        self.user_id = user_id
+        self.organizer_id = organizer_id
 
         self.validate_datetime()  # Ensure valid date and time
 
@@ -138,7 +172,7 @@ class Event(db.Model):
             "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else "Till Late",  # Handle None
             "location": self.location,
             "image": self.image,
-            "user_id": self.user_id
+            "organizer_id": self.organizer_id
         }
 
 # TicketType model

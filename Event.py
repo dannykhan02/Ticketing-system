@@ -2,7 +2,7 @@ import json
 from flask import request, jsonify
 from flask_restful import Resource
 from datetime import datetime, timedelta
-from model import db, Event, User, UserRole
+from model import db, Event, User, UserRole, Organizer
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
 
@@ -24,10 +24,14 @@ class EventResource(Resource):
         try:
             identity = get_jwt_identity()  # Get current user
             user = User.query.get(identity)
+            
+
 
             if not user or user.role.value != "ORGANIZER":
                 return {"message": "Only organizers can create events"}, 403
 
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
             data = request.get_json()
             required_fields = ["name", "description", "date", "start_time", "location"]
             
@@ -53,7 +57,7 @@ class EventResource(Resource):
                 end_time=end_time,  # Allow `None`
                 location=data["location"],
                 image=data.get("image", None),
-                user_id=user.id
+                organizer_id=organizer.id
             )
 
             # Validate time (handles overnight events and "Till Late")
@@ -74,14 +78,14 @@ class EventResource(Resource):
         identity = get_jwt_identity()
         user = User.query.get(identity)
         event = Event.query.get(event_id)
-
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
         if not user:
             return {"error": "User not found"}, 404
 
         if not event:
             return {"error": "Event not found"}, 404
 
-        if user.role.value != "ORGANIZER" or event.user_id != user.id:
+        if user.role.value != "ORGANIZER" or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
         data = request.get_json()

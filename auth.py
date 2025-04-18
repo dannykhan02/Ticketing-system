@@ -6,7 +6,7 @@ import phonenumbers as pn
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from uuid import uuid4
-from model import db, User, UserRole
+from model import db, User, UserRole, Organizer
 from datetime import timedelta
 from oauth_config import oauth
 from flask_mail import Message
@@ -313,45 +313,49 @@ def register_organizer():
         return jsonify({"msg": "Missing JSON data"}), 400
 
     # Extract fields safely
-    email = data.get("email")
-    phone = data.get("phone_number")
-    password = data.get("password")
-    full_name = data.get("full_name")  # Extract full_name
+    user_id = data.get("user_id")
+    company_name = data.get("company_name")
+    company_description = data.get("company_description")
+    website = data.get("website")
+    business_registration_number = data.get("business_registration_number")
+    tax_id = data.get("tax_id")
+    address = data.get("address")
 
     # Validate required fields
-    if not email or not phone or not password or not full_name:
-        return jsonify({"msg": "Email, phone, password, and full name are required"}), 400
+    if not user_id or not company_name:
+        return jsonify({"msg": "User ID and company name are required"}), 400
 
-    # Validate email
-    if not is_valid_email(email):
-        return jsonify({"msg": "Invalid email address"}), 400
+    # Get the existing user
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
 
-    # Validate Safaricom phone number
-    if not is_valid_safaricom_phone(phone):
-        logger.error(f"Invalid phone number: {phone}")
-        return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
-
-    # Validate password
-    if not validate_password(password):
-        return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
-
-    # Check if Email or Phone already exists
-    if User.query.filter_by(email=email).first():
-        return jsonify({"msg": "Email already registered"}), 400
-
-    if User.query.filter_by(phone_number=phone).first():
-        return jsonify({"msg": "Phone number already registered"}), 400
+    # Check if user is already an organizer
+    if user.role == UserRole.ORGANIZER:
+        return jsonify({"msg": "User is already an organizer"}), 400
 
     try:
-        # Hash password before storing
-        hashed_password = generate_password_hash(password)
+        # Update user role to ORGANIZER
+        user.role = UserRole.ORGANIZER
 
-        # Create a new organizer user
-        new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="ORGANIZER")
-        db.session.add(new_user)
+        # Create organizer profile
+        organizer_profile = Organizer(
+            user_id=user.id,
+            company_name=company_name,
+            company_description=company_description,
+            website=website,
+            business_registration_number=business_registration_number,
+            tax_id=tax_id,
+            address=address
+        )
+        db.session.add(organizer_profile)
         db.session.commit()
 
-        return jsonify({"msg": "Organizer registered successfully"}), 201
+        return jsonify({
+            "msg": "User successfully registered as organizer",
+            "user": user.as_dict(),
+            "organizer_profile": organizer_profile.as_dict()
+        }), 201
 
     except Exception as e:
         db.session.rollback()
@@ -468,3 +472,105 @@ def reset_password(token):
     db.session.commit()
 
     return jsonify({"msg": "Password reset successful"}), 200
+
+@auth_bp.route('/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    """Get user profile information"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    
+    profile_data = user.as_dict()
+    
+    # If user is an organizer, include organizer profile
+    if user.role == UserRole.ORGANIZER and hasattr(user, 'organizer_profile'):
+        profile_data['organizer_profile'] = user.organizer_profile.as_dict()
+    
+    return jsonify(profile_data), 200
+
+@auth_bp.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    """Update user profile information"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    
+    data = request.get_json()
+    
+    # Update basic user info
+    if 'full_name' in data:
+        user.full_name = data['full_name']
+    if 'phone_number' in data:
+        if not is_valid_safaricom_phone(data['phone_number']):
+            return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
+        user.phone_number = data['phone_number']
+    
+    # If user is an organizer, update organizer profile
+    if user.role == UserRole.ORGANIZER:
+        if not hasattr(user, 'organizer_profile'):
+            # Create organizer profile if it doesn't exist
+            organizer = Organizer(user_id=user.id)
+            db.session.add(organizer)
+        
+        organizer = user.organizer_profile
+        if 'company_name' in data:
+            organizer.company_name = data['company_name']
+        if 'company_description' in data:
+            organizer.company_description = data['company_description']
+        if 'website' in data:
+            organizer.website = data['website']
+        if 'social_media_links' in data:
+            organizer.social_media_links = data['social_media_links']
+        if 'business_registration_number' in data:
+            organizer.business_registration_number = data['business_registration_number']
+        if 'tax_id' in data:
+            organizer.tax_id = data['tax_id']
+        if 'address' in data:
+            organizer.address = data['address']
+    
+    try:
+        db.session.commit()
+        return jsonify({"msg": "Profile updated successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Failed to update profile", "error": str(e)}), 500
+
+@auth_bp.route('/organizers', methods=['GET'])
+@jwt_required()
+@role_required('ADMIN')
+def get_organizers():
+    """Get list of all organizers with their event counts"""
+    organizers = User.query.filter_by(role=UserRole.ORGANIZER).all()
+    
+    result = []
+    for organizer in organizers:
+        organizer_data = organizer.as_dict()
+        if hasattr(organizer, 'organizer_profile'):
+            organizer_data.update(organizer.organizer_profile.as_dict())
+        result.append(organizer_data)
+    
+    return jsonify(result), 200
+
+@auth_bp.route('/organizers/<int:organizer_id>', methods=['DELETE'])
+@jwt_required()
+@role_required('ADMIN')
+def delete_organizer(organizer_id):
+    """Delete an organizer"""
+    organizer = User.query.filter_by(id=organizer_id, role=UserRole.ORGANIZER).first()
+    
+    if not organizer:
+        return jsonify({"msg": "Organizer not found"}), 404
+    
+    try:
+        db.session.delete(organizer)
+        db.session.commit()
+        return jsonify({"msg": "Organizer deleted successfully"}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Failed to delete organizer", "error": str(e)}), 500
