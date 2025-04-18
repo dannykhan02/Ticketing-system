@@ -134,7 +134,7 @@ class TicketResource(Resource):
             else:
                 tickets = Ticket.query.filter_by(user_id=user.id).all()
                 ticket_list = [{"ticket_id": ticket.id, "status": ticket.payment_status.value} for ticket in tickets]
-                return jsonify(ticket_list), 200
+                return ticket_list, 200  # Removed jsonify
 
         except Exception as e:
             logger.error(f"Error checking ticket status: {e}")
