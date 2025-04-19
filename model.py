@@ -49,11 +49,10 @@ class User(db.Model):
     role = db.Column(db.Enum(UserRole), nullable=False)
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
     phone_number = db.Column(db.String(255))  # Now strictly for phone numbers
-    
+
     google_id = db.Column(db.String(255), unique=True)
     is_oauth = db.Column(db.Boolean, default=False)
-    
-    
+
     tickets = db.relationship('Ticket', backref='buyer', lazy=True)
     transactions = db.relationship('Transaction', back_populates='user', lazy=True)
     scans = db.relationship('Scan', backref='scanner', lazy=True)
@@ -73,6 +72,7 @@ class User(db.Model):
             "phone_number": self.phone_number,
             "created_at": self.created_at.isoformat()
         }
+
     @staticmethod
     def validate_role(role):
         """Ensure role is stored in uppercase."""
@@ -126,10 +126,9 @@ class Event(db.Model):
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
 
-
-    
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
+    reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
 
     def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id):
         self.name = name
@@ -186,6 +185,7 @@ class TicketType(db.Model):
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
     tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
+    reports = db.relationship('Report', backref='ticket_type', lazy=True)
 
     def as_dict(self):
         return {
@@ -194,6 +194,34 @@ class TicketType(db.Model):
             "price": self.price,
             "event_id": self.event_id,
             "quantity": self.quantity
+        }
+
+# Report model
+class Report(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
+    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
+
+    total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
+    total_revenue = db.Column(db.Float, nullable=False, default=0.0)
+    created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    event = db.relationship('Event', backref=db.backref('reports', lazy=True))
+    ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "event_id": self.event_id,
+            "event_name": self.event.name,
+            "ticket_type": self.ticket_type.type_name.value,
+            "total_tickets_sold": self.total_tickets_sold,
+            "total_revenue": self.total_revenue,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
         }
 
 class Ticket(db.Model):
@@ -212,7 +240,6 @@ class Ticket(db.Model):
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
-    payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
     @property
@@ -234,7 +261,7 @@ class Ticket(db.Model):
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
             "merchant_request_id": self.merchant_request_id,  # New field
-            "payment_status": self.payment_status.value, 
+            "payment_status": self.payment_status.value,
             "total_price": self.total_price
         }
 
@@ -246,7 +273,7 @@ class Transaction(db.Model):
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    ticket_id = db.Column(db.Integer,db.ForeignKey('ticket.id', use_alter=True, name='fk_transaction_ticket'),nullable=True)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id', use_alter=True, name='fk_transaction_ticket'), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
@@ -265,7 +292,7 @@ class Transaction(db.Model):
             "merchant_request_id": self.merchant_request_id,
             "mpesa_receipt_number": self.mpesa_receipt_number
         }
-    
+
 # Scan model
 class Scan(db.Model):
     id = db.Column(db.Integer, primary_key=True)
