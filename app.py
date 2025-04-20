@@ -23,6 +23,8 @@ from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from report import register_report_resources
 from email_utils import mail
+from schedular import register_scheduler
+from admin import register_admin_resources  # Import the admin registration function
 
 # Load environment variables
 load_dotenv()
@@ -32,8 +34,8 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 # Configure CORS with specific settings
-CORS(app, 
-     origins= ["http://localhost:8080", "https://ticketing-system-994g.onrender.com"],
+CORS(app,
+     origins=["http://localhost:8080", "https://ticketing-system-994g.onrender.com"],
      supports_credentials=True,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"])
@@ -63,6 +65,10 @@ register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
 register_ticket_type_resources(api)
 register_report_resources(api)
+register_admin_resources(api)  # Register admin resources
+
+# ✅ Register and start the scheduler
+register_scheduler()
 
 # ✅ Run app
 if __name__ == "__main__":

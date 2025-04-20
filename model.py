@@ -181,7 +181,7 @@ class TicketType(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
     price = db.Column(db.Float, nullable=False)
-    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
     tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
@@ -200,8 +200,8 @@ class TicketType(db.Model):
 class Report(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
-    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
-    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
+    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False, index=True)
 
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
     total_revenue = db.Column(db.Float, nullable=False, default=0.0)

@@ -19,12 +19,12 @@ def send_email(to, subject, body, html=False):
             recipients=[to],
             sender=Config.MAIL_DEFAULT_SENDER
         )
-        
+
         if html:
             msg.html = body
         else:
             msg.body = body
-            
+
         current_app.mail.send(msg)
         logger.info(f"Email sent successfully to {to}")
     except Exception as e:
@@ -47,16 +47,16 @@ def send_email_with_attachment(recipient, subject, body, attachment_path=None):
             mime_type = mime_type or "application/octet-stream"  # Default MIME type if unknown
             with open(attachment_path, "rb") as file:
                 msg.attach(
-                    filename=attachment_path.split("/")[-1],  
-                    content_type=mime_type,  
+                    filename=attachment_path.split("/")[-1],
+                    content_type=mime_type,
                     data=file.read(),
                 )
         except Exception as e:
-            print(f"Error attaching file: {e}")  # Handle file errors
+            logger.error(f"Error attaching file: {e}")  # Handle file errors
 
     # Send email with error handling
     try:
         mail.send(msg)
-        print(f"Email sent successfully to {recipient}")
+        logger.info(f"Email with attachment sent successfully to {recipient}")
     except Exception as e:
-        print(f"Error sending email: {e}")  # Handle mail errors
+        logger.error(f"Error sending email with attachment: {e}")  # Handle mail errors

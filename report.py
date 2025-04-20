@@ -1,7 +1,18 @@
-from flask import jsonify
+from flask import jsonify, request
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, TicketType, Transaction, Scan, Event, User
+from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report
+from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.exc import SQLAlchemyError
+from datetime import datetime
+import logging
+from pdf_utils import generate_graph_image, generate_pdf_with_graph
+from email_utils import send_email_with_attachment
+import os
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def get_event_report(event_id):
     """Generates a comprehensive report for a specific event with data structured for graphs."""
@@ -73,7 +84,88 @@ def get_event_report(event_id):
         'data': [count for method, count in payment_method_usage_query]
     }
 
+    # Save/update reports for each ticket type
+    for type_name, count in tickets_by_type_query:
+        revenue = dict(revenue_by_type_query).get(type_name, 0.0)
+
+        ticket_type = TicketType.query.filter_by(type_name=type_name).first()
+
+        if not ticket_type:
+            continue  # Skip if ticket type not found
+
+        # Check if a report already exists
+        report_entry = Report.query.filter_by(event_id=event_id, ticket_type_id=ticket_type.id).first()
+
+        if report_entry:
+            # Update existing
+            report_entry.total_tickets_sold = count
+            report_entry.total_revenue = float(revenue) if revenue else 0.0
+            report_entry.updated_at = datetime.utcnow()
+        else:
+            # Create new report
+            new_report = Report(
+                event_id=event_id,
+                ticket_type_id=ticket_type.id,
+                total_tickets_sold=count,
+                total_revenue=float(revenue) if revenue else 0.0,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            db.session.add(new_report)
+
+    db.session.commit()
+
+    # Send report to organizer
+    send_report_to_organizer_with_pdf(report_entry)
+
     return report
+
+def send_report_to_organizer_with_pdf(report):
+    event = Event.query.get(report.event_id)
+    organizer = event.organizer.user
+    if not organizer or not organizer.email:
+        logger.warning(f"No organizer email for event: {event.name}")
+        return
+
+    # 1. Generate graph image
+    graph_path = f"/tmp/event_report_{event.id}_graph.png"
+    generate_graph_image(report, graph_path)
+
+    # 2. Generate PDF file
+    pdf_path = f"/tmp/event_report_{event.id}.pdf"
+    generate_pdf_with_graph(report, pdf_path, graph_path)
+
+    # 3. Create email body
+    body = f"""
+    Hello {organizer.full_name if hasattr(organizer, 'full_name') else organizer.email},
+
+    Attached is the latest sales report for your event: {event.name}.
+
+    Ticket Type: {report.ticket_type.type_name.value}
+    Total Sold: {report.total_tickets_sold}
+    Revenue: ${report.total_revenue:.2f}
+
+    Regards,
+    Your Event System Team
+    """
+
+    # 4. Send the email with the PDF
+    try:
+        send_email_with_attachment(
+            recipient=organizer.email,
+            subject=f"📎 Event Report - {event.name}",
+            body=body,
+            attachment_path=pdf_path
+        )
+        logger.info(f"Report sent with PDF to {organizer.email}")
+    except Exception as e:
+        logger.error(f"Failed to send PDF report email: {e}")
+    finally:
+        # Optional: Clean up PDF and graph files
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+        if os.path.exists(graph_path):
+            os.remove(graph_path)
 
 class ReportResource(Resource):
     @jwt_required()
@@ -98,7 +190,3 @@ class ReportResource(Resource):
 def register_report_resources(api):
     """Registers the ReportResource routes with Flask-RESTful API."""
     api.add_resource(ReportResource, "/event/<int:event_id>/report")
-
-if __name__ == '__main__':
-    # Example usage would typically be through your Flask application routes
-    pass
