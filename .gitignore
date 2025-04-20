@@ -7,6 +7,7 @@ __pycache__/
 # Virtual environment (if not using a global one)
 venv/
 .env
+env
 
 # Configuration and secret files (DO NOT expose credentials)
 client_secrets.json
@@ -16,7 +17,7 @@ Pipfile.lock
 
 # Flask session and instance files
 flask_session/
-
+instance
 
 
 # Log files
