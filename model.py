@@ -210,7 +210,7 @@ class Report(db.Model):
 
     # Relationships
     # event = db.relationship('Event', backref=db.backref('reports', lazy=True))
-    ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
+    # ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
 
     def as_dict(self):
         return {
