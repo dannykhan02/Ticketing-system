@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 from model import db, Event
-from app import app
+from app2 import app
 from report import get_event_report
 import logging
 
