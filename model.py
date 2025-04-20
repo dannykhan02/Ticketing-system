@@ -209,7 +209,7 @@ class Report(db.Model):
     updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     # Relationships
-    event = db.relationship('Event', backref=db.backref('reports', lazy=True))
+    # event = db.relationship('Event', backref=db.backref('reports', lazy=True))
     ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
 
     def as_dict(self):
