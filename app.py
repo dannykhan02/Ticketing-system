@@ -30,6 +30,13 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
+
+
+DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config.from_object(Config)
 
 # Configure CORS with specific settings
@@ -47,8 +54,7 @@ app.config['JWT_COOKIE_SECURE'] = True
 app.config['JWT_COOKIE_SAMESITE'] = "None"  
 app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db
-DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL") or os.getenv("INTERNAL_DATABASE_URL") 
-app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 

@@ -29,8 +29,14 @@ class Config:
     MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER") or MAIL_USERNAME or "no-reply@example.com"
 
     # Database settings
-    SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI", "sqlite:///Ticketingsystem.db")
-    SQLALCHEMY_TRACK_MODIFICATIONS = os.getenv("SQLALCHEMY_TRACK_MODIFICATIONS", "False").lower() == "true"
+    SQLALCHEMY_DATABASE_URI = os.getenv("EXTERNAL_DATABASE_URL")
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_size': 5,
+        'max_overflow': 10,
+        'pool_timeout': 30,
+        'pool_recycle': 1800,
+    }
 
     # JWT Authentication
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-jwt-secret")
@@ -45,13 +51,13 @@ class Config:
     # SQLAlchemy Session Configuration
     SESSION_TYPE = "sqlalchemy"
     SESSION_SQLALCHEMY_TABLE = 'sessions'
-    SESSION_PERMANENT = False
+    SESSION_PERMANENT = True  # Changed to True for persistent sessions
     SESSION_USE_SIGNER = True
     SESSION_KEY_PREFIX = "session:"
-    SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+    SESSION_COOKIE_SECURE = True  # Set to True for production
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
-    PERMANENT_SESSION_LIFETIME = 3600
+    PERMANENT_SESSION_LIFETIME = 86400  # Increased to 24 hours
 
     FRONTEND_URL = " http://localhost:8080"
     
