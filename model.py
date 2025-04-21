@@ -196,7 +196,6 @@ class TicketType(db.Model):
             "quantity": self.quantity
         }
 
-# Report model
 class Report(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
@@ -205,10 +204,8 @@ class Report(db.Model):
 
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
     total_revenue = db.Column(db.Float, nullable=False, default=0.0)
-    created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    # Relationships
+    # Relationships (uncomment if needed)
     # event = db.relationship('Event', backref=db.backref('reports', lazy=True))
     # ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
 
@@ -219,10 +216,9 @@ class Report(db.Model):
             "event_name": self.event.name,
             "ticket_type": self.ticket_type.type_name.value,
             "total_tickets_sold": self.total_tickets_sold,
-            "total_revenue": self.total_revenue,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat()
+            "total_revenue": self.total_revenue
         }
+
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True)

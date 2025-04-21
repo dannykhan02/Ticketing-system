@@ -4,7 +4,6 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime
 import logging
 from pdf_utils import generate_graph_image, generate_pdf_with_graph
 from email_utils import send_email_with_attachment
@@ -100,16 +99,13 @@ def get_event_report(event_id):
             # Update existing
             report_entry.total_tickets_sold = count
             report_entry.total_revenue = float(revenue) if revenue else 0.0
-            report_entry.updated_at = datetime.utcnow()
         else:
             # Create new report
             new_report = Report(
                 event_id=event_id,
                 ticket_type_id=ticket_type.id,
                 total_tickets_sold=count,
-                total_revenue=float(revenue) if revenue else 0.0,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
+                total_revenue=float(revenue) if revenue else 0.0
             )
             db.session.add(new_report)
 

@@ -23,14 +23,13 @@ from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from report import register_report_resources
 from email_utils import mail
-from schedular import register_scheduler
 from admin import register_admin_resources  # Import the admin registration function
-from app2 import app
+
 # Load environment variables
 load_dotenv()
 
 # Initialize Flask app
-# app = Flask(__name__)
+app = Flask(__name__)
 app.config.from_object(Config)
 
 # Configure CORS with specific settings
@@ -66,9 +65,6 @@ register_paystack_routes(api)
 register_ticket_type_resources(api)
 register_report_resources(api)
 register_admin_resources(api)  # Register admin resources
-
-# ✅ Register and start the scheduler
-register_scheduler()
 
 # ✅ Run app
 if __name__ == "__main__":
