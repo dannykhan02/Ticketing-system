@@ -33,7 +33,7 @@ class TicketTypeResource(Resource):
             if not event:
                 return {"error": "Event not found"}, 404
 
-            if event.user_id != user.id:
+            if event.organizer_id != user.id:
                 return {"error": "You can only create ticket types for your own events"}, 403
 
             type_name = data["type_name"].upper()
@@ -96,7 +96,7 @@ class TicketTypeResource(Resource):
                 return {"error": "Ticket type not found"}, 404
 
             event = Event.query.get(ticket_type.event_id)
-            if event.user_id != user.id:
+            if event.organizer_id != user.id:
                 return {"error": "Only the event organizer can update this ticket type"}, 403
 
             data = request.get_json()
@@ -148,7 +148,7 @@ class TicketTypeResource(Resource):
                 return {"error": "Ticket type not found"}, 404
 
             event = Event.query.get(ticket_type.event_id)
-            if event.user_id != user.id:
+            if event.organizer_id != user.id:
                 return {"error": "Only the event organizer can delete this ticket type"}, 403
 
             db.session.delete(ticket_type)
