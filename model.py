@@ -125,7 +125,10 @@ class Event(db.Model):
     location = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
+    
 
+
+    
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")

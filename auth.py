@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, url_for, session
+from flask import Blueprint, jsonify, request, url_for, session, redirect
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity, get_jwt, jwt_required, create_access_token
 from email_validator import validate_email, EmailNotValidError
 import re
@@ -12,6 +12,7 @@ from oauth_config import oauth
 from flask_mail import Message
 from config import Config
 import logging
+import cloudinary.uploader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -82,9 +83,10 @@ def google_callback():
             db.session.commit()
 
         access_token = generate_token(user)
-        return jsonify({
+        
+        # Create response with user data
+        response = jsonify({
             "msg": "Login successful",
-            "access_token": access_token,
             "user": {
                 "id": user.id,
                 "email": user.email,
@@ -92,10 +94,27 @@ def google_callback():
                 "phone_number": user.phone_number,  # Will be None
                 "role": str(user.role.value)
             }
-        }), 200
+        })
+
+        # Set HTTP-only cookie with the access token
+        response.set_cookie(
+            'access_token',
+            access_token,
+            httponly=True,
+            secure=True,  
+            samesite='None',  
+            path='/',
+            domain=None,  # Let the browser handle the domain
+            max_age=30*24*60*60  # 30 days in seconds
+        )
+
+        # Redirect to the frontend callback URL
+        frontend_callback_url = f"{Config.FRONTEND_URL}/auth/callback/google"
+        return redirect(frontend_callback_url)
 
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Error in Google callback: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 def role_required(required_role):
@@ -288,29 +307,45 @@ def login():
     # Generate JWT token
     access_token = generate_token(user)
 
-    return jsonify({
+    # Create response with user data
+    response = jsonify({
         "message": "Login successful",
-        "access_token": access_token,
         "user": {
             "id": user.id,
             "email": user.email,
             "role": str(user.role)
         }
-    }), 200
+    })
+
+    # Set HTTP-only cookie with the access token
+    response.set_cookie(
+        'access_token',
+        access_token,
+        httponly=True,
+        secure=True,  # Only send over HTTPS
+        samesite='None',
+        path='/',
+        max_age=30*24*60*60  # 30 days in seconds
+    )
+
+    return response, 200
 
 @auth_bp.route('/logout', methods=['POST'])
 def logout():
-    """Handles user logout (JWT-based authentication does not require session clearing)"""
-    return jsonify({"message": "Logout successful"}), 200
+    """Handles user logout by clearing the access token cookie"""
+    response = jsonify({"message": "Logout successful"})
+    response.delete_cookie('access_token')
+    return response, 200
 
 @auth_bp.route('/admin/register-organizer', methods=['POST'])
 @jwt_required()
 @role_required('ADMIN')
 def register_organizer():
-    data = request.get_json()
+    data = request.form  # Changed from get_json() to form to handle file uploads
+    files = request.files
 
     if not data:
-        return jsonify({"msg": "Missing JSON data"}), 400
+        return jsonify({"msg": "Missing form data"}), 400
 
     # Extract fields safely
     user_id = data.get("user_id")
@@ -320,6 +355,7 @@ def register_organizer():
     business_registration_number = data.get("business_registration_number")
     tax_id = data.get("tax_id")
     address = data.get("address")
+    company_logo = files.get("company_logo")
 
     # Validate required fields
     if not user_id or not company_name:
@@ -338,6 +374,21 @@ def register_organizer():
         # Update user role to ORGANIZER
         user.role = UserRole.ORGANIZER
 
+        # Handle company logo upload if provided
+        logo_url = None
+        if company_logo:
+            try:
+                # Upload to Cloudinary
+                upload_result = cloudinary.uploader.upload(
+                    company_logo,
+                    folder="organizer_logos",
+                    resource_type="auto"
+                )
+                logo_url = upload_result.get('secure_url')
+            except Exception as e:
+                logger.error(f"Error uploading company logo: {str(e)}")
+                return jsonify({"msg": "Failed to upload company logo"}), 500
+
         # Create organizer profile
         organizer_profile = Organizer(
             user_id=user.id,
@@ -346,7 +397,8 @@ def register_organizer():
             website=website,
             business_registration_number=business_registration_number,
             tax_id=tax_id,
-            address=address
+            address=address,
+            company_logo=logo_url  # Add the logo URL to the organizer profile
         )
         db.session.add(organizer_profile)
         db.session.commit()
@@ -583,4 +635,42 @@ def delete_organizer(organizer_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Failed to delete organizer", "error": str(e)}), 500
+
+@auth_bp.route('/users', methods=['GET'])
+@jwt_required()
+@role_required('ADMIN')
+def get_users():
+    """Get list of all users with optional search"""
+    try:
+        search_query = request.args.get('search', '').lower()
+        
+        # Base query
+        query = User.query
+        
+        # Apply search filter if provided
+        if search_query:
+            query = query.filter(
+                db.or_(
+                    User.full_name.ilike(f'%{search_query}%'),
+                    User.email.ilike(f'%{search_query}%'),
+                    User.phone_number.ilike(f'%{search_query}%')
+                )
+            )
+        
+        # Get all users
+        users = query.all()
+        
+        # Format response
+        result = []
+        for user in users:
+            user_data = user.as_dict()
+            # Add additional fields if needed
+            user_data['is_organizer'] = user.role == UserRole.ORGANIZER
+            result.append(user_data)
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching users: {str(e)}")
+        return jsonify({"msg": "Failed to fetch users", "error": str(e)}), 500
 
