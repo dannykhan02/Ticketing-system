@@ -101,9 +101,10 @@ def google_callback():
             'access_token',
             access_token,
             httponly=True,
-            secure=True,  # Only send over HTTPS
-            samesite='None',
+            secure=True,  
+            samesite='None',  
             path='/',
+            domain=None,  # Let the browser handle the domain
             max_age=30*24*60*60  # 30 days in seconds
         )
 
@@ -113,6 +114,7 @@ def google_callback():
 
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Error in Google callback: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 def role_required(required_role):
