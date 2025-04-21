@@ -17,6 +17,14 @@ def get_event_report(event_id):
     """Generates a comprehensive report for a specific event with data structured for graphs."""
     report = {}
 
+    event = Event.query.get(event_id)
+    if not event:
+        return {"message": "Event not found"}, 404
+
+    report['event_name'] = event.name
+    report['event_date'] = event.date.strftime('%Y-%m-%d')  # Assuming event.date is a datetime object
+    report['event_location'] = event.location
+
     # 1. Ticket Sales Quantity
     total_tickets_sold = Ticket.query.filter_by(event_id=event_id).count()
     report['total_tickets_sold'] = total_tickets_sold
@@ -125,11 +133,11 @@ def send_report_to_organizer_with_pdf(report):
 
     # 1. Generate graph image
     graph_path = f"/tmp/event_report_{event.id}_graph.png"
-    generate_graph_image(report, graph_path)
+    generate_graph_image(report.as_dict(), graph_path)
 
     # 2. Generate PDF file
     pdf_path = f"/tmp/event_report_{event.id}.pdf"
-    generate_pdf_with_graph(report, pdf_path, graph_path)
+    generate_pdf_with_graph(report.as_dict(), pdf_path, graph_path)
 
     # 3. Create email body
     body = f"""
