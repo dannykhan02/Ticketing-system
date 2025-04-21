@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, url_for, session
+from flask import Blueprint, jsonify, request, url_for, session, redirect
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity, get_jwt, jwt_required, create_access_token
 from email_validator import validate_email, EmailNotValidError
 import re
@@ -102,11 +102,14 @@ def google_callback():
             access_token,
             httponly=True,
             secure=True,  # Only send over HTTPS
-            samesite='Lax',  # Helps prevent CSRF attacks
+            samesite='None',
+            path='/',
             max_age=30*24*60*60  # 30 days in seconds
         )
 
-        return response, 200
+        # Redirect to the frontend callback URL
+        frontend_callback_url = f"{Config.FRONTEND_URL}/auth/callback/google"
+        return redirect(frontend_callback_url)
 
     except Exception as e:
         db.session.rollback()
