@@ -562,15 +562,25 @@ def get_organizers():
 @role_required('ADMIN')
 def delete_organizer(organizer_id):
     """Delete an organizer"""
-    organizer = User.query.filter_by(id=organizer_id, role=UserRole.ORGANIZER).first()
-    
-    if not organizer:
+
+    # First fetch the user with role ORGANIZER
+    user = User.query.filter_by(id=organizer_id, role=UserRole.ORGANIZER).first()
+
+    if not user:
         return jsonify({"msg": "Organizer not found"}), 404
-    
+
     try:
-        db.session.delete(organizer)
+        # Delete the organizer profile first
+        if user.organizer_profile:
+            db.session.delete(user.organizer_profile)
+
+        # Then delete the user
+        db.session.delete(user)
         db.session.commit()
+
         return jsonify({"msg": "Organizer deleted successfully"}), 200
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Failed to delete organizer", "error": str(e)}), 500
+
