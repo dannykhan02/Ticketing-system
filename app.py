@@ -48,7 +48,7 @@ app.config['JWT_COOKIE_SAMESITE'] = "None"
 app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL") or os.getenv("INTERNAL_DATABASE_URL") or \
-               'sqlite:///' + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'Ticketing-system.db')
+               'sqlite:///' + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'Ticketingsystem.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 
 
