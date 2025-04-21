@@ -4,7 +4,16 @@ from flask_restful import Resource
 from datetime import datetime, timedelta
 from model import db, Event, User, UserRole, Organizer
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
+import cloudinary.uploader
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 class EventResource(Resource):
     @jwt_required()
@@ -25,25 +34,47 @@ class EventResource(Resource):
             identity = get_jwt_identity()  # Get current user
             user = User.query.get(identity)
             
-
-
             if not user or user.role.value != "ORGANIZER":
                 return {"message": "Only organizers can create events"}, 403
 
-
             organizer = Organizer.query.filter_by(user_id=user.id).first()
-            data = request.get_json()
-            required_fields = ["name", "description", "date", "start_time", "location"]
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
 
-            # Check required fields (excluding `end_time` since it's optional)
+            # Get form data and files
+            data = request.form
+            files = request.files
+
+            # Validate required fields
+            required_fields = ["name", "description", "date", "start_time", "location"]
             for field in required_fields:
                 if field not in data:
                     return {"message": f"Missing field: {field}"}, 400
 
+            # Handle file upload if provided
+            image_url = None
+            if 'file' in files:
+                file = files['file']
+                if file and file.filename != '':
+                    if not allowed_file(file.filename):
+                        return {"message": "Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP"}, 400
+                    
+                    try:
+                        upload_result = cloudinary.uploader.upload(
+                            file,
+                            folder="event_images",
+                            resource_type="auto"
+                        )
+                        image_url = upload_result.get('secure_url')
+                    except Exception as e:
+                        logger.error(f"Error uploading event image: {str(e)}")
+                        return {"message": "Failed to upload event image"}, 500
+
+            # Parse date and time
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
             start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
 
-            # Handle `end_time`: Allow "Till Late" if missing
+            # Handle end_time (optional)
             end_time = None
             if "end_time" in data and data["end_time"]:
                 end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
@@ -54,9 +85,9 @@ class EventResource(Resource):
                 description=data["description"],
                 date=event_date,
                 start_time=start_time,
-                end_time=end_time,  # Allow `None`
+                end_time=end_time,
                 location=data["location"],
-                image=data.get("image", None),
+                image=image_url,
                 organizer_id=organizer.id
             )
 
@@ -70,6 +101,7 @@ class EventResource(Resource):
         except ValueError as e:  # Catch validation errors
             return {"error": str(e)}, 400
         except Exception as e:
+            db.session.rollback()
             return {"error": str(e)}, 500
 
     @jwt_required()
