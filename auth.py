@@ -318,7 +318,8 @@ def login():
         access_token,
         httponly=True,
         secure=True,  # Only send over HTTPS
-        samesite='Lax',  # Helps prevent CSRF attacks
+        samesite='None',
+        path='/',
         max_age=30*24*60*60  # 30 days in seconds
     )
 
