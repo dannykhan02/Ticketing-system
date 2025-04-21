@@ -58,7 +58,7 @@ CORS(app,
     expose_headers=["Set-Cookie"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"])
-# ✅ Initialize extensions
+
 Session(app)
 api = Api(app)
 jwt = JWTManager(app)
