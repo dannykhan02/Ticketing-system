@@ -52,3 +52,7 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     PERMANENT_SESSION_LIFETIME = 3600
+
+    FRONTEND_URL = " http://localhost:8080"
+    
+    
