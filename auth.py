@@ -598,16 +598,31 @@ def update_profile():
 @role_required('ADMIN')
 def get_organizers():
     """Get list of all organizers with their event counts"""
-    organizers = User.query.filter_by(role=UserRole.ORGANIZER).all()
-    
-    result = []
-    for organizer in organizers:
-        organizer_data = organizer.as_dict()
-        if hasattr(organizer, 'organizer_profile'):
-            organizer_data.update(organizer.organizer_profile.as_dict())
-        result.append(organizer_data)
-    
-    return jsonify(result), 200
+    try:
+        organizers = User.query.filter_by(role=UserRole.ORGANIZER).all()
+        
+        result = []
+        for organizer in organizers:
+            # Get base user data
+            organizer_data = organizer.as_dict()
+            
+            # Add organizer profile data if it exists
+            if organizer.organizer_profile:
+                profile_data = organizer.organizer_profile.as_dict()
+                # Remove user_id from profile data to avoid redundancy
+                profile_data.pop('user_id', None)
+                # Add profile data under a nested key
+                organizer_data['organizer_profile'] = profile_data
+            else:
+                organizer_data['organizer_profile'] = None
+            
+            result.append(organizer_data)
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching organizers: {str(e)}")
+        return jsonify({"error": "Failed to fetch organizers"}), 500
 
 @auth_bp.route('/organizers/<int:organizer_id>', methods=['DELETE'])
 @jwt_required()
