@@ -230,7 +230,7 @@ class Ticket(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)
+    transaction_id = db.Column(db.String, db.ForeignKey('transaction.id'), nullable=True)
     quantity = db.Column(db.Integer, nullable=False)
     qr_code = db.Column(db.String(255), nullable=True)
     scanned = db.Column(db.Boolean, default=False)
