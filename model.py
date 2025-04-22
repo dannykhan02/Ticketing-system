@@ -230,15 +230,15 @@ class Ticket(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.String, db.ForeignKey('transaction.id'), nullable=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)
     quantity = db.Column(db.Integer, nullable=False)
     qr_code = db.Column(db.String(255), nullable=True)
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
-    payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
+    payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
     @property
@@ -260,9 +260,9 @@ class Ticket(db.Model):
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
             "merchant_request_id": self.merchant_request_id,  # New field
-            "payment_status": self.payment_status.value,
             "total_price": self.total_price
         }
+
 
 # Transaction model
 class Transaction(db.Model):
