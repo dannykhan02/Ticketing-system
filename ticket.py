@@ -188,8 +188,8 @@ class TicketResource(Resource):
             # Calculate the total price
             amount = ticket_type.price * data["quantity"]
 
-            # Generate a unique transaction ID for the ticket (this will be a string initially)
-            temp_transaction_id = str(uuid.uuid4())[:8]
+            # Generate a unique transaction ID for the ticket
+            transaction_id = str(uuid.uuid4())[:8]
 
             # Store the initial ticket information with PENDING status
             new_ticket = Ticket(
@@ -199,13 +199,11 @@ class TicketResource(Resource):
                 phone_number=user.phone_number,
                 email=user.email,  # Assuming the user object has an email field
                 payment_status=PaymentStatus.PENDING,
-                transaction_id=None,  # Initialize as None, will be updated with the Transaction ID
+                transaction_id=transaction_id,
                 user_id=user.id  # Associate the ticket with the authenticated user
             )
             db.session.add(new_ticket)
-            db.session.commit() # Commit here to get the new_ticket.id
-
-            logger.info(f"Created Ticket ID: {new_ticket.id} with temporary Transaction ID: {temp_transaction_id}")
+            db.session.commit()
 
             # Process Payment
             if data["payment_method"] == "Mpesa":
@@ -217,30 +215,12 @@ class TicketResource(Resource):
                     "phone_number": user.phone_number,
                     "amount": amount,
                     "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
-                    "transaction_id": temp_transaction_id # Pass the temporary transaction ID
+                    "transaction_id": transaction_id # Pass the ticket's transaction ID
                 }
                 mpesa = STKPush()
                 response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
 
                 if status_code == 200:
-                    # Create a new transaction record for M-Pesa
-                    new_transaction = Transaction(
-                        amount_paid=amount,
-                        payment_status=PaymentStatus.PENDING,
-                        payment_method=PaymentMethod.MPESA,
-                        timestamp=datetime.datetime.now(),
-                        ticket_id=new_ticket.id,
-                        user_id=user.id,
-                        merchant_request_id=response.get('MerchantRequestID'),
-                        checkout_request_id=response.get('CheckoutRequestID')
-                    )
-                    db.session.add(new_transaction)
-                    db.session.commit()
-
-                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
-                    db.session.commit()
-
-                    logger.info(f"Created M-Pesa Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
                     return response, status_code
                 else:
                     # If STK Push fails, revert the ticket creation
@@ -253,37 +233,51 @@ class TicketResource(Resource):
                 if not user.email:
                     return {"error": "User email is required for Paystack payment"}, 400
 
-                # Initialize Paystack payment using the imported function
-                paystack_response = initialize_paystack_payment(user.email, int(amount * 100))
+                # Prepare Paystack payment data for the /paystack/initialize endpoint
+                paystack_payload = {
+                    "amount": int(amount * 100),  # Paystack expects amount in kobo/cents
+                    "payment_method": "card"  # Or whichever method you intend to use initially
+                }
 
-                if isinstance(paystack_response, dict) and "authorization_url" in paystack_response:
-                    authorization_url = paystack_response["authorization_url"]
-                    reference = paystack_response["reference"]
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {request.headers.get('Authorization').split()[1]}" # Forward the JWT token
+                }
 
-                    # Create a new transaction for Paystack
-                    new_transaction = Transaction(
-                        amount_paid=amount,
-                        payment_status=PaymentStatus.PENDING,  # Will be updated by webhook
-                        payment_method=PaymentMethod.PAYSTACK,
-                        timestamp=datetime.datetime.now(),
-                        ticket_id=new_ticket.id,
-                        user_id=user.id,  # Set the user_id here
-                        payment_reference=reference
-                    )
-                    db.session.add(new_transaction)
-                    db.session.commit()
+                paystack_initialize_url = f"http://127.0.0.1:5000/paystack/initialize" # Adjust URL if needed
+                try:
+                    response = requests.post(paystack_initialize_url, headers=headers, json=paystack_payload)
+                    response.raise_for_status()  # Raise an exception for bad status codes
+                    res_data = response.json()
+                    logger.info(f"Paystack Initialize Response from /tickets: {res_data}")
 
-                    new_ticket.transaction_id = new_transaction.id # Set the transaction_id on the ticket
-                    db.session.commit()
+                    if res_data.get("message") == "Payment initialized" and res_data.get("data"):
+                        # Create a new transaction for Paystack
+                        new_transaction = Transaction(
+                            amount_paid=amount,
+                            payment_status=PaymentStatus.PENDING,  # Will be updated by webhook
+                            payment_method=PaymentMethod.PAYSTACK,
+                            timestamp=datetime.datetime.now(),
+                            ticket_id=new_ticket.id,
+                            user_id=user.id,  # Set the user_id here
+                            payment_reference=res_data.get("data", {}).get("reference")
+                        )
+                        db.session.add(new_transaction)
+                        new_ticket.transaction_id = new_transaction.id
+                        db.session.commit()
+                        return res_data, response.status_code
 
-                    logger.info(f"Created Paystack Transaction ID: {new_transaction.id} for Ticket ID: {new_ticket.id}")
-                    return {"message": "Payment initialized", "authorization_url": authorization_url, "reference": reference}, 200
-                else:
-                    # Handle errors from the Paystack initialization function
-                    logger.error(f"Paystack initialization failed: {paystack_response}")
+                    else:
+                        logger.error(f"Paystack initialization failed: {res_data.get('message')}")
+                        db.session.delete(new_ticket)
+                        db.session.commit()
+                        return {"error": f"Paystack initialization failed: {res_data.get('message', 'Unknown error')}"}, response.status_code
+
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Error communicating with Paystack initialize endpoint: {e}")
                     db.session.delete(new_ticket)
                     db.session.commit()
-                    return paystack_response, 500
+                    return {"error": f"Error communicating with Paystack: {e}"}, 500
 
             else:
                 # If the payment method is invalid, delete the ticket and return an error
