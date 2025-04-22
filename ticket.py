@@ -13,6 +13,7 @@ import qrcode
 import logging
 import os
 import datetime
+import uuid
 import requests
 import io
 import base64
@@ -175,10 +176,14 @@ class TicketResource(Resource):
 
             amount = ticket_type.price * data["quantity"]
 
+            # Generate a unique payment reference
+            payment_reference = str(uuid.uuid4())
+
             # Create a new Transaction first (PENDING for now)
             transaction = Transaction(
                 amount_paid=amount,
                 payment_status=PaymentStatus.PENDING,
+                payment_reference=payment_reference,  # Set the payment reference
                 payment_method=data["payment_method"].upper(),  # e.g., "MPESA" or "PAYSTACK"
                 timestamp=datetime.datetime.utcnow(),
                 user_id=user.id
