@@ -271,7 +271,7 @@ class TicketResource(Resource):
             db.session.rollback()
             logger.error(f"Error initializing payment: {e}")
             return {"error": "An internal error occurred"}, 500
-
+        
     @jwt_required()
     def put(self, ticket_id):
         """Update a ticket (Only the ticket owner can update)."""
