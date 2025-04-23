@@ -5,7 +5,7 @@ import datetime
 import base64
 import uuid  # To generate unique transaction IDs
 import logging
-from model import db, TicketType, Ticket, Transaction, PaymentStatus, PaymentMethod  # Import your models
+from model import db, TicketType, Ticket, Transaction, PaymentStatus, PaymentMethod, User  # Import your models
 from dotenv import load_dotenv
 import os
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -64,20 +64,26 @@ def normalize_phone_number(phone_number):
 
 class STKPush(Resource):
     @jwt_required()
-    def post(self, mpesa_data):
+    def post(self):
         """Initiates STK Push for ticket payment."""
-        phone_number = mpesa_data.get("phone_number")
-        amount = mpesa_data.get("amount")
-        ticket_id = mpesa_data.get("ticket_id")
-        transaction_id = mpesa_data.get("transaction_id")
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
 
-        # Normalize the phone number
-        phone_number = normalize_phone_number(phone_number)
+        if not user:
+            return {"error": "User not found"}, 404
+
+        data = request.get_json()
+        amount = data.get("amount")
+        ticket_id = data.get("ticket_id")
+        transaction_id = data.get("transaction_id")
+
+        if not amount or not ticket_id or not transaction_id:
+            return {"error": "Amount, ticket_id, and transaction_id are required"}, 400
+
+        # Use the registered phone number from the user object
+        phone_number = normalize_phone_number(user.phone_number)
         if not phone_number:
             return {"error": "Invalid phone number format"}, 400
-
-        if not phone_number or not amount or not ticket_id or not transaction_id:
-            return {"error": "Phone number, amount, ticket_id, and transaction_id are required"}, 400
 
         # Get access token for M-Pesa API
         access_token = get_access_token()
@@ -142,7 +148,7 @@ class STKCallback(Resource):
         result_code = callback_data.get("ResultCode", -1)
         result_desc = callback_data.get("ResultDesc", "Unknown response")
 
-        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item",)
+        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item", [])
         amount = next((item["Value"] for item in callback_metadata if item["Name"] == "Amount"), 0)
         mpesa_receipt_number = next((item["Value"] for item in callback_metadata if item["Name"] == "MpesaReceiptNumber"), "")
         transaction_date = next((item["Value"] for item in callback_metadata if item["Name"] == "TransactionDate"), "")

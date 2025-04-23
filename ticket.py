@@ -207,11 +207,7 @@ class TicketResource(Resource):
 
             # Now handle payments
             if data["payment_method"] == "Mpesa":
-                if "phone_number" not in data or normalize_phone_number(data["phone_number"]) != normalize_phone_number(user.phone_number):
-                    return {"error": "Phone number must be the registered one"}, 400
-
                 mpesa_data = {
-                    "phone_number": user.phone_number,
                     "amount": amount,
                     "ticket_id": new_ticket.id,
                     "transaction_id": transaction.id
@@ -241,7 +237,7 @@ class TicketResource(Resource):
                     "Authorization": f"Bearer {request.headers.get('Authorization').split()[1]}"
                 }
 
-                paystack_initialize_url = "http://127.0.0.1:5000/paystack/initialize"
+                paystack_initialize_url = "https://ticketing-system-994g.onrender.com/paystack/initialize_payment"
 
                 try:
                     response = requests.post(paystack_initialize_url, headers=headers, json=paystack_payload)
