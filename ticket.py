@@ -17,10 +17,24 @@ import uuid
 import requests
 import io
 import base64
+from sqlalchemy.exc import OperationalError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_valid_phone(request_json, user):
+    """
+    Returns a cleaned phone number or raises ValueError
+    """
+    raw_from_body = request_json.get("phone_number")
+    raw_from_user = user.phone_number
+    if not raw_from_body:
+        raise ValueError("phone_number missing in request")
+    if not raw_from_user:
+        raise ValueError("Your profile has no phone_number; update it first")
+
+    return normalize_phone_number(raw_from_body), normalize_phone_number(raw_from_user)
 
 def complete_ticket_operation(transaction):
     """Updates ticket status once payment is successful and sends confirmation email."""
@@ -207,6 +221,14 @@ class TicketResource(Resource):
 
             # Now handle payments
             if data["payment_method"] == "Mpesa":
+                try:
+                    body_phone, user_phone = get_valid_phone(data, user)
+                except ValueError as err:
+                    return {"error": str(err)}, 400
+
+                if body_phone != user_phone:
+                    return {"error": "Phone number must match the registered one"}, 400
+
                 mpesa_data = {
                     "amount": amount,
                     "ticket_id": new_ticket.id,
@@ -267,11 +289,15 @@ class TicketResource(Resource):
                 db.session.commit()
                 return {"error": "Invalid payment method"}, 400
 
+        except OperationalError as e:
+            logger.error(f"Database error: {e}")
+            return {"error": "Database connection error"}, 500
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error initializing payment: {e}")
             return {"error": "An internal error occurred"}, 500
-        
+
     @jwt_required()
     def put(self, ticket_id):
         """Update a ticket (Only the ticket owner can update)."""
@@ -329,7 +355,7 @@ class TicketResource(Resource):
                                 return {"error": "Error initiating M-Pesa refund.", "details": refund_response}, 500
                         elif transaction.payment_method == PaymentMethod.PAYSTACK:
                             # Initiate Paystack refund for the price difference
-                            refund_amount = int(price_difference * 100) # Amount in kobo/cents
+                            refund_amount = int(price_difference * 100)  # Amount in kobo/cents
                             refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
                             if isinstance(refund_result, dict) and "error" not in refund_result:
                                 db.session.commit()
@@ -338,9 +364,9 @@ class TicketResource(Resource):
                                 db.session.rollback()
                                 return {"error": "Error initiating Paystack refund.", "details": refund_result}, 500
                         else:
-                            db.session.commit() # If no transaction, just update quantity
+                            db.session.commit()  # If no transaction, just update quantity
                             return {"message": "Ticket quantity updated."}, 200
-                elif price_difference < 0: # Quantity increased, you might want to handle additional payment here
+                elif price_difference < 0:  # Quantity increased, you might want to handle additional payment here
                     db.session.commit()
                     return {"message": "Ticket quantity updated, additional payment might be required."}, 200
                 else:
@@ -348,7 +374,7 @@ class TicketResource(Resource):
                     return {"message": "Ticket quantity updated."}, 200
 
             if "status" in data:
-                pass # You might want to handle other status updates here if needed
+                pass  # You might want to handle other status updates here if needed
 
             db.session.commit()
             return {"message": "Ticket updated successfully"}, 200
@@ -373,7 +399,7 @@ class TicketResource(Resource):
             if not ticket:
                 return {"error": "Ticket not found or does not belong to you"}, 404
 
-            if ticket.email is not None: # Check if email is present
+            if ticket.email is not None:  # Check if email is present
                 return {"error": "Tickets for which confirmation emails have been sent cannot be cancelled for a refund."}, 400
 
             transaction = ticket.transaction
@@ -404,7 +430,7 @@ class TicketResource(Resource):
                         return {"error": "Error initiating M-Pesa refund for cancellation.", "details": refund_response}, 500
                 elif transaction.payment_method == PaymentMethod.PAYSTACK:
                     # Initiate full Paystack refund
-                    refund_amount = int(float(ticket.total_price) * 100) # Amount in kobo/cents
+                    refund_amount = int(float(ticket.total_price) * 100)  # Amount in kobo/cents
                     refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
                     if isinstance(refund_result, dict) and "error" not in refund_result:
                         qr_code_paths = [
