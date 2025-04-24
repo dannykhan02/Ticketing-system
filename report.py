@@ -139,7 +139,7 @@ def send_report_to_organizer_with_pdf(report):
 
     # 2. Generate PDF file
     pdf_path = f"/tmp/event_report_{event.id}.pdf"
-    generate_pdf_with_graph(report, pdf_path, graph_path)
+    generate_pdf_with_graph(report, event_id, pdf_path, graph_path)
 
     # 3. Create email body
     body = f"""
@@ -187,7 +187,7 @@ class ReportResource(Resource):
         if not event:
             return {"message": "Event not found"}, 404
 
-        if event.organizer_id != user.id:
+        if event.organizer.user_id != user.id:
             return {"message": "You are not authorized to view the report for this event"}, 403
 
         report_data = get_event_report(event_id)
