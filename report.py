@@ -21,6 +21,7 @@ def get_event_report(event_id):
     if not event:
         return {"message": "Event not found"}, 404
 
+    report['event_id'] = event_id  # Add event_id to the report
     report['event_name'] = event.name
     report['event_date'] = event.date.strftime('%Y-%m-%d')  # Assuming event.date is a datetime object
     report['event_location'] = event.location
@@ -125,7 +126,8 @@ def get_event_report(event_id):
     return report
 
 def send_report_to_organizer_with_pdf(report):
-    event = Event.query.get(report['event_id'])
+    event_id = report['event_id']
+    event = Event.query.get(event_id)
     organizer = event.organizer.user
     if not organizer or not organizer.email:
         logger.warning(f"No organizer email for event: {event.name}")
@@ -145,7 +147,7 @@ def send_report_to_organizer_with_pdf(report):
 
     Attached is the latest sales report for your event: {event.name}.
 
-    Ticket Type: {report['ticket_type']['type_name']}
+    Ticket Type: {report['tickets_sold_by_type']}
     Total Sold: {report['total_tickets_sold']}
     Revenue: ${report['total_revenue']:.2f}
 
