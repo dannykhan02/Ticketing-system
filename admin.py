@@ -298,7 +298,7 @@ class AdminGenerateReportPDF(Resource):
 
         # Generate the graph image
         graph_path = f"/tmp/event_report_{event_id}_graph.png"
-        # Ensure generate_graph_image handles the dictionary format of report_data
+        
         generate_graph_image(report_data, graph_path)
 
         # Generate the PDF file
