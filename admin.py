@@ -3,14 +3,12 @@ import os
 from flask import Flask, request, jsonify, send_file
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
-# Import all related models and db instance
-# Corrected: Import Organizer instead of OrganizerProfile
 from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from flask import current_app  # Import current_app
-from pdf_utils import generate_graph_image, generate_pdf_with_graph  # Import PDF generation utilities
-from report import get_event_report  # Import the report generation function
+from flask import current_app 
+from pdf_utils import generate_graph_image, generate_pdf_with_graph  
+from report import get_event_report 
 import logging
 
 # Configure logging
@@ -71,77 +69,6 @@ class AdminOperations:
         except SQLAlchemyError as e:
             print(f"Error searching user: {e}")
             return None
-
-    def delete_event(self, event_id):
-        """Delete an event and all related data."""
-        try:
-            event = Event.query.get(event_id)
-            if event:
-                # 1. Delete related tickets and their associated data
-                for ticket in event.tickets:
-                    # Delete transactions
-                    if ticket.transaction is not None:
-                        self.db.session.delete(ticket.transaction)
-                    # Delete scans
-                    for scan in ticket.scans:
-                        self.db.session.delete(scan)
-                    self.db.session.commit()
-
-                # 2. Delete associated reports
-                reports = Report.query.filter_by(event_id=event_id).all()
-                for report in reports:
-                    self.db.session.delete(report)
-                self.db.session.commit()
-
-                # 3. Now delete the event itself
-                self.db.session.delete(event)
-                self.db.session.commit()
-
-                return {"message": f"Event {event_id} and all related data deleted successfully."}, 200
-            else:
-                return {"message": f"Event {event_id} not found."}, 404
-        except SQLAlchemyError as e:
-            self.db.session.rollback()
-            return {"error": str(e)}, 500
-
-    def delete_user(self, admin_user_id, user_id_to_delete):
-        """Delete a user with ORGANIZER or SECURITY role (Only accessible by admin)."""
-        try:
-            admin_user = User.query.get(admin_user_id)
-            if not admin_user or admin_user.role != UserRole.ADMIN:
-                return {"message": "Only admins can delete users"}, 403
-
-            user_to_delete = User.query.get(user_id_to_delete)
-            if not user_to_delete:
-                return {"message": f"User with ID {user_id_to_delete} not found"}, 404
-
-            if user_to_delete.role in [UserRole.ORGANIZER, UserRole.SECURITY]:
-                # Optionally handle related data if needed (e.g., delete organizer profile)
-                # Corrected: Use user.organizer instead of user.organizer_profile
-                if user_to_delete.organizer:
-                    self.db.session.delete(user_to_delete.organizer)
-                self.db.session.delete(user_to_delete)
-                self.db.session.commit()
-                return {"message": f"User with ID {user_id_to_delete} and role {user_to_delete.role} deleted successfully"}, 200
-            else:
-                return {"message": f"Cannot delete user with ID {user_id_to_delete} as their role is {user_to_delete.role}"}, 403
-        except SQLAlchemyError as e:
-            self.db.session.rollback()
-            return {"error": str(e)}, 500
-
-    def delete_report(self, report_id):
-        """Delete a report by its ID."""
-        try:
-            report = Report.query.get(report_id)
-            if report:
-                self.db.session.delete(report)
-                self.db.session.commit()
-                return {"message": f"Report {report_id} deleted successfully."}, 200
-            else:
-                return {"message": f"Report {report_id} not found."}, 404
-        except SQLAlchemyError as e:
-            self.db.session.rollback()
-            return {"error": str(e)}, 500
 
     def get_reports_by_organizer(self, organizer_id):
         """Retrieves all reports for events created by a specific organizer."""
@@ -297,8 +224,6 @@ class AdminGetNonAttendees(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
-        # Corrected: admin_ops.get_non_attendee_users already returns a list of dicts
-        # Removed the redundant list comprehension calling .as_dict() again
         users = admin_ops.get_non_attendee_users()
         return users, 200
 
@@ -320,41 +245,6 @@ class AdminSearchUserByEmail(Resource):
             return user, 200
         return {"message": "User not found"}, 404
 
-class AdminDeleteEvent(Resource):
-    @jwt_required()
-    def delete(self, event_id):
-        """Delete an event and all related data."""
-        current_user_id = get_jwt_identity()
-        current_user = User.query.get(current_user_id)
-        if not current_user or current_user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
-        admin_ops = AdminOperations(db)
-        # admin_ops.delete_event returns a tuple (message, status_code)
-        return admin_ops.delete_event(event_id)
-
-class AdminDeleteUser(Resource):
-    @jwt_required()
-    def delete(self, user_id):
-        """Delete a user with ORGANIZER or SECURITY role (Only accessible by admin)."""
-        current_user_id = get_jwt_identity()
-        current_user = User.query.get(current_user_id)
-        if not current_user or current_user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
-        admin_ops = AdminOperations(db)
-        # admin_ops.delete_user returns a tuple (message, status_code)
-        return admin_ops.delete_user(current_user_id, user_id)
-
-class AdminDeleteReport(Resource):
-    @jwt_required()
-    def delete(self, report_id):
-        """Delete a report by its ID."""
-        current_user_id = get_jwt_identity()
-        current_user = User.query.get(current_user_id)
-        if not current_user or current_user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
-        admin_ops = AdminOperations(db)
-        # admin_ops.delete_report returns a tuple (message, status_code)
-        return admin_ops.delete_report(report_id)
 
 class AdminReportResource(Resource):
     @jwt_required()
@@ -461,18 +351,10 @@ class AdminGetUsers(Resource):
 def register_admin_resources(api):
     """Registers admin-specific API resources with the Flask-RESTful API."""
     api.add_resource(AdminGetOrganizerEvents, "/admin/organizer/<int:organizer_id>/events")
-    api.add_resource(AdminGetAllEvents, "/admin/events")  # Endpoint to get all events
-    api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")  # Endpoint to get event by ID
+    api.add_resource(AdminGetAllEvents, "/admin/events")  
+    api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")  
     api.add_resource(AdminGetNonAttendees, "/admin/users/non-attendees")
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
-    api.add_resource(AdminDeleteEvent, "/admin/events/delete/<int:event_id>")  # Changed endpoint for clarity
-    api.add_resource(AdminDeleteUser, "/admin/users/<int:user_id>")
-    api.add_resource(AdminDeleteReport, "/admin/reports/<int:report_id>")  # New endpoint to delete a report
-    api.add_resource(AdminReportResource, "/admin/reports")  # New endpoint to get all reports
-    api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")  # New endpoint to generate and get PDF report
-    # Removed the following endpoints as requested:
-    # api.add_resource(AdminGetOrganizers, "/admin/organizers")
-    # api.add_resource(AdminDeleteOrganizer, "/admin/organizers/<int:organizer_id>")
-    # api.add_resource(AdminGetUsers, "/admin/users")
-    # api.add_resource(AdminLogout, "/admin/logout")
+    api.add_resource(AdminReportResource, "/admin/reports")  
+    api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")  
 
