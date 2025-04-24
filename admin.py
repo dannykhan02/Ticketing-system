@@ -3,7 +3,8 @@ import os
 from flask import Flask, request, jsonify, send_file
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
-from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report  # Import all related models
+# Import all related models and db instance
+from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, OrganizerProfile
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import current_app  # Import current_app
@@ -22,7 +23,9 @@ class AdminOperations:
     def get_events_by_organizer(self, organizer_id):
         """Retrieves all events created by a specific organizer."""
         try:
-            events = Event.query.filter(Event.user_id == organizer_id).all()
+            # Corrected: Use Event.organizer_id instead of Event.user_id
+            events = Event.query.filter(Event.organizer_id == organizer_id).all()
+            # Ensure Event model has an as_dict method
             return [event.as_dict() for event in events]
         except SQLAlchemyError as e:
             print(f"Error retrieving events: {e}")
@@ -32,6 +35,7 @@ class AdminOperations:
         """Retrieves all events in the database."""
         try:
             events = Event.query.all()
+            # Ensure Event model has an as_dict method
             return [event.as_dict() for event in events]
         except SQLAlchemyError as e:
             print(f"Error retrieving events: {e}")
@@ -41,6 +45,7 @@ class AdminOperations:
         """Retrieves a specific event by its ID."""
         try:
             event = Event.query.get(event_id)
+            # Ensure Event model has an as_dict method
             return event.as_dict() if event else None
         except SQLAlchemyError as e:
             print(f"Error retrieving event: {e}")
@@ -50,6 +55,7 @@ class AdminOperations:
         """Retrieves all users who are not attendees."""
         try:
             users = User.query.filter(User.role != UserRole.ATTENDEE).all()
+            # Ensure User model has an as_dict method
             return [user.as_dict() for user in users]
         except SQLAlchemyError as e:
             print(f"Error retrieving users: {e}")
@@ -59,6 +65,7 @@ class AdminOperations:
         """Searches for a user by their email address."""
         try:
             user = User.query.filter_by(email=email).first()
+            # Ensure User model has an as_dict method
             return user.as_dict() if user else None
         except SQLAlchemyError as e:
             print(f"Error searching user: {e}")
@@ -109,7 +116,9 @@ class AdminOperations:
                 return {"message": f"User with ID {user_id_to_delete} not found"}, 404
 
             if user_to_delete.role in [UserRole.ORGANIZER, UserRole.SECURITY]:
-                # Optionally handle related data if needed
+                # Optionally handle related data if needed (e.g., delete organizer profile)
+                if user_to_delete.organizer_profile:
+                    self.db.session.delete(user_to_delete.organizer_profile)
                 self.db.session.delete(user_to_delete)
                 self.db.session.commit()
                 return {"message": f"User with ID {user_id_to_delete} and role {user_to_delete.role} deleted successfully"}, 200
@@ -136,9 +145,11 @@ class AdminOperations:
     def get_reports_by_organizer(self, organizer_id):
         """Retrieves all reports for events created by a specific organizer."""
         try:
-            events = Event.query.filter(Event.user_id == organizer_id).all()
+            # Corrected: Use Event.organizer_id in the join condition
+            events = Event.query.filter(Event.organizer_id == organizer_id).all()
             event_ids = [event.id for event in events]
             reports = Report.query.filter(Report.event_id.in_(event_ids)).all()
+            # Ensure Report model has an as_dict method
             return [report.as_dict() for report in reports]
         except SQLAlchemyError as e:
             print(f"Error retrieving reports: {e}")
@@ -148,6 +159,7 @@ class AdminOperations:
         """Retrieves all reports in the database."""
         try:
             reports = Report.query.all()
+            # Ensure Report model has an as_dict method
             return [report.as_dict() for report in reports]
         except SQLAlchemyError as e:
             print(f"Error retrieving reports: {e}")
@@ -160,10 +172,12 @@ class AdminOperations:
             result = []
             for organizer in organizers:
                 # Get base user data
+                # Ensure User model has an as_dict method
                 organizer_data = organizer.as_dict()
 
                 # Add organizer profile data if it exists
                 if organizer.organizer_profile:
+                    # Ensure OrganizerProfile model has an as_dict method
                     profile_data = organizer.organizer_profile.as_dict()
                     # Remove user_id from profile data to avoid redundancy
                     profile_data.pop('user_id', None)
@@ -220,6 +234,7 @@ class AdminOperations:
             # Format response
             result = []
             for user in users:
+                # Ensure User model has an as_dict method
                 user_data = user.as_dict()
                 # Add additional fields if needed
                 user_data['is_organizer'] = user.role == UserRole.ORGANIZER
@@ -238,8 +253,9 @@ class AdminGetOrganizerEvents(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_events_by_organizer already returns a list of dicts
         events = admin_ops.get_events_by_organizer(organizer_id)
-        return [event.as_dict() for event in events], 200
+        return events, 200
 
 class AdminGetAllEvents(Resource):
     @jwt_required()
@@ -249,17 +265,20 @@ class AdminGetAllEvents(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_all_events already returns a list of dicts
         events = admin_ops.get_all_events()
-        return [event.as_dict() for event in events], 200
+        return events, 200
 
 class AdminGetEventById(Resource):
     @jwt_required()
     def get(self, event_id):
+        """Retrieves a specific event by its ID."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.get_event_by_id already returns a dict or None
         event = admin_ops.get_event_by_id(event_id)
         if event:
             return event, 200
@@ -273,12 +292,15 @@ class AdminGetNonAttendees(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_non_attendee_users already returns a list of dicts
+        # Removed the redundant list comprehension calling .as_dict() again
         users = admin_ops.get_non_attendee_users()
-        return [user.as_dict() for user in users], 200
+        return users, 200
 
 class AdminSearchUserByEmail(Resource):
     @jwt_required()
     def get(self):
+        """Searches for a user by their email address."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
@@ -287,6 +309,7 @@ class AdminSearchUserByEmail(Resource):
         if not email:
             return {"message": "Email parameter is required"}, 400
         admin_ops = AdminOperations(db)
+        # admin_ops.search_user_by_email already returns a dict or None
         user = admin_ops.search_user_by_email(email)
         if user:
             return user, 200
@@ -295,31 +318,37 @@ class AdminSearchUserByEmail(Resource):
 class AdminDeleteEvent(Resource):
     @jwt_required()
     def delete(self, event_id):
+        """Delete an event and all related data."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.delete_event returns a tuple (message, status_code)
         return admin_ops.delete_event(event_id)
 
 class AdminDeleteUser(Resource):
     @jwt_required()
     def delete(self, user_id):
+        """Delete a user with ORGANIZER or SECURITY role (Only accessible by admin)."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.delete_user returns a tuple (message, status_code)
         return admin_ops.delete_user(current_user_id, user_id)
 
 class AdminDeleteReport(Resource):
     @jwt_required()
     def delete(self, report_id):
+        """Delete a report by its ID."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.delete_report returns a tuple (message, status_code)
         return admin_ops.delete_report(report_id)
 
 class AdminReportResource(Resource):
@@ -338,13 +367,15 @@ class AdminReportResource(Resource):
             admin_ops = AdminOperations(db)
             if organizer_id:
                 # Retrieve reports for a specific organizer
+                # admin_ops.get_reports_by_organizer already returns a list of dicts
                 reports = admin_ops.get_reports_by_organizer(organizer_id)
             else:
                 # Retrieve all reports
+                # admin_ops.get_all_reports already returns a list of dicts
                 reports = admin_ops.get_all_reports()
 
-            report_data = [report.as_dict() for report in reports]
-            return report_data, 200
+            # Corrected: reports is already a list of dicts, no need for list comprehension with as_dict()
+            return reports, 200
         else:
             return {"message": "You do not have permission to access reports"}, 403
 
@@ -362,21 +393,195 @@ class AdminGenerateReportPDF(Resource):
             return {"message": "Admin access required"}, 403
 
         # Generate the report data
+        # get_event_report returns a dict or a tuple (message, status_code)
         report_data = get_event_report(event_id)
         if isinstance(report_data, tuple) and report_data[1] == 404:
             return report_data
+        # If report_data is a dictionary, proceed
 
         # Generate the graph image
         graph_path = f"/tmp/event_report_{event_id}_graph.png"
+        # Ensure generate_graph_image handles the dictionary format of report_data
         generate_graph_image(report_data, graph_path)
 
         # Generate the PDF file
         pdf_path = f"/tmp/event_report_{event_id}.pdf"
+        # Ensure generate_pdf_with_graph handles the dictionary format of report_data
         generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
 
         # Return the PDF file
-        return send_file(pdf_path, as_attachment=True, attachment_filename=f"event_report_{event_id}.pdf")
+        # Corrected: Use download_name instead of attachment_filename
+        return send_file(pdf_path, as_attachment=True, download_name=f"event_report_{event_id}.pdf")
 
+class AdminGetOrganizerEvents(Resource):
+    @jwt_required()
+    def get(self, organizer_id):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_events_by_organizer already returns a list of dicts
+        events = admin_ops.get_events_by_organizer(organizer_id)
+        return events, 200
+
+class AdminGetAllEvents(Resource):
+    @jwt_required()
+    def get(self):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_all_events already returns a list of dicts
+        events = admin_ops.get_all_events()
+        return events, 200
+
+class AdminGetEventById(Resource):
+    @jwt_required()
+    def get(self, event_id):
+        """Retrieves a specific event by its ID."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # admin_ops.get_event_by_id already returns a dict or None
+        event = admin_ops.get_event_by_id(event_id)
+        if event:
+            return event, 200
+        return {"message": "Event not found"}, 404
+
+class AdminGetNonAttendees(Resource):
+    @jwt_required()
+    def get(self):
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # Corrected: admin_ops.get_non_attendee_users already returns a list of dicts
+        # Removed the redundant list comprehension calling .as_dict() again
+        users = admin_ops.get_non_attendee_users()
+        return users, 200
+
+class AdminSearchUserByEmail(Resource):
+    @jwt_required()
+    def get(self):
+        """Searches for a user by their email address."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        email = request.args.get('email')
+        if not email:
+            return {"message": "Email parameter is required"}, 400
+        admin_ops = AdminOperations(db)
+        # admin_ops.search_user_by_email already returns a dict or None
+        user = admin_ops.search_user_by_email(email)
+        if user:
+            return user, 200
+        return {"message": "User not found"}, 404
+
+class AdminDeleteEvent(Resource):
+    @jwt_required()
+    def delete(self, event_id):
+        """Delete an event and all related data."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # admin_ops.delete_event returns a tuple (message, status_code)
+        return admin_ops.delete_event(event_id)
+
+class AdminDeleteUser(Resource):
+    @jwt_required()
+    def delete(self, user_id):
+        """Delete a user with ORGANIZER or SECURITY role (Only accessible by admin)."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # admin_ops.delete_user returns a tuple (message, status_code)
+        return admin_ops.delete_user(current_user_id, user_id)
+
+class AdminDeleteReport(Resource):
+    @jwt_required()
+    def delete(self, report_id):
+        """Delete a report by its ID."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        admin_ops = AdminOperations(db)
+        # admin_ops.delete_report returns a tuple (message, status_code)
+        return admin_ops.delete_report(report_id)
+
+class AdminReportResource(Resource):
+    @jwt_required()
+    def get(self):
+        """Retrieve all reports for admin or specific reports for organizers."""
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+
+        if not user:
+            return {"message": "User not found"}, 404
+
+        if user.role.value == "ADMIN":
+            # Admin can see all reports or reports for a specific organizer
+            organizer_id = request.args.get('organizer_id')
+            admin_ops = AdminOperations(db)
+            if organizer_id:
+                # Retrieve reports for a specific organizer
+                # admin_ops.get_reports_by_organizer already returns a list of dicts
+                reports = admin_ops.get_reports_by_organizer(organizer_id)
+            else:
+                # Retrieve all reports
+                # admin_ops.get_all_reports already returns a list of dicts
+                reports = admin_ops.get_all_reports()
+
+            # Corrected: reports is already a list of dicts, no need for list comprehension with as_dict()
+            return reports, 200
+        else:
+            return {"message": "You do not have permission to access reports"}, 403
+
+class AdminGenerateReportPDF(Resource):
+    @jwt_required()
+    def get(self, event_id):
+        """Generate and return a PDF report for a specific event."""
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+
+        if not user:
+            return {"message": "User not found"}, 404
+
+        if user.role.value != "ADMIN":
+            return {"message": "Admin access required"}, 403
+
+        # Generate the report data
+        # get_event_report returns a dict or a tuple (message, status_code)
+        report_data = get_event_report(event_id)
+        if isinstance(report_data, tuple) and report_data[1] == 404:
+            return report_data
+        # If report_data is a dictionary, proceed
+
+        # Generate the graph image
+        graph_path = f"/tmp/event_report_{event_id}_graph.png"
+        # Ensure generate_graph_image handles the dictionary format of report_data
+        generate_graph_image(report_data, graph_path)
+
+        # Generate the PDF file
+        pdf_path = f"/tmp/event_report_{event_id}.pdf"
+        # Ensure generate_pdf_with_graph handles the dictionary format of report_data
+        generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
+
+        # Return the PDF file
+        # Corrected: Use download_name instead of attachment_filename
+        return send_file(pdf_path, as_attachment=True, download_name=f"event_report_{event_id}.pdf")
+
+# The following classes are kept but their resources will be removed from registration
 class AdminGetOrganizers(Resource):
     @jwt_required()
     def get(self):
@@ -386,6 +591,7 @@ class AdminGetOrganizers(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.get_organizers already returns a list of dicts
         organizers = admin_ops.get_organizers()
         return organizers, 200
 
@@ -398,6 +604,7 @@ class AdminDeleteOrganizer(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.delete_organizer returns a tuple (message, status_code)
         return admin_ops.delete_organizer(organizer_id)
 
 class AdminGetUsers(Resource):
@@ -409,17 +616,13 @@ class AdminGetUsers(Resource):
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
         admin_ops = AdminOperations(db)
+        # admin_ops.get_users already returns a list of dicts
         users = admin_ops.get_users()
         return users, 200
 
-class AdminLogout(Resource):
-    def post(self):
-        """Handles user logout by clearing the access token cookie."""
-        response = jsonify({"message": "Logout successful"})
-        response.delete_cookie('access_token')
-        return response, 200
 
 def register_admin_resources(api):
+    """Registers admin-specific API resources with the Flask-RESTful API."""
     api.add_resource(AdminGetOrganizerEvents, "/admin/organizer/<int:organizer_id>/events")
     api.add_resource(AdminGetAllEvents, "/admin/events")  # Endpoint to get all events
     api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")  # Endpoint to get event by ID
@@ -430,7 +633,9 @@ def register_admin_resources(api):
     api.add_resource(AdminDeleteReport, "/admin/reports/<int:report_id>")  # New endpoint to delete a report
     api.add_resource(AdminReportResource, "/admin/reports")  # New endpoint to get all reports
     api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")  # New endpoint to generate and get PDF report
-    api.add_resource(AdminGetOrganizers, "/admin/organizers")  # New endpoint to get all organizers
-    api.add_resource(AdminDeleteOrganizer, "/admin/organizers/<int:organizer_id>")  # New endpoint to delete an organizer
-    api.add_resource(AdminGetUsers, "/admin/users")  # New endpoint to get all users with optional search
-    api.add_resource(AdminLogout, "/admin/logout")  # New endpoint to handle logout
+    # Removed the following endpoints as requested:
+    # api.add_resource(AdminGetOrganizers, "/admin/organizers")
+    # api.add_resource(AdminDeleteOrganizer, "/admin/organizers/<int:organizer_id>")
+    # api.add_resource(AdminGetUsers, "/admin/users")
+    # api.add_resource(AdminLogout, "/admin/logout")
+
