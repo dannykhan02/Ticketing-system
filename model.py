@@ -171,12 +171,25 @@ class Event(db.Model):
             "id": self.id,
             "name": self.name,
             "description": self.description,
-            "date": self.date.strftime("%Y-%m-%d"),  # Convert to string for JSON
-            "start_time": self.start_time.strftime("%H:%M:%S"),  # Convert to HH:MM:SS
-            "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else "Till Late",  # Handle None
+            "date": self.date.strftime("%Y-%m-%d") if self.date else None,
+            "start_time": self.start_time.strftime("%H:%M:%S") if self.start_time else None,
+            "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else None,
             "location": self.location,
             "image": self.image,
-            "organizer_id": self.organizer_id
+            "organizer_id": self.organizer_id,
+            "organizer": {
+                "id": self.organizer.id,
+                "company_name": self.organizer.company_name,
+                "company_description": self.organizer.company_description
+            } if self.organizer else None,
+            "tickets": [{
+                "id": ticket.id,
+                "quantity": ticket.quantity,
+                "payment_status": ticket.payment_status.value,
+                "ticket_type": {
+                    "price": ticket.ticket_type.price
+                } if ticket.ticket_type else None
+            } for ticket in self.tickets] if self.tickets else []
         }
 
 # TicketType model

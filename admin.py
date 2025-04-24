@@ -24,7 +24,10 @@ class AdminOperations:
     def get_all_events(self):
         """Retrieves all events in the database."""
         try:
-            events = Event.query.all()
+            events = Event.query.options(
+                db.joinedload(Event.organizer),
+                db.joinedload(Event.tickets).joinedload(Ticket.ticket_type)
+            ).all()
             return [event.as_dict() for event in events]
         except SQLAlchemyError as e:
             print(f"Error retrieving events: {e}")
