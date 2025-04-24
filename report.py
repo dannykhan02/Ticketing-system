@@ -35,9 +35,9 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id).\
         group_by(TicketType.type_name).all()
 
-    report['tickets_sold_by_type'] = {type_name: count for type_name, count in tickets_by_type_query}
+    report['tickets_sold_by_type'] = {str(type_name): count for type_name, count in tickets_by_type_query}
     report['tickets_sold_by_type_for_graph'] = {
-        'labels': [type_name for type_name, count in tickets_by_type_query],
+        'labels': [str(type_name) for type_name, count in tickets_by_type_query],
         'data': [count for type_name, count in tickets_by_type_query]
     }
 
@@ -52,9 +52,9 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id).\
         group_by(TicketType.type_name).all()
 
-    report['attendees_by_ticket_type'] = {type_name: count for type_name, count in attendees_by_type_query}
+    report['attendees_by_ticket_type'] = {str(type_name): count for type_name, count in attendees_by_type_query}
     report['attendees_by_ticket_type_for_graph'] = {
-        'labels': [type_name for type_name, count in attendees_by_type_query],
+        'labels': [str(type_name) for type_name, count in attendees_by_type_query],
         'data': [count for type_name, count in attendees_by_type_query]
     }
 
@@ -72,11 +72,11 @@ def get_event_report(event_id):
         group_by(TicketType.type_name).all()
 
     report['revenue_by_ticket_type'] = {
-        type_name: float(revenue) if revenue else 0.0
+        str(type_name): float(revenue) if revenue else 0.0
         for type_name, revenue in revenue_by_type_query
     }
     report['revenue_by_ticket_type_for_graph'] = {
-        'labels': [type_name for type_name, revenue in revenue_by_type_query],
+        'labels': [str(type_name) for type_name, revenue in revenue_by_type_query],
         'data': [float(revenue) if revenue else 0.0 for type_name, revenue in revenue_by_type_query]
     }
 
@@ -86,9 +86,9 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED').\
         group_by(Transaction.payment_method).all()
 
-    report['payment_method_usage'] = {method: count for method, count in payment_method_usage_query}
+    report['payment_method_usage'] = {str(method): count for method, count in payment_method_usage_query}
     report['payment_method_usage_for_graph'] = {
-        'labels': [method for method, count in payment_method_usage_query],
+        'labels': [str(method) for method, count in payment_method_usage_query],
         'data': [count for method, count in payment_method_usage_query]
     }
 
