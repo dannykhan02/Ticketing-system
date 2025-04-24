@@ -219,29 +219,26 @@ class TicketResource(Resource):
             db.session.add(new_ticket)
             db.session.commit()
 
-            # Now handle payments
+            # Process Payment
             if data["payment_method"] == "Mpesa":
-                try:
-                    body_phone, user_phone = get_valid_phone(data, user)
-                except ValueError as err:
-                    return {"error": str(err)}, 400
+                if "phone_number" not in data or normalize_phone_number(data["phone_number"]) != normalize_phone_number(user.phone_number):
+                    return {"error": "Phone number must be the registered one"}, 400
 
-                if body_phone != user_phone:
-                    return {"error": "Phone number must match the registered one"}, 400
-
+                # Initiate STK Push using the imported class
                 mpesa_data = {
+                    "phone_number": user.phone_number,
                     "amount": amount,
-                    "ticket_id": new_ticket.id,
-                    "transaction_id": transaction.id
+                    "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
+                    "transaction_id": transaction.id  # Pass the ticket's transaction ID
                 }
                 mpesa = STKPush()
-                response, status_code = mpesa.post(mpesa_data)
+                response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
 
                 if status_code == 200:
                     return response, status_code
                 else:
+                    # If STK Push fails, revert the ticket creation
                     db.session.delete(new_ticket)
-                    db.session.delete(transaction)
                     db.session.commit()
                     return response, status_code
 
