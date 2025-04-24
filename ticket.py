@@ -249,39 +249,25 @@ class TicketResource(Resource):
                 if not user.email:
                     return {"error": "User email is required for Paystack payment"}, 400
 
-                paystack_payload = {
-                    "amount": int(amount * 100),
-                    "payment_method": "card"
-                }
-
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {request.headers.get('Authorization').split()[1]}"
-                }
-
-                paystack_initialize_url = "https://ticketing-system-994g.onrender.com/paystack/initialize_payment"
-
-                try:
-                    response = requests.post(paystack_initialize_url, headers=headers, json=paystack_payload)
-                    response.raise_for_status()
-                    res_data = response.json()
-
-                    if res_data.get("message") == "Payment initialized" and res_data.get("data"):
-                        # Add reference to transaction
-                        transaction.payment_reference = res_data.get("data", {}).get("reference")
-                        db.session.commit()
-                        return res_data, response.status_code
-                    else:
-                        db.session.delete(new_ticket)
-                        db.session.delete(transaction)
-                        db.session.commit()
-                        return {"error": f"Paystack initialization failed: {res_data.get('message', 'Unknown error')}"}, response.status_code
-
-                except requests.exceptions.RequestException as e:
+                # Initialize Paystack payment
+                init = initialize_paystack_payment(user.email, int(amount * 100))
+                if isinstance(init, dict) and "error" in init:
+                    # Remote error – roll back and bubble up
                     db.session.delete(new_ticket)
                     db.session.delete(transaction)
                     db.session.commit()
-                    return {"error": f"Error communicating with Paystack: {e}"}, 500
+                    return init, 502  # or 400
+
+                # Save the Paystack reference
+                transaction.payment_reference = init["reference"]
+                db.session.commit()
+
+                # Return the authorization URL so front-end can redirect
+                return {
+                    "message": "Payment initialized",
+                    "authorization_url": init["authorization_url"],
+                    "reference": init["reference"]
+                }, 200
 
             else:
                 db.session.delete(new_ticket)
