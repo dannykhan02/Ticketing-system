@@ -21,6 +21,7 @@ def get_event_report(event_id):
     if not event:
         return {"message": "Event not found"}, 404
 
+    report['event_id'] = event_id  # Add event_id to the report
     report['event_name'] = event.name
     report['event_date'] = event.date.strftime('%Y-%m-%d')  # Assuming event.date is a datetime object
     report['event_location'] = event.location
@@ -34,10 +35,10 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id).\
         group_by(TicketType.type_name).all()
 
-    report['tickets_sold_by_type'] = {type_name.value: count for type_name, count in tickets_by_type_query}
+    report['tickets_sold_by_type'] = {str(type_name): count for type_name, count in tickets_by_type_query}
     report['tickets_sold_by_type_for_graph'] = {
-        'labels': [item.value for item, count in tickets_by_type_query],
-        'data': [count for item, count in tickets_by_type_query]
+        'labels': [str(type_name) for type_name, count in tickets_by_type_query],
+        'data': [count for type_name, count in tickets_by_type_query]
     }
 
     # 2. Number of Attendees (based on scans)
@@ -51,10 +52,10 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id).\
         group_by(TicketType.type_name).all()
 
-    report['attendees_by_ticket_type'] = {type_name.value: count for type_name, count in attendees_by_type_query}
+    report['attendees_by_ticket_type'] = {str(type_name): count for type_name, count in attendees_by_type_query}
     report['attendees_by_ticket_type_for_graph'] = {
-        'labels': [item.value for item, count in attendees_by_type_query],
-        'data': [count for item, count in attendees_by_type_query]
+        'labels': [str(type_name) for type_name, count in attendees_by_type_query],
+        'data': [count for type_name, count in attendees_by_type_query]
     }
 
     # 3. Revenue Generated
@@ -71,12 +72,12 @@ def get_event_report(event_id):
         group_by(TicketType.type_name).all()
 
     report['revenue_by_ticket_type'] = {
-        type_name.value: float(revenue) if revenue else 0.0
+        str(type_name): float(revenue) if revenue else 0.0
         for type_name, revenue in revenue_by_type_query
     }
     report['revenue_by_ticket_type_for_graph'] = {
-        'labels': [item.value for item, revenue in revenue_by_type_query],
-        'data': [float(revenue) if revenue else 0.0 for item, revenue in revenue_by_type_query]
+        'labels': [str(type_name) for type_name, revenue in revenue_by_type_query],
+        'data': [float(revenue) if revenue else 0.0 for type_name, revenue in revenue_by_type_query]
     }
 
     # 4. Payment Method Usage
@@ -85,9 +86,9 @@ def get_event_report(event_id):
         filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED').\
         group_by(Transaction.payment_method).all()
 
-    report['payment_method_usage'] = {method.value: count for method, count in payment_method_usage_query}
+    report['payment_method_usage'] = {str(method): count for method, count in payment_method_usage_query}
     report['payment_method_usage_for_graph'] = {
-        'labels': [method.value for method, count in payment_method_usage_query],
+        'labels': [str(method) for method, count in payment_method_usage_query],
         'data': [count for method, count in payment_method_usage_query]
     }
 
@@ -120,12 +121,13 @@ def get_event_report(event_id):
     db.session.commit()
 
     # Send report to organizer
-    send_report_to_organizer_with_pdf(report_entry)
+    send_report_to_organizer_with_pdf(report)
 
     return report
 
 def send_report_to_organizer_with_pdf(report):
-    event = Event.query.get(report.event_id)
+    event_id = report['event_id']
+    event = Event.query.get(event_id)
     organizer = event.organizer.user
     if not organizer or not organizer.email:
         logger.warning(f"No organizer email for event: {event.name}")
@@ -133,11 +135,11 @@ def send_report_to_organizer_with_pdf(report):
 
     # 1. Generate graph image
     graph_path = f"/tmp/event_report_{event.id}_graph.png"
-    generate_graph_image(report.as_dict(), graph_path)
+    generate_graph_image(report, graph_path)
 
     # 2. Generate PDF file
     pdf_path = f"/tmp/event_report_{event.id}.pdf"
-    generate_pdf_with_graph(report.as_dict(), pdf_path, graph_path)
+    generate_pdf_with_graph(report, event_id, pdf_path, graph_path)
 
     # 3. Create email body
     body = f"""
@@ -145,9 +147,9 @@ def send_report_to_organizer_with_pdf(report):
 
     Attached is the latest sales report for your event: {event.name}.
 
-    Ticket Type: {report.ticket_type.type_name.value}
-    Total Sold: {report.total_tickets_sold}
-    Revenue: ${report.total_revenue:.2f}
+    Ticket Type: {report['tickets_sold_by_type']}
+    Total Sold: {report['total_tickets_sold']}
+    Revenue: ${report['total_revenue']:.2f}
 
     Regards,
     Your Event System Team
@@ -157,7 +159,7 @@ def send_report_to_organizer_with_pdf(report):
     try:
         send_email_with_attachment(
             recipient=organizer.email,
-            subject=f"📎 Event Report - {event.name}",
+            subject=f"📊 Event Report - {event.name}",
             body=body,
             attachment_path=pdf_path
         )
@@ -185,7 +187,7 @@ class ReportResource(Resource):
         if not event:
             return {"message": "Event not found"}, 404
 
-        if event.user_id != user.id:
+        if event.organizer.user_id != user.id:
             return {"message": "You are not authorized to view the report for this event"}, 403
 
         report_data = get_event_report(event_id)
