@@ -195,6 +195,40 @@ class EventResource(Resource):
         except Exception as e:
             return {"error": str(e)}, 500
 
+    @jwt_required()
+    def post(self, event_id):
+        """Like an event."""
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        event = Event.query.get(event_id)
+
+        if not event:
+            return {"message": "Event not found"}, 404
+
+        if user in event.likes:
+            return {"message": "You have already liked this event"}, 400
+
+        event.likes.append(user)
+        db.session.commit()
+        return {"message": "Event liked successfully", "likes_count": event.likes.count()}, 200
+
+    @jwt_required()
+    def delete(self, event_id):
+        """Unlike an event."""
+        user_id = get_jwt_identity()
+        user = User.query.get(user_id)
+        event = Event.query.get(event_id)
+
+        if not event:
+            return {"message": "Event not found"}, 404
+
+        if user not in event.likes:
+            return {"message": "You have not liked this event"}, 400
+
+        event.likes.remove(user)
+        db.session.commit()
+        return {"message": "Event unliked successfully", "likes_count": event.likes.count()}, 200
+
 
 class OrganizerEventsResource(Resource):
     @jwt_required()
@@ -215,5 +249,5 @@ def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
-
-# 📌 Endpoint: Register Event
+    api.add_resource(EventResource, "/events/<int:event_id>/like", endpoint="like_event")
+    api.add_resource(EventResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
