@@ -40,6 +40,13 @@ class PaymentMethod(enum.Enum):
     MPESA = 'Mpesa'
     PAYSTACK = 'Paystack'
 
+# Add a new association table for likes
+event_likes = db.Table(
+    'event_likes',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('event_id', db.Integer, db.ForeignKey('event.id'), primary_key=True)
+)
+
 # User model
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -125,10 +132,11 @@ class Event(db.Model):
     location = db.Column(db.Text, nullable=False)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
-    
+    featured = db.Column(db.Boolean, default=False, nullable=False)  # New featured column
 
+    # Many-to-many relationship for likes
+    likes = db.relationship('User', secondary=event_likes, backref='liked_events', lazy='dynamic')
 
-    
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
@@ -171,12 +179,27 @@ class Event(db.Model):
             "id": self.id,
             "name": self.name,
             "description": self.description,
-            "date": self.date.strftime("%Y-%m-%d"),  # Convert to string for JSON
-            "start_time": self.start_time.strftime("%H:%M:%S"),  # Convert to HH:MM:SS
-            "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else "Till Late",  # Handle None
+            "date": self.date.strftime("%Y-%m-%d") if self.date else None,
+            "start_time": self.start_time.strftime("%H:%M:%S") if self.start_time else None,
+            "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else None,
             "location": self.location,
             "image": self.image,
-            "organizer_id": self.organizer_id
+            "organizer_id": self.organizer_id,
+            "organizer": {
+                "id": self.organizer.id,
+                "company_name": self.organizer.company_name,
+                "company_description": self.organizer.company_description
+            } if self.organizer else None,
+            "tickets": [{
+                "id": ticket.id,
+                "quantity": ticket.quantity,
+                "payment_status": ticket.payment_status.value,
+                "ticket_type": {
+                    "price": ticket.ticket_type.price
+                } if ticket.ticket_type else None
+            } for ticket in self.tickets] if self.tickets else [],
+            "featured": self.featured,
+            "likes_count": self.likes.count()  # Include the number of likes
         }
 
 # TicketType model

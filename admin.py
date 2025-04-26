@@ -33,8 +33,10 @@ class AdminOperations:
     def get_all_events(self):
         """Retrieves all events in the database."""
         try:
-            events = Event.query.all()
-            # Ensure Event model has an as_dict method
+            events = Event.query.options(
+                db.joinedload(Event.organizer),
+                db.joinedload(Event.tickets).joinedload(Ticket.ticket_type)
+            ).all()
             return [event.as_dict() for event in events]
         except SQLAlchemyError as e:
             print(f"Error retrieving events: {e}")
@@ -296,7 +298,7 @@ class AdminGenerateReportPDF(Resource):
 
         # Generate the graph image
         graph_path = f"/tmp/event_report_{event_id}_graph.png"
-        # Ensure generate_graph_image handles the dictionary format of report_data
+        
         generate_graph_image(report_data, graph_path)
 
         # Generate the PDF file
