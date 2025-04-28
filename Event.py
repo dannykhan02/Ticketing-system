@@ -186,7 +186,9 @@ class EventResource(Resource):
             if not event:
                 return {"error": "Event not found"}, 404
 
-            if user.role.value != "ORGANIZER" or event.user_id != user.id:
+            # Ensure the user is the organizer who created the event
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer or event.organizer_id != organizer.id:
                 return {"message": "Only the event creator (organizer) can delete this event"}, 403
 
             db.session.delete(event)
@@ -195,6 +197,8 @@ class EventResource(Resource):
         except Exception as e:
             return {"error": str(e)}, 500
 
+
+class EventLikeResource(Resource):
     @jwt_required()
     def post(self, event_id):
         """Like an event."""
@@ -236,12 +240,17 @@ class OrganizerEventsResource(Resource):
         """Retrieve events created by the logged-in organizer."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
+
         if not user or user.role.value != "ORGANIZER":
             return {"message": "Only organizers can access their events"}, 403
-        events = Event.query.filter_by(user_id=user.id).all()
-        print(f"Fetched events: {events}")  # Add this line
+
+        # Use organizer_id instead of user_id
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if not organizer:
+            return {"message": "Organizer profile not found"}, 404
+
+        events = Event.query.filter_by(organizer_id=organizer.id).all()
         event_list = [event.as_dict() for event in events]
-        print(f"Event list: {event_list}")  
         return event_list, 200
 
 
@@ -249,5 +258,5 @@ def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
-    api.add_resource(EventResource, "/events/<int:event_id>/like", endpoint="like_event")
-    api.add_resource(EventResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
+    api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
+    api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
