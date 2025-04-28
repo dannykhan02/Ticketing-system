@@ -33,7 +33,6 @@ class TicketTypeResource(Resource):
             if not event:
                 return {"error": "Event not found"}, 404
 
-            # Get the organizer record for the current user
             organizer = Organizer.query.filter_by(user_id=user.id).first()
             if not organizer:
                 return {"error": "Organizer profile not found"}, 404
@@ -73,15 +72,35 @@ class TicketTypeResource(Resource):
 
     @jwt_required()
     def get(self, ticket_type_id=None):
-        """Retrieve all ticket types or a specific one."""
-        if ticket_type_id:
-            ticket_type = TicketType.query.get(ticket_type_id)
-            if not ticket_type:
-                return {"message": "Ticket type not found"}, 404
-            return {"ticket_type": ticket_type.as_dict()}, 200
+        """Retrieve ticket types for events owned by the logged-in organizer."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
 
-        ticket_types = TicketType.query.all()
-        return {"ticket_types": [ticket.as_dict() for ticket in ticket_types]}, 200
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"error": "Only organizers can view ticket types for their events"}, 403
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"error": "Organizer profile not found"}, 404
+
+            if ticket_type_id:
+                ticket_type = TicketType.query.get(ticket_type_id)
+                if not ticket_type:
+                    return {"error": "Ticket type not found"}, 404
+                if ticket_type.event.organizer_id != organizer.id:
+                    return {"error": "You do not have permission to view this ticket type"}, 403
+                return {"ticket_type": ticket_type.as_dict()}, 200
+
+            # Fetch all ticket types for events owned by the organizer
+            events = Event.query.filter_by(organizer_id=organizer.id).all()
+            event_ids = [event.id for event in events]
+            ticket_types = TicketType.query.filter(TicketType.event_id.in_(event_ids)).all()
+            return {"ticket_types": [ticket_type.as_dict() for ticket_type in ticket_types]}, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching ticket types: {e}")
+            return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def put(self, ticket_type_id):
@@ -101,7 +120,10 @@ class TicketTypeResource(Resource):
                 return {"error": "Ticket type not found"}, 404
 
             event = Event.query.get(ticket_type.event_id)
-            if event.organizer_id != user.id:
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"error": "Organizer profile not found"}, 404
+            if event.organizer_id != organizer.id:
                 return {"error": "Only the event organizer can update this ticket type"}, 403
 
             data = request.get_json()
@@ -153,7 +175,10 @@ class TicketTypeResource(Resource):
                 return {"error": "Ticket type not found"}, 404
 
             event = Event.query.get(ticket_type.event_id)
-            if event.organizer_id != user.id:
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"error": "Organizer profile not found"}, 404
+            if event.organizer_id != organizer.id:
                 return {"error": "Only the event organizer can delete this ticket type"}, 403
 
             db.session.delete(ticket_type)
