@@ -1,7 +1,7 @@
 from flask import request, jsonify
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, TicketType, User, TicketTypeEnum, UserRole
+from model import db, Event, TicketType, User, TicketTypeEnum, UserRole, Organizer
 import logging
 
 # Configure logging
@@ -33,7 +33,12 @@ class TicketTypeResource(Resource):
             if not event:
                 return {"error": "Event not found"}, 404
 
-            if event.organizer_id != user.id:
+            # Get the organizer record for the current user
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"error": "Organizer profile not found"}, 404
+
+            if event.organizer_id != organizer.id:
                 return {"error": "You can only create ticket types for your own events"}, 403
 
             type_name = data["type_name"].upper()
