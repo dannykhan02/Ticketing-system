@@ -173,16 +173,24 @@ def normalize_phone(phone: str) -> str:
 def is_valid_safaricom_phone(phone: str, region="KE") -> bool:
     """Validates if the phone number is a valid Safaricom number."""
     phone = normalize_phone(phone)
+    
+    # Additional length check
+    if len(phone) not in [9, 10]:
+        logger.warning(f"Invalid length for phone number: {phone}")
+        return False
 
     try:
         parsed_number = pn.parse(phone, region)
         if not pn.is_valid_number(parsed_number):
+            logger.warning(f"Invalid phone number format: {phone}")
             return False
     except pn.phonenumberutil.NumberParseException:
+        logger.warning(f"Failed to parse phone number: {phone}")
         return False
 
-    prefix = phone[:4] if len(phone) >= 10 else ""
-    logger.info(f"Checking prefix: {prefix} in Safaricom prefixes")
+    prefix = phone[:4] if len(phone) >= 10 else phone[:3]
+    logger.info(f"Checking prefix: {prefix} in Safaricom prefixes for number: {phone}")
+    
     return prefix in SAFARICOM_PREFIXES
 
 def validate_password(password: str) -> bool:
