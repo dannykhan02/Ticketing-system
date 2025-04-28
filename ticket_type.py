@@ -189,6 +189,13 @@ class TicketTypeResource(Resource):
             logger.error(f"Error deleting ticket type: {e}")
             return {"error": "An internal error occurred"}, 500
 
+class PublicTicketTypeResource(Resource):
+    def get(self, event_id):
+        """Public: Get all ticket types for a specific event (for attendees to view and purchase)."""
+        ticket_types = TicketType.query.filter_by(event_id=event_id).all()
+        return {"ticket_types": [tt.as_dict() for tt in ticket_types]}, 200
+
 def register_ticket_type_resources(api):
     """Registers ticket type resources with Flask-RESTful API."""
     api.add_resource(TicketTypeResource, "/ticket-types", "/ticket-types/<int:ticket_type_id>")
+    api.add_resource(PublicTicketTypeResource, "/events/<int:event_id>/ticket-types")
