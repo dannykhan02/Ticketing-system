@@ -185,16 +185,30 @@ class EventResource(Resource):
             event = Event.query.get(event_id)
             if not event:
                 return {"error": "Event not found"}, 404
+            # Find the organizer profile for the current user (if they are an organizer)
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
 
-            if user.role != "ORGANIZER" or event.user_id != user.id:
-                return {"message": "Only the event creator (organizer) can delete this event"}, 403
+            # Check if the user is the event's organizer OR an Admin
+            is_organizer = organizer and event.organizer_id == organizer.id
+            is_admin = user.role.value == UserRole.ADMIN.value  # Use Enum
+
+            if not (is_organizer or is_admin):
+                return {"message": "Only the event creator (organizer) or Admin can delete this event"}, 403
 
             db.session.delete(event)
             db.session.commit()
             return {"message": "Event deleted successfully"}, 200
         except Exception as e:
-            return {"error": str(e)}, 500
+             db.session.rollback() # Rollback in case of unexpected error before commit
+             logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True) # Log traceback
+             return {"error": "An unexpected error occurred during event deletion."}, 500
 
+
+class EventLikeResource(Resource):
+    """Resource for handling event likes."""
+
+
+class EventLikeResource(Resource):
     @jwt_required()
     def post(self, event_id):
         """Like an event."""
@@ -234,20 +248,31 @@ class OrganizerEventsResource(Resource):
     @jwt_required()
     def get(self):
         """Retrieve events created by the logged-in organizer."""
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user or user.role != "ORGANIZER":
+        current_user_id = get_jwt_identity()  # Get current user ID
+        user = User.query.get(current_user_id)  # Get current user object
+
+        # Check if the user exists and has the ORGANIZER role
+        if not user or user.role.value != UserRole.ORGANIZER.value:  # Use Enum
             return {"message": "Only organizers can access their events"}, 403
-        events = Event.query.filter_by(user_id=user.id).all()
-        print(f"Fetched events: {events}")  # Add this line
-        event_list = [event.as_dict() for event in events]
-        print(f"Event list: {event_list}")  
-        return event_list, 200
+
+        # Find the Organizer profile linked to this user
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+
+        # If an organizer profile exists, filter events by organizer_id
+        if organizer:
+            events = Event.query.filter_by(organizer_id=organizer.id).all()
+            logger.info(f"Fetched events for organizer_id {organizer.id}: {len(events)} events")
+            event_list = [event.as_dict() for event in events]
+            return event_list, 200
+        else:
+            logger.warning(f"User {current_user_id} has ORGANIZER role but no Organizer profile found.")
+            return {"message": "Organizer profile not found for this user."}, 404
 
 
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
-    api.add_resource(EventResource, "/events/<int:event_id>/like", endpoint="like_event")
-    api.add_resource(EventResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
+    # Resource for liking/unliking events
+    api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
+    api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
