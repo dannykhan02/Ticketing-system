@@ -143,11 +143,39 @@ class TicketResource(Resource):
                 ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
                 if not ticket:
                     return {"error": "Ticket not found or does not belong to you"}, 404
-                return {"ticket_id": ticket.id, "status": ticket.payment_status.value}, 200
+                event = ticket.event
+                ticket_type = ticket.ticket_type
+                return {
+                    "ticket_id": ticket.id,
+                    "event": event.name,
+                    "date": event.date.strftime('%Y-%m-%d') if event.date else None,
+                    "time": event.start_time.strftime('%H:%M:%S') if event.start_time else None,
+                    "location": event.location,
+                    "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
+                    "quantity": ticket.quantity,
+                    "price": ticket_type.price,
+                    "status": ticket.payment_status.value,
+                    "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
+                }, 200
             else:
                 tickets = Ticket.query.filter_by(user_id=user.id).all()
-                ticket_list = [{"ticket_id": ticket.id, "status": ticket.payment_status.value} for ticket in tickets]
-                return ticket_list, 200  # Removed jsonify
+                ticket_list = []
+                for ticket in tickets:
+                    event = ticket.event
+                    ticket_type = ticket.ticket_type
+                    ticket_list.append({
+                        "ticket_id": ticket.id,
+                        "event": event.name,
+                        "date": event.date.strftime('%Y-%m-%d') if event.date else None,
+                        "time": event.start_time.strftime('%H:%M:%S') if event.start_time else None,
+                        "location": event.location,
+                        "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
+                        "quantity": ticket.quantity,
+                        "price": ticket_type.price,
+                        "status": ticket.payment_status.value,
+                        "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
+                    })
+                return ticket_list, 200
 
         except Exception as e:
             logger.error(f"Error checking ticket status: {e}")
