@@ -34,7 +34,7 @@ class EventResource(Resource):
             identity = get_jwt_identity()  # Get current user
             user = User.query.get(identity)
             
-            if not user or user.role != "ORGANIZER":
+            if not user or user.role != UserRole.ORGANIZER:
                 return {"message": "Only organizers can create events"}, 403
 
             organizer = Organizer.query.filter_by(user_id=user.id).first()
@@ -72,12 +72,12 @@ class EventResource(Resource):
 
             # Parse date and time
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-            start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
+            start_time = datetime.strptime(data["start_time"], "%H:%M").time()
 
             # Handle end_time (optional)
             end_time = None
             if "end_time" in data and data["end_time"]:
-                end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
+                end_time = datetime.strptime(data["end_time"], "%H:%M").time()
 
             # Create Event instance
             event = Event(
