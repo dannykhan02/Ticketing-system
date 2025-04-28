@@ -70,14 +70,22 @@ class EventResource(Resource):
                         logger.error(f"Error uploading event image: {str(e)}")
                         return {"message": "Failed to upload event image"}, 500
 
-            # Parse date and time
+            
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-            start_time = datetime.strptime(data["start_time"], "%H:%M").time()
+            logger.info(f"Received start_time: {data['start_time']}")
+            try:
+                start_time = datetime.strptime(data["start_time"], "%H:%M").time()
+            except ValueError:
+                start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
 
-            # Handle end_time (optional)
+            
             end_time = None
             if "end_time" in data and data["end_time"]:
-                end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+                logger.info(f"Received end_time: {data['end_time']}")
+                try:
+                    end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+                except ValueError:
+                    end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
 
             # Create Event instance
             event = Event(
