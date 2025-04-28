@@ -223,11 +223,69 @@ class AdminGetNonAttendees(Resource):
     def get(self):
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
+        
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
+
         admin_ops = AdminOperations(db)
         users = admin_ops.get_non_attendee_users()
-        return users, 200
+
+        separated_users = {
+            "organizers": [],
+            "security": [],
+            "admins": []
+        }
+
+        for user in users:
+            if user.role == UserRole.ORGANIZER:
+                organizer_data = user.as_dict()
+                # Attach organizer profile if available
+                if user.organizer_profile:
+                    organizer_data["organizer_profile"] = user.organizer_profile.as_dict()
+                separated_users["organizers"].append(organizer_data)
+
+            elif user.role == UserRole.SECURITY:
+                separated_users["security"].append(user.as_dict())
+
+            elif user.role == UserRole.ADMIN:
+                separated_users["admins"].append(user.as_dict())
+
+        return separated_users, 200
+class AdminGetUsers(Resource):
+    @jwt_required()
+    def get(self):
+        """Get list of all users categorized by role."""
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+        
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Admin access required"}, 403
+        
+        admin_ops = AdminOperations(db)
+        users = admin_ops.get_users()  # List of dicts [{id:..., email:..., role:...}, {...}, ...]
+
+        # Initialize empty lists for each role
+        categorized_users = {
+            "admins": [],
+            "organizers": [],
+            "security": []
+        }
+
+        # Sort users into categories
+        for user in users:
+            role = user.get("role")
+            if role == UserRole.ADMIN:
+                categorized_users["admins"].append(user)
+            elif role == UserRole.ORGANIZER:
+                categorized_users["organizers"].append(user)
+            elif role == UserRole.SECURITY:
+                categorized_users["security"].append(user)
+            else:
+                # You can choose to ignore or create an "others" section
+                pass
+        
+        return categorized_users, 200
+
 
 class AdminSearchUserByEmail(Resource):
     @jwt_required()
@@ -336,27 +394,16 @@ class AdminDeleteOrganizer(Resource):
         # admin_ops.delete_organizer returns a tuple (message, status_code)
         return admin_ops.delete_organizer(organizer_id)
 
-class AdminGetUsers(Resource):
-    @jwt_required()
-    def get(self):
-        """Get list of all users with optional search."""
-        current_user_id = get_jwt_identity()
-        current_user = User.query.get(current_user_id)
-        if not current_user or current_user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
-        admin_ops = AdminOperations(db)
-        # admin_ops.get_users already returns a list of dicts
-        users = admin_ops.get_users()
-        return users, 200
+
 
 
 def register_admin_resources(api):
     """Registers admin-specific API resources with the Flask-RESTful API."""
+    api.add_resource(AdminGetUsers, "/admin/users")  
     api.add_resource(AdminGetOrganizerEvents, "/admin/organizer/<int:organizer_id>/events")
     api.add_resource(AdminGetAllEvents, "/admin/events")  
     api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")  
     api.add_resource(AdminGetNonAttendees, "/admin/users/non-attendees")
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
     api.add_resource(AdminReportResource, "/admin/reports")  
-    api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")  
-
+    api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
