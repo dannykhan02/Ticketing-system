@@ -103,6 +103,8 @@ class Organizer(db.Model):
 
     user = db.relationship('User', backref=db.backref('organizer_profile', uselist=False))
     events = db.relationship('Event', backref='organizer', lazy=True)
+    tickets = db.relationship('Ticket', backref='organizer', lazy=True)
+    transactions = db.relationship('Transaction', backref='organizer', lazy=True)
 
     def as_dict(self):
         return {
@@ -245,7 +247,6 @@ class Report(db.Model):
             "total_revenue": self.total_revenue
         }
 
-
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     phone_number = db.Column(db.String(255), nullable=True)
@@ -253,9 +254,10 @@ class Ticket(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True)
-    quantity = db.Column(db.Integer, nullable=False)
-    qr_code = db.Column(db.String(255), nullable=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    qr_code = db.Column(db.String(255), unique=True, nullable=False)  # QR code
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
@@ -277,6 +279,7 @@ class Ticket(db.Model):
             "ticket_type_id": self.ticket_type_id,
             "event_id": self.event_id,
             "user_id": self.user_id,
+            "organizer_id": self.organizer_id,
             "transaction_id": self.transaction_id,
             "quantity": self.quantity,
             "qr_code": self.qr_code,
@@ -286,7 +289,6 @@ class Ticket(db.Model):
             "total_price": self.total_price
         }
 
-
 # Transaction model
 class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -295,12 +297,13 @@ class Transaction(db.Model):
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id', use_alter=True, name='fk_transaction_ticket'), nullable=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True)
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
     user = db.relationship('User', back_populates='transactions')
+    organizer = db.relationship('Organizer', backref='transactions')
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
 
     def as_dict(self):
@@ -312,7 +315,9 @@ class Transaction(db.Model):
             "payment_method": self.payment_method.value,
             "timestamp": self.timestamp.isoformat(),
             "merchant_request_id": self.merchant_request_id,
-            "mpesa_receipt_number": self.mpesa_receipt_number
+            "mpesa_receipt_number": self.mpesa_receipt_number,
+            "user_id": self.user_id,
+            "organizer_id": self.organizer_id
         }
 
 # Scan model
