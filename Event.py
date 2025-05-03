@@ -2,7 +2,7 @@ import json
 from flask import request, jsonify
 from flask_restful import Resource
 from datetime import datetime, timedelta
-from model import db, Event, User, UserRole, Organizer
+from model import db, Event, User, UserRole, Organizer, Category
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.uploader
 import logging
@@ -29,25 +29,26 @@ class EventResource(Resource):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
         
-        # Get all events with pagination and join with organizer
-        events = Event.query.join(Organizer).paginate(page=page, per_page=per_page, error_out=False)
+        # Get all events with pagination and join with organizer and category
+        events = Event.query.join(Organizer).join(Category).paginate(page=page, per_page=per_page, error_out=False)
         
         return {
             'events': [{
                 'id': event.id,
                 'name': event.name,
                 'description': event.description,
-                'date': event.date.strftime('%Y-%m-%d'),
-                'start_time': event.start_time.strftime('%H:%M'),
-                'end_time': event.end_time.strftime('%H:%M') if event.end_time else None,
+                'date': event.date.isoformat(),
+                'start_time': event.start_time.isoformat(),
+                'end_time': event.end_time.isoformat() if event.end_time else None,
                 'location': event.location,
                 'image': event.image,
-                'category': event.category,
+                'category': event.event_category.name if event.event_category else None,
+                'category_id': event.category_id,
                 'organizer': {
                     'id': event.organizer.id,
                     'company_name': event.organizer.company_name
                 },
-                'likes_count': len(event.likes)
+                'likes_count': event.likes.count()
             } for event in events.items],
             'total': events.total,
             'pages': events.pages,
@@ -97,22 +98,20 @@ class EventResource(Resource):
                         logger.error(f"Error uploading event image: {str(e)}")
                         return {"message": "Failed to upload event image"}, 500
 
-            
+            # Parse dates and times
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-            logger.info(f"Received start_time: {data['start_time']}")
-            try:
-                start_time = datetime.strptime(data["start_time"], "%H:%M").time()
-            except ValueError:
-                start_time = datetime.strptime(data["start_time"], "%H:%M:%S").time()
-
+            start_time = datetime.strptime(data["start_time"], "%H:%M").time()
             
             end_time = None
             if "end_time" in data and data["end_time"]:
-                logger.info(f"Received end_time: {data['end_time']}")
-                try:
-                    end_time = datetime.strptime(data["end_time"], "%H:%M").time()
-                except ValueError:
-                    end_time = datetime.strptime(data["end_time"], "%H:%M:%S").time()
+                end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+
+            # Get category_id if provided
+            category_id = data.get('category_id')
+            if category_id:
+                category = Category.query.get(category_id)
+                if not category:
+                    return {"message": "Invalid category ID"}, 400
 
             # Create Event instance
             event = Event(
@@ -123,7 +122,8 @@ class EventResource(Resource):
                 end_time=end_time,
                 location=data["location"],
                 image=image_url,
-                organizer_id=organizer.id
+                organizer_id=organizer.id,
+                category_id=category_id
             )
 
             # Validate time (handles overnight events and "Till Late")
@@ -304,10 +304,43 @@ class OrganizerEventsResource(Resource):
             return {"message": "Organizer profile not found for this user."}, 404
 
 
+class CategoryResource(Resource):
+    def get(self):
+        """Get all categories"""
+        categories = Category.query.all()
+        return {
+            'categories': [category.as_dict() for category in categories]
+        }, 200
+
+    @jwt_required()
+    def post(self):
+        """Create a new category (Admin only)"""
+        current_user = User.query.get(get_jwt_identity())
+        if not current_user or current_user.role != UserRole.ADMIN:
+            return {"message": "Only admins can create categories"}, 403
+
+        data = request.get_json()
+        if not data or 'name' not in data:
+            return {"message": "Category name is required"}, 400
+
+        try:
+            category = Category(
+                name=data['name'],
+                description=data.get('description')
+            )
+            db.session.add(category)
+            db.session.commit()
+            return category.as_dict(), 201
+        except Exception as e:
+            db.session.rollback()
+            return {"message": str(e)}, 400
+
+
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
+    api.add_resource(CategoryResource, "/categories")
     # Resource for liking/unliking events
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")

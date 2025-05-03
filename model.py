@@ -122,6 +122,25 @@ class Organizer(db.Model):
             "events_count": len(self.events)
         }
 
+# Add Category model before Event model
+class Category(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    description = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    events = db.relationship('Event', backref='event_category', lazy=True)
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
+
 # Event model
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -134,6 +153,7 @@ class Event(db.Model):
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
     featured = db.Column(db.Boolean, default=False, nullable=False)  # New featured column
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True)  # Changed from category to category_id
 
     # Many-to-many relationship for likes
     likes = db.relationship('User', secondary=event_likes, backref='liked_events', lazy='dynamic')
@@ -200,7 +220,8 @@ class Event(db.Model):
                 } if ticket.ticket_type else None
             } for ticket in self.tickets] if self.tickets else [],
             "featured": self.featured,
-            "likes_count": self.likes.count()  # Include the number of likes
+            "likes_count": self.likes.count(),  # Include the number of likes
+            "category": self.category.name if self.category else None
         }
 
 # TicketType model
