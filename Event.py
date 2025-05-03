@@ -6,6 +6,7 @@ from model import db, Event, User, UserRole, Organizer, Category
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.uploader
 import logging
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,10 +21,14 @@ class EventResource(Resource):
     def get(self, event_id=None):
         """Retrieve an event by ID or return all events if no ID is provided."""
         if event_id:
-            event = Event.query.get(event_id)
-            if event:
-                return event.as_dict(), 200
-            return {"message": "Event not found"}, 404
+            try:
+                event = Event.query.get(event_id)
+                if event:
+                    return event.as_dict(), 200
+                return {"message": "Event not found"}, 404
+            except (OperationalError, SQLAlchemyError) as e:
+                logger.error(f"Database error: {str(e)}")
+                return {"message": "Database connection error"}, 500
         
         # Get pagination parameters from query string
         page = request.args.get('page', 1, type=int)
@@ -63,6 +68,9 @@ class EventResource(Resource):
                 'pages': events.pages,
                 'current_page': events.page
             }, 200
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"Database error: {str(e)}")
+            return {"message": "Database connection error"}, 500
         except Exception as e:
             logger.error(f"Error fetching events: {str(e)}")
             return {"message": "Error fetching events"}, 500
