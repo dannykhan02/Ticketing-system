@@ -29,31 +29,43 @@ class EventResource(Resource):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
         
-        # Get all events with pagination and join with organizer and category
-        events = Event.query.join(Organizer).join(Category).paginate(page=page, per_page=per_page, error_out=False)
-        
-        return {
-            'events': [{
-                'id': event.id,
-                'name': event.name,
-                'description': event.description,
-                'date': event.date.isoformat(),
-                'start_time': event.start_time.isoformat(),
-                'end_time': event.end_time.isoformat() if event.end_time else None,
-                'location': event.location,
-                'image': event.image,
-                'category': event.event_category.name if event.event_category else None,
-                'category_id': event.category_id,
-                'organizer': {
-                    'id': event.organizer.id,
-                    'company_name': event.organizer.company_name
-                },
-                'likes_count': event.likes.count()
-            } for event in events.items],
-            'total': events.total,
-            'pages': events.pages,
-            'current_page': events.page
-        }, 200
+        try:
+            # Get all events with pagination
+            events = Event.query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            if not events.items:
+                return {
+                    'events': [],
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page
+                }
+            
+            return {
+                'events': [{
+                    'id': event.id,
+                    'name': event.name,
+                    'description': event.description,
+                    'date': event.date.isoformat(),
+                    'start_time': event.start_time.isoformat(),
+                    'end_time': event.end_time.isoformat() if event.end_time else None,
+                    'location': event.location,
+                    'image': event.image,
+                    'category': event.event_category.name if event.event_category else None,
+                    'category_id': event.category_id,
+                    'organizer': {
+                        'id': event.organizer.id,
+                        'company_name': event.organizer.company_name
+                    },
+                    'likes_count': event.likes.count()
+                } for event in events.items],
+                'total': events.total,
+                'pages': events.pages,
+                'current_page': events.page
+            }, 200
+        except Exception as e:
+            logger.error(f"Error fetching events: {str(e)}")
+            return {"message": "Error fetching events"}, 500
 
     @jwt_required()
     def post(self):
