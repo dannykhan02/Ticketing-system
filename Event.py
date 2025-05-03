@@ -30,7 +30,7 @@ class EventResource(Resource):
                 logger.error(f"Database error: {str(e)}")
                 return {"message": "Database connection error"}, 500
         
-        # Get pagination parameters from query string
+      
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
         
