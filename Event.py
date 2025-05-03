@@ -29,11 +29,26 @@ class EventResource(Resource):
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
         
-        # Get all events with pagination
-        events = Event.query.paginate(page=page, per_page=per_page, error_out=False)
+        # Get all events with pagination and join with organizer
+        events = Event.query.join(Organizer).paginate(page=page, per_page=per_page, error_out=False)
         
         return {
-            'events': [event.as_dict() for event in events.items],
+            'events': [{
+                'id': event.id,
+                'name': event.name,
+                'description': event.description,
+                'date': event.date.strftime('%Y-%m-%d'),
+                'start_time': event.start_time.strftime('%H:%M'),
+                'end_time': event.end_time.strftime('%H:%M') if event.end_time else None,
+                'location': event.location,
+                'image': event.image,
+                'category': event.category,
+                'organizer': {
+                    'id': event.organizer.id,
+                    'company_name': event.organizer.company_name
+                },
+                'likes_count': len(event.likes)
+            } for event in events.items],
             'total': events.total,
             'pages': events.pages,
             'current_page': events.page

@@ -94,7 +94,7 @@ class Organizer(db.Model):
     company_logo = db.Column(db.String(255), nullable=True)
     company_description = db.Column(db.Text, nullable=True)
     website = db.Column(db.String(255), nullable=True)
-    social_media_links = db.Column(db.JSON, nullable=True)  # Store social media links as JSON
+    social_media_links = db.Column(db.JSON, nullable=True)
     business_registration_number = db.Column(db.String(255), nullable=True)
     tax_id = db.Column(db.String(255), nullable=True)
     address = db.Column(db.Text, nullable=True)
@@ -104,7 +104,6 @@ class Organizer(db.Model):
     user = db.relationship('User', backref=db.backref('organizer_profile', uselist=False))
     events = db.relationship('Event', backref='organizer', lazy=True)
     tickets = db.relationship('Ticket', backref='organizer', lazy=True)
-    transactions = db.relationship('Transaction', backref='organizer', lazy=True)
 
     def as_dict(self):
         return {
@@ -299,11 +298,11 @@ class Transaction(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True)
-    merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # Changed nullable to True
+    merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
     user = db.relationship('User', back_populates='transactions')
-    organizer = db.relationship('Organizer', backref='transactions')
+    organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
 
     def as_dict(self):
