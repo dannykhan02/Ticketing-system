@@ -10,6 +10,8 @@ from flask_session import Session
 from flask_cors import CORS
 from dotenv import load_dotenv
 import cloudinary
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
 # Import modules
 from config import Config
 from model import db
@@ -31,19 +33,36 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 
-
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
 
+# Configure database with SSL and connection pooling
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'poolclass': QueuePool,
+    'pool_size': 5,
+    'max_overflow': 10,
+    'pool_timeout': 30,
+    'pool_recycle': 1800,
+    'connect_args': {
+        'sslmode': 'require'
+    }
+}
 app.config.from_object(Config)
 
 # Configure CORS with specific settings
+CORS(app,
+     origins=["http://localhost:8080"],
+     supports_credentials=True,
+    expose_headers=["Set-Cookie"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"])
 
-
-# ✅ Configure and initialize database
+# Initialize database
 db.init_app(app)
+
+# Configure JWT
 app.config['JWT_COOKIE_SECURE'] = True 
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']  
 app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
@@ -52,30 +71,27 @@ app.config['JWT_HEADER_TYPE'] = 'Bearer'
 app.config['JWT_COOKIE_CSRF_PROTECT'] = False 
 app.config['JWT_COOKIE_SECURE'] = True 
 app.config['JWT_COOKIE_SAMESITE'] = "None"  
+
+# Configure session
 app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db
-
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-
-CORS(app,
-     origins=["http://localhost:8080"],
-     supports_credentials=True,
-    expose_headers=["Set-Cookie"],
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     allow_headers=["Content-Type", "Authorization"])
-
+# Initialize extensions
 Session(app)
 api = Api(app)
 jwt = JWTManager(app)
 migrate = Migrate(app, db)
 mail.init_app(app)
 init_oauth(app)
+
+# Configure Cloudinary
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
+
 # ✅ Register blueprints and API resources
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
