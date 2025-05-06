@@ -162,17 +162,17 @@ class Event(db.Model):
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
 
-    # def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
-    #     self.name = name
-    #     self.description = description
-    #     self.date = date
-    #     self.start_time = start_time
-    #     self.end_time = end_time
-    #     self.location = location
-    #     self.image = image
-    #     self.organizer_id = organizer_id
-    #     self.category_id = category_id
-    #     self.validate_datetime()  
+    def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
+        self.name = name
+        self.description = description
+        self.date = date
+        self.start_time = start_time
+        self.end_time = end_time
+        self.location = location
+        self.image = image
+        self.organizer_id = organizer_id
+        self.category_id = category_id
+        self.validate_datetime()  
 
     def validate_datetime(self):
         """Ensures start_time is before end_time and date is not in the past."""
@@ -221,7 +221,7 @@ class Event(db.Model):
             } for ticket in self.tickets] if self.tickets else [],
             "featured": self.featured,
             "likes_count": self.likes.count(),  # Include the number of likes
-            "category": self.category.name if self.category else None
+            "category": self.event_category.name if self.event_category else None
         }
 
 # TicketType model
