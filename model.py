@@ -162,7 +162,7 @@ class Event(db.Model):
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
 
-    def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id):
+    def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
         self.name = name
         self.description = description
         self.date = date
@@ -171,7 +171,7 @@ class Event(db.Model):
         self.location = location
         self.image = image
         self.organizer_id = organizer_id
-
+        self.category_id = category_id
         self.validate_datetime()  # Ensure valid date and time
 
     def validate_datetime(self):
