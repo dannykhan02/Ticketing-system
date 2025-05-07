@@ -242,7 +242,7 @@ class TicketResource(Resource):
                 email=user.email,
                 payment_status=PaymentStatus.PENDING,
                 transaction_id=transaction.id,
-                user_id=user.id
+                user_id=user.id,
                 qr_code=temp_qr_code
             )
             db.session.add(new_ticket)
