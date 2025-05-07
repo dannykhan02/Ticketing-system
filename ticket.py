@@ -232,7 +232,7 @@ class TicketResource(Resource):
             )
             db.session.add(transaction)
             db.session.flush()  # Get the transaction.id before commit
-
+            temp_qr_code = f"pending_{uuid.uuid4()}"
             # Create the Ticket using the transaction.id
             new_ticket = Ticket(
                 event_id=event.id,
@@ -243,6 +243,7 @@ class TicketResource(Resource):
                 payment_status=PaymentStatus.PENDING,
                 transaction_id=transaction.id,
                 user_id=user.id
+                qr_code=temp_qr_code
             )
             db.session.add(new_ticket)
             db.session.commit()
