@@ -25,11 +25,12 @@ def send_email(to, subject, body, html=False):
         else:
             msg.body = body
 
-        current_app.mail.send(msg)
+        mail.send(msg)  # ✅ Use the initialized mail object here
         logger.info(f"Email sent successfully to {to}")
     except Exception as e:
         logger.error(f"Error sending email to {to}: {str(e)}")
         raise
+
 
 def send_email_with_attachment(recipient, subject, body, attachment_path=None):
     """Function to send an email with an optional attachment."""
