@@ -94,7 +94,7 @@ class EventResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-            # Get form data and files
+           
             data = request.form
             files = request.files
 
