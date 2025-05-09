@@ -60,7 +60,12 @@ class EventResource(Resource):
                     'category_id': event.category_id,
                     'organizer': {
                         'id': event.organizer.id,
-                        'company_name': event.organizer.company_name
+                        'company_name': event.organizer.company_name,
+                        'company_logo': event.organizer.company_logo,
+                        'media': event.organizer.social_media_links ,
+                        'address': event.organizer.address,
+
+
                     },
                     'likes_count': event.likes.count()
                 } for event in events.items],
