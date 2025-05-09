@@ -64,6 +64,7 @@ class EventResource(Resource):
                         'company_logo': event.organizer.company_logo,
                         'media': event.organizer.social_media_links ,
                         'address': event.organizer.address,
+                        'website': event.organizer.website
 
 
                     },
