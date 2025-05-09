@@ -98,7 +98,7 @@ class Organizer(db.Model):
     business_registration_number = db.Column(db.String(255), nullable=True)
     tax_id = db.Column(db.String(255), nullable=True)
     address = db.Column(db.Text, nullable=True)
-    company_descriptions = db.Column(db.Text, nullable=True)
+   
 
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
