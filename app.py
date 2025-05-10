@@ -59,7 +59,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 
 CORS(app,
-     origins=["http://localhost:8080"],
+     origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
     expose_headers=["Set-Cookie"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
