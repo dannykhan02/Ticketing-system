@@ -40,27 +40,28 @@ def complete_ticket_operation(transaction):
     """Updates ticket status once payment is successful and sends confirmation email."""
     try:
         logger.info(f"Completing ticket operation for Transaction ID: {transaction.id}")
-        ticket = Ticket.query.filter_by(transaction_id=transaction.id).first()
-        if not ticket:
-            logging.error(f"Ticket with transaction ID {transaction.id} not found.")
-            raise ValueError("Ticket not found")
+        tickets = Ticket.query.filter_by(transaction_id=transaction.id).all()
+        if not tickets:
+            logging.error(f"Tickets with transaction ID {transaction.id} not found.")
+            raise ValueError("Tickets not found")
 
         # Update ticket status
-        ticket.payment_status = PaymentStatus.PAID
+        for ticket in tickets:
+            ticket.payment_status = PaymentStatus.PAID
+
         db.session.commit()
 
         # Log success
-        logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
+        logger.info(f"Tickets for Transaction ID {transaction.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
 
-        # Generate QR code
-        qr_code_data, qr_code_image = generate_qr_code(ticket)
-
-        # Send confirmation email
-        user = User.query.get(ticket.user_id)
-        send_confirmation_email(user, ticket, qr_code_data, qr_code_image)
+        # Generate QR code and send confirmation email for each ticket
+        for ticket in tickets:
+            qr_code_data, qr_code_image = generate_qr_code(ticket)
+            user = User.query.get(ticket.user_id)
+            send_confirmation_email(user, ticket, qr_code_data, qr_code_image)
 
     except Exception as e:
-        logger.error(f"Error updating ticket {transaction.id}: {str(e)}")
+        logger.error(f"Error updating tickets for Transaction ID {transaction.id}: {str(e)}")
         raise
 
 def generate_qr_code(ticket):
@@ -183,7 +184,7 @@ class TicketResource(Resource):
 
     @jwt_required()
     def post(self):
-        """Create a new ticket for the authenticated user after successful payment."""
+        """Create new tickets for the authenticated user after successful payment."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -195,7 +196,7 @@ class TicketResource(Resource):
                 return {"error": "Only attendees can purchase tickets"}, 403
 
             data = request.get_json()
-            required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]
+            required_fields = ["event_id", "ticket_types", "payment_method"]
             if not all(field in data for field in required_fields):
                 return {"error": "Missing required fields"}, 400
 
@@ -203,27 +204,39 @@ class TicketResource(Resource):
             if not event:
                 return {"error": "Event not found"}, 404
 
-            ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"], event_id=event.id).first()
-            if not ticket_type:
-                return {"error": "Ticket type not found for this event"}, 404
+            ticket_types = data["ticket_types"]
+            total_amount = 0
+            tickets = []
 
-            if ticket_type.quantity == 0:
-                return {"error": "Tickets for this type are sold out"}, 400
+            for ticket_type_data in ticket_types:
+                ticket_type = TicketType.query.filter_by(id=ticket_type_data["ticket_type_id"], event_id=event.id).first()
+                if not ticket_type:
+                    return {"error": f"Ticket type {ticket_type_data['ticket_type_id']} not found for this event"}, 404
 
-            if data["quantity"] <= 0:
-                return {"error": "Quantity must be at least 1"}, 400
+                if ticket_type.quantity == 0:
+                    return {"error": f"Tickets for type {ticket_type.type_name} are sold out"}, 400
 
-            if ticket_type.quantity < data["quantity"]:
-                return {"error": f"Only {ticket_type.quantity} tickets are available"}, 400
+                if ticket_type_data["quantity"] <= 0:
+                    return {"error": "Quantity must be at least 1"}, 400
 
-            amount = ticket_type.price * data["quantity"]
+                if ticket_type.quantity < ticket_type_data["quantity"]:
+                    return {"error": f"Only {ticket_type.quantity} tickets are available for type {ticket_type.type_name}"}, 400
+
+                amount = ticket_type.price * ticket_type_data["quantity"]
+                total_amount += amount
+
+                tickets.append({
+                    "ticket_type_id": ticket_type.id,
+                    "quantity": ticket_type_data["quantity"],
+                    "total_price": amount
+                })
 
             # Generate a unique payment reference
             payment_reference = str(uuid.uuid4())
 
             # Create a new Transaction first (PENDING for now)
             transaction = Transaction(
-                amount_paid=amount,
+                amount_paid=total_amount,
                 payment_status=PaymentStatus.PENDING,
                 payment_reference=payment_reference,  # Set the payment reference
                 payment_method=data["payment_method"].upper(),  # e.g., "MPESA" or "PAYSTACK"
@@ -232,20 +245,24 @@ class TicketResource(Resource):
             )
             db.session.add(transaction)
             db.session.flush()  # Get the transaction.id before commit
-            temp_qr_code = f"pending_{uuid.uuid4()}"
-            # Create the Ticket using the transaction.id
-            new_ticket = Ticket(
-                event_id=event.id,
-                ticket_type_id=ticket_type.id,
-                quantity=data["quantity"],
-                phone_number=user.phone_number,
-                email=user.email,
-                payment_status=PaymentStatus.PENDING,
-                transaction_id=transaction.id,
-                user_id=user.id,
-                qr_code=temp_qr_code
-            )
-            db.session.add(new_ticket)
+
+            # Create the Tickets using the transaction.id
+            for ticket_data in tickets:
+                temp_qr_code = f"pending_{uuid.uuid4()}"
+                new_ticket = Ticket(
+                    event_id=event.id,
+                    ticket_type_id=ticket_data["ticket_type_id"],
+                    quantity=ticket_data["quantity"],
+                    phone_number=user.phone_number,
+                    email=user.email,
+                    payment_status=PaymentStatus.PENDING,
+                    transaction_id=transaction.id,
+                    user_id=user.id,
+                    qr_code=temp_qr_code,
+                    total_price=ticket_data["total_price"]
+                )
+                db.session.add(new_ticket)
+
             db.session.commit()
 
             # Process Payment
@@ -256,9 +273,8 @@ class TicketResource(Resource):
                 # Initiate STK Push using the imported class
                 mpesa_data = {
                     "phone_number": user.phone_number,
-                    "amount": amount,
-                    "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
-                    "transaction_id": transaction.id  # Pass the ticket's transaction ID
+                    "amount": total_amount,
+                    "transaction_id": transaction.id  # Pass the transaction ID
                 }
                 mpesa = STKPush()
                 response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
@@ -267,8 +283,7 @@ class TicketResource(Resource):
                     return response, status_code
                 else:
                     # If STK Push fails, revert the ticket creation
-                    db.session.delete(new_ticket)
-                    db.session.commit()
+                    db.session.rollback()
                     return response, status_code
 
             elif data["payment_method"] == "Paystack":
@@ -276,12 +291,10 @@ class TicketResource(Resource):
                     return {"error": "User email is required for Paystack payment"}, 400
 
                 # Initialize Paystack payment
-                init = initialize_paystack_payment(user.email, int(amount * 100))
+                init = initialize_paystack_payment(user.email, int(total_amount * 100))
                 if isinstance(init, dict) and "error" in init:
                     # Remote error – roll back and bubble up
-                    db.session.delete(new_ticket)
-                    db.session.delete(transaction)
-                    db.session.commit()
+                    db.session.rollback()
                     return init, 502  # or 400
 
                 # Save the Paystack reference
@@ -296,9 +309,7 @@ class TicketResource(Resource):
                 }, 200
 
             else:
-                db.session.delete(new_ticket)
-                db.session.delete(transaction)
-                db.session.commit()
+                db.session.rollback()
                 return {"error": "Invalid payment method"}, 400
 
         except OperationalError as e:
