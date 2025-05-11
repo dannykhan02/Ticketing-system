@@ -1,4 +1,4 @@
-from flask import request, jsonify
+from flask import request, jsonify, redirect
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Transaction, PaymentStatus, PaymentMethod
@@ -158,7 +158,24 @@ class PaystackCallback(Resource):
             logger.error(f"Error processing Paystack callback: {e}")
             return {"error": "Error processing callback", "details": str(e)}, 500
 
+class PaymentStatusRedirect(Resource):
+    def get(self):
+        reference = request.args.get("reference")
+        status = request.args.get("status")
+
+        if not reference or not status:
+            return {"message": "Missing reference or status"}, 400
+
+        # Redirect the user to the appropriate page based on the status
+        if status == "success":
+            return redirect(f"https://pulse-ticket-verse.netlify.app/payment-success?reference={reference}")
+        elif status == "failed":
+            return redirect(f"https://pulse-ticket-verse.netlify.app/payment-failed?reference={reference}")
+        else:
+            return redirect(f"https://pulse-ticket-verse.netlify.app/payment-pending?reference={reference}")
+
 def register_paystack_routes(api):
     api.add_resource(VerifyPayment, '/paystack/verify/<string:reference>')
     api.add_resource(PaystackCallback, '/paystack/callback')
     api.add_resource(RefundPayment, '/paystack/refund')
+    api.add_resource(PaymentStatusRedirect, '/payment-status')
