@@ -126,7 +126,7 @@ class PaystackCallback(Resource):
             data = payload.get('data')
 
             if event == 'charge.success':
-                reference = data.get('reference') or data.get('metadata', {}).get('reference')
+                reference = data.get('status') 
                 logger.info(f"Paystack callback: charge.success event for reference: {reference}")
                 if reference:
                     transaction = Transaction.query.filter_by(payment_reference=reference).first()
