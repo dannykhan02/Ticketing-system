@@ -39,10 +39,7 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config.from_object(Config)
 
-# Configure CORS with specific settings
 
-
-# ✅ Configure and initialize database
 db.init_app(app)
 app.config['JWT_COOKIE_SECURE'] = True 
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']  
