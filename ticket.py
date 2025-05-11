@@ -287,7 +287,7 @@ class TicketResource(Resource):
                 # Save the Paystack reference
                 transaction.payment_reference = init["reference"]
                 db.session.commit()
-
+                logger.info(f"Paystack payment initialized with reference: {init['reference']}")
                 # Return the authorization URL so front-end can redirect
                 return {
                     "message": "Payment initialized",
