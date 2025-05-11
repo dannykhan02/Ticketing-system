@@ -17,7 +17,7 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 class EventResource(Resource):
-    @jwt_required()
+    
     def get(self, event_id=None):
         """Retrieve an event by ID or return all events if no ID is provided."""
         if event_id:
@@ -60,7 +60,15 @@ class EventResource(Resource):
                     'category_id': event.category_id,
                     'organizer': {
                         'id': event.organizer.id,
-                        'company_name': event.organizer.company_name
+                        'company_name': event.organizer.company_name,
+                        'company_logo': event.organizer.company_logo,
+                        'media': event.organizer.social_media_links ,
+                        'address': event.organizer.address,
+                        'website': event.organizer.website,
+                        'company_description': event.organizer.company_description
+
+
+
                     },
                     'likes_count': event.likes.count()
                 } for event in events.items],
@@ -89,7 +97,7 @@ class EventResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-            # Get form data and files
+           
             data = request.form
             files = request.files
 
