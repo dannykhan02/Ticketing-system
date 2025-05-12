@@ -2,6 +2,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import enum
+import uuid
 
 # Initialize SQLAlchemy
 db = SQLAlchemy()
@@ -49,7 +50,7 @@ event_likes = db.Table(
 
 # User model
 class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     email = db.Column(db.String(255), nullable=False, unique=True)
     password = db.Column(db.String(255))
     full_name = db.Column(db.String(100))  # New field for name storage
@@ -88,7 +89,7 @@ class User(db.Model):
         return UserRole(role)
 
 class Organizer(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
     company_name = db.Column(db.String(255), nullable=False)
     company_logo = db.Column(db.String(255), nullable=True)
@@ -126,7 +127,7 @@ class Organizer(db.Model):
 
 # Add Category model before Event model
 class Category(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.String(100), nullable=False, unique=True)
     description = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
@@ -145,7 +146,7 @@ class Category(db.Model):
 
 # Event model
 class Event(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = db.Column(db.Text, nullable=False)
     description = db.Column(db.Text, nullable=False)
     date = db.Column(db.Date, nullable=False, index=True)  # Index for faster search
@@ -228,7 +229,7 @@ class Event(db.Model):
 
 # TicketType model
 class TicketType(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
     price = db.Column(db.Float, nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
@@ -247,7 +248,7 @@ class TicketType(db.Model):
         }
 
 class Report(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
 
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False, index=True)
@@ -270,7 +271,7 @@ class Report(db.Model):
         }
 
 class Ticket(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     phone_number = db.Column(db.String(255), nullable=True)
     email = db.Column(db.Text, nullable=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
@@ -278,20 +279,23 @@ class Ticket(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
-    quantity = db.Column(db.Integer, nullable=False, default=1)
+    quantity = db.Column(db.Integer, nullable=False, default=1)  # Always 1 for individual tickets
     qr_code = db.Column(db.String(255), unique=True, nullable=False)  # QR code
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)  # New field
+    merchant_request_id = db.Column(db.String(255), nullable=True)  # For payment reference
 
+    # Relationships
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
+    ticket_type = db.relationship('TicketType', backref='tickets')
+    event = db.relationship('Event', backref='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
     @property
     def total_price(self):
         ticket_type = TicketType.query.get(self.ticket_type_id)
-        return self.quantity * ticket_type.price if ticket_type else 0
+        return ticket_type.price if ticket_type else 0
 
     def as_dict(self):
         return {
@@ -307,13 +311,31 @@ class Ticket(db.Model):
             "qr_code": self.qr_code,
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
-            "merchant_request_id": self.merchant_request_id,  # New field
+            "merchant_request_id": self.merchant_request_id,
             "total_price": self.total_price
         }
 
-# Transaction model
+# Fixed TransactionTicket model (junction table)
+class TransactionTicket(db.Model):
+    __tablename__ = 'transaction_ticket'
+    
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))  # Added primary key
+    transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Create unique constraint to prevent duplicate entries
+    __table_args__ = (db.UniqueConstraint('transaction_id', 'ticket_id', name='uix_transaction_ticket'),)
+    
+    # Relationships
+    transaction = db.relationship('Transaction', backref=db.backref('transaction_tickets', lazy=True))
+    ticket = db.relationship('Ticket', backref=db.backref('transaction_tickets', lazy=True))
+
+# Updated Transaction model
 class Transaction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    __tablename__ = 'transaction'
+    
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
@@ -324,9 +346,15 @@ class Transaction(db.Model):
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
+    # Relationships
     user = db.relationship('User', back_populates='transactions')
     organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
+    
+    # Method to get all tickets associated with this transaction through the junction table
+    def get_tickets(self):
+        ticket_ids = [tt.ticket_id for tt in self.transaction_tickets]
+        return Ticket.query.filter(Ticket.id.in_(ticket_ids)).all()
 
     def as_dict(self):
         return {
@@ -339,12 +367,13 @@ class Transaction(db.Model):
             "merchant_request_id": self.merchant_request_id,
             "mpesa_receipt_number": self.mpesa_receipt_number,
             "user_id": self.user_id,
-            "organizer_id": self.organizer_id
+            "organizer_id": self.organizer_id,
+            "ticket_count": len(self.transaction_tickets) if hasattr(self, 'transaction_tickets') else 0
         }
 
 # Scan model
 class Scan(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.Integer, primary_key=True, default=lambda: str(uuid.uuid4()))
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
     scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     scanned_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)

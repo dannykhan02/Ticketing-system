@@ -1,7 +1,7 @@
 from flask import request, jsonify
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod
+from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod, TransactionTicket
 from config import Config
 # Import Paystack functionalities
 from paystack import initialize_paystack_payment, refund_paystack_payment
@@ -40,35 +40,54 @@ def complete_ticket_operation(transaction):
     """Updates ticket status once payment is successful and sends confirmation email."""
     try:
         logger.info(f"Completing ticket operation for Transaction ID: {transaction.id}")
-        ticket = Ticket.query.filter_by(transaction_id=transaction.id).first()
-        if not ticket:
-            logging.error(f"Ticket with transaction ID {transaction.id} not found.")
-            raise ValueError("Ticket not found")
-
-        # Update ticket status
-        ticket.payment_status = PaymentStatus.PAID
+        
+        # Get all tickets associated with this transaction
+        transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
+        
+        if not transaction_tickets:
+            logging.error(f"No tickets found for transaction ID {transaction.id}")
+            raise ValueError("No tickets found for this transaction")
+        
+        tickets = []
+        qr_codes_data = []
+        qr_codes_images = []
+        
+        # Update all tickets status and generate QR codes
+        for trans_ticket in transaction_tickets:
+            ticket = Ticket.query.get(trans_ticket.ticket_id)
+            if not ticket:
+                logger.warning(f"Ticket with ID {trans_ticket.ticket_id} not found")
+                continue
+                
+            # Update ticket status
+            ticket.payment_status = PaymentStatus.PAID
+            
+            # Generate QR code for this ticket
+            qr_code_data, qr_code_image = generate_qr_code(ticket)
+            
+            tickets.append(ticket)
+            qr_codes_data.append(qr_code_data)
+            qr_codes_images.append(qr_code_image)
+            
+            # Log success
+            logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
+        
         db.session.commit()
-
-        # Log success
-        logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
-
-        # Generate QR code
-        qr_code_data, qr_code_image = generate_qr_code(ticket)
-
-        # Send confirmation email
-        user = User.query.get(ticket.user_id)
-        send_confirmation_email(user, ticket, qr_code_data, qr_code_image)
-
+        
+        # Send confirmation email with all QR codes
+        if tickets:
+            user = User.query.get(tickets[0].user_id)
+            send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_images)
+        
     except Exception as e:
-        logger.error(f"Error updating ticket {transaction.id}: {str(e)}")
+        logger.error(f"Error updating tickets for transaction {transaction.id}: {str(e)}")
         raise
 
 def generate_qr_code(ticket):
     """Generates a QR code with a secure encrypted URL and returns it as a base64-encoded image."""
-    serializer = URLSafeSerializer(Config.SECRET_KEY)
-    encrypted_data = serializer.dumps({"ticket_id": ticket.id, "event_id": ticket.event_id})
-    qr_code_data = f"https://ticketing-system-994g.onrender.com/validate_ticket?id={encrypted_data}"
-
+  
+    qr_code_data = ticket.qr_code
+    
     # Generate QR code image
     qr = qrcode.QRCode(
         version=1,
@@ -79,53 +98,326 @@ def generate_qr_code(ticket):
     qr.add_data(qr_code_data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
-
+    
     # Convert to base64
     buffered = io.BytesIO()
     img.save(buffered, format="PNG")
     img_str = base64.b64encode(buffered.getvalue()).decode()
-
+    
     return qr_code_data, img_str
 
-def send_confirmation_email(user, ticket, qr_code_data, qr_code_image, is_new=True):
-    """Sends an email with the ticket details and embedded QR code."""
-    event = ticket.event
-    ticket_type = ticket.ticket_type
+def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_images, is_new=True):
+    """Sends an email with multiple ticket details and embedded QR codes."""
+    if not tickets:
+        logger.error("No tickets to send email for")
+        return
+        
+    # Get event details from the first ticket (all tickets are for the same event)
+    first_ticket = tickets[0]
+    event = Event.query.get(first_ticket.event_id)
+    
     event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
     start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
     end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
-
-    subject = f"🎟 {'Your' if is_new else 'Updated'} Ticket Confirmation - {event.name} 🎟"
+    
+    subject = f"🎫 {'Your' if is_new else 'Updated'} Tickets Confirmation - {event.name} 🎫"
+    
+    # Start building the HTML email body
     body = f"""
-    Dear {user.email} ({user.phone_number}),
-
-    🎉 **Your Ticket Booking is {'Confirmed' if is_new else 'Updated'}!** 🎉
-
-    📌 **Event Details:**
-    - **Event:** {event.name}
-    - **Location:** {event.location}
-    - **Date:** {event_date}
-    - **Time:** {start_time} - {end_time}
-    - **Description:** {event.description}
-
-    🎟 **Your Ticket:**
-    - **Type:** {ticket_type.type_name}
-    - **Quantity:** {ticket.quantity}
-    - **Purchase Date:** {ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
-    - **Scanned:** {'Yes' if ticket.scanned else 'No'}
-    - **Amount Paid:** {ticket.total_price}
-    - **Payment Method:** {ticket.transaction.payment_method.value if ticket.transaction else 'Pending'}
-
-    📩 **Your QR Code:**
-    <img src="data:image/png;base64,{qr_code_image}" alt="Ticket QR Code" style="display:block; margin:20px auto; width:200px; height:200px;">
-
-    Your {'unique' if is_new else 'updated'} QR code is also available as text: {qr_code_data}
-    Please present this code at the entrance for seamless check-in.
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+            
+            body {{
+                font-family: 'Poppins', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background-color: #f5f5f5;
+            }}
+            .wrapper {{
+                padding: 20px;
+            }}
+            .header {{
+                background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
+                color: white;
+                padding: 25px 15px;
+                text-align: center;
+                border-radius: 10px 10px 0 0;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }}
+            .header h1 {{
+                margin: 0;
+                font-size: 28px;
+                letter-spacing: 1px;
+            }}
+            .content {{
+                background-color: white;
+                padding: 30px 25px;
+                border-radius: 0 0 10px 10px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            }}
+            .event-details {{
+                margin-bottom: 25px;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 20px;
+            }}
+            .event-property {{
+                display: flex;
+                margin-bottom: 10px;
+            }}
+            .property-label {{
+                font-weight: 600;
+                min-width: 120px;
+                color: #4a154b;
+            }}
+            .property-value {{
+                flex-grow: 1;
+            }}
+            .qr-container {{
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 20px;
+                margin: 25px 0;
+            }}
+            .qr-code {{
+                text-align: center;
+                margin-bottom: 15px;
+                padding: 15px;
+                border: 1px solid #eaeaea;
+                border-radius: 10px;
+                background-color: white;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+                transition: transform 0.3s ease;
+            }}
+            .qr-code:hover {{
+                transform: translateY(-5px);
+                box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            }}
+            .ticket-label {{
+                font-weight: 600;
+                margin-bottom: 10px;
+                color: #4a154b;
+                font-size: 16px;
+                padding: 5px 10px;
+                background-color: #f6f3ff;
+                border-radius: 20px;
+                display: inline-block;
+            }}
+            .section-title {{
+                position: relative;
+                padding-left: 15px;
+                margin-top: 30px;
+                color: #4a154b;
+                font-weight: 600;
+            }}
+            .section-title:before {{
+                content: '';
+                position: absolute;
+                left: 0;
+                top: 0;
+                height: 100%;
+                width: 5px;
+                background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
+                border-radius: 5px;
+            }}
+            .footer {{
+                margin-top: 30px;
+                text-align: center;
+                color: #777;
+                font-size: 14px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+            }}
+            .highlight {{
+                background-color: #f6f3ff;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 15px 0;
+                border-left: 4px solid #4a154b;
+            }}
+            .btn, .btn-download {{
+                display: inline-block;
+                padding: 10px 20px;
+                background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
+                color: white;
+                text-decoration: none;
+                border-radius: 5px;
+                font-weight: 500;
+                margin-top: 15px;
+                text-align: center;
+            }}
+            .btn-download {{
+                padding: 6px 12px;
+                font-size: 13px;
+                margin-top: 8px;
+                transition: all 0.3s ease;
+            }}
+            .btn-download:hover {{
+                background: linear-gradient(135deg, #7b3dab 0%, #5c1a5e 100%);
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            }}
+            .download-link {{
+                margin-top: 5px;
+            }}
+            .ticket-id {{
+                font-size: 12px;
+                color: #777;
+                margin-top: 5px;
+            }}
+            .qr-img {{
+                width: 180px;
+                height: 180px;
+                padding: 10px;
+                background-color: white;
+                border-radius: 5px;
+                margin: 10px auto;
+                display: block;
+            }}
+            @media only screen and (max-width: 480px) {{
+                .content {{
+                    padding: 20px 15px;
+                }}
+                .event-property {{
+                    flex-direction: column;
+                }}
+                .property-label {{
+                    min-width: 100%;
+                    margin-bottom: 5px;
+                }}
+                .qr-img {{
+                    width: 150px;
+                    height: 150px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="wrapper">
+            <div class="header">
+                <h1>🎫 Ticket Confirmation 🎫</h1>
+            </div>
+            <div class="content">
+                <p>Dear {user.email} ({user.phone_number}),</p>
+                
+                <div class="highlight">
+                    <h2>🎉 Your Ticket Booking is {'Confirmed' if is_new else 'Updated'}! 🎉</h2>
+                </div>
+                
+                <div class="event-details">
+                    <h3 class="section-title">📌 Event Details</h3>
+                    
+                    <div class="event-property">
+                        <div class="property-label">Event:</div>
+                        <div class="property-value">{event.name}</div>
+                    </div>
+                    
+                    <div class="event-property">
+                        <div class="property-label">Location:</div>
+                        <div class="property-value">{event.location}</div>
+                    </div>
+                    
+                    <div class="event-property">
+                        <div class="property-label">Date:</div>
+                        <div class="property-value">{event_date}</div>
+                    </div>
+                    
+                    <div class="event-property">
+                        <div class="property-label">Time:</div>
+                        <div class="property-value">{start_time} - {end_time}</div>
+                    </div>
+                    
+                    <div class="event-property">
+                        <div class="property-label">Description:</div>
+                        <div class="property-value">{event.description}</div>
+                    </div>
+                </div>
+                
+                <h3 class="section-title">🎟️ Ticket Summary</h3>
+                
+                <div class="event-property">
+                    <div class="property-label">Total Tickets:</div>
+                    <div class="property-value">{len(tickets)}</div>
+                </div>
+                
+                <div class="event-property">
+                    <div class="property-label">Purchase Date:</div>
+                    <div class="property-value">{tickets[0].purchase_date.strftime('%Y-%m-%d %H:%M:%S')}</div>
+                </div>
+                
+                <div class="event-property">
+                    <div class="property-label">Amount Paid:</div>
+                    <div class="property-value">{transaction.amount_paid}</div>
+                </div>
+                
+                <div class="event-property">
+                    <div class="property-label">Payment Method:</div>
+                    <div class="property-value">{transaction.payment_method.value if transaction else 'Pending'}</div>
+                </div>
+                
+                <div class="event-property">
+                    <div class="property-label">Reference:</div>
+                    <div class="property-value">{transaction.payment_reference}</div>
+                </div>
+                
+                <h3 class="section-title">📱 Your QR Codes</h3>
+                <p>Please present these codes at the entrance for seamless check-in. Each QR code represents one ticket.</p>
+                
+                <div class="qr-container">
     """
+    
+    # Add each QR code with its ticket info
+    for i, (ticket, qr_image, qr_data) in enumerate(zip(tickets, qr_codes_images, qr_codes_data)):
+        ticket_type = TicketType.query.get(ticket.ticket_type_id)
+        ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
+        
+        # Create a unique filename for download
+        download_filename = f"ticket_{ticket.id}_{ticket_type_name.replace(' ', '_')}.png"
+        
+        body += f"""
+                <div class="qr-code">
+                    <div class="ticket-label">{ticket_type_name}</div>
+                    <a href="data:image/png;base64,{qr_image}" download="{download_filename}">
+                        <img src="data:image/png;base64,{qr_image}" alt="Ticket QR Code" class="qr-img">
+                    </a>
+                    <div class="ticket-id">Ticket #{i+1} · ID: {ticket.id}</div>
+                    <div class="download-link">
+                        <a href="data:image/png;base64,{qr_image}" download="{download_filename}" class="btn-download">Download QR</a>
+                    </div>
+                </div>
+        """
+    
+    # Complete the HTML email
+    body += """
+                </div>
+                
+                <div class="highlight">
+                    <p>You can share these QR codes with your guests. Each code can only be scanned once.</p>
+                    <p>Save this email or download the QR codes for quicker entry.</p>
+                </div>
+                
+                <div class="footer">
+                    <p>Thank you for your purchase! We look forward to seeing you at the event.</p>
+                    <p>If you have any questions, please contact our support team.</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
     try:
         send_email(user.email, subject, body, html=True)
+        logger.info(f"Confirmation email sent to {user.email} with {len(tickets)} tickets")
     except Exception as e:
-        logger.error(f"Error sending email: {e}")
+        logger.error(f"Error sending confirmation email: {str(e)}")
 
 class TicketResource(Resource):
 
@@ -183,7 +475,7 @@ class TicketResource(Resource):
 
     @jwt_required()
     def post(self):
-        """Create a new ticket for the authenticated user after successful payment."""
+        """Create new tickets for the authenticated user after successful payment."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -210,13 +502,14 @@ class TicketResource(Resource):
             if ticket_type.quantity == 0:
                 return {"error": "Tickets for this type are sold out"}, 400
 
-            if data["quantity"] <= 0:
+            quantity = int(data["quantity"])
+            if quantity <= 0:
                 return {"error": "Quantity must be at least 1"}, 400
 
-            if ticket_type.quantity < data["quantity"]:
+            if ticket_type.quantity < quantity:
                 return {"error": f"Only {ticket_type.quantity} tickets are available"}, 400
 
-            amount = ticket_type.price * data["quantity"]
+            amount = ticket_type.price * quantity
 
             # Generate a unique payment reference
             payment_reference = str(uuid.uuid4())
@@ -225,27 +518,41 @@ class TicketResource(Resource):
             transaction = Transaction(
                 amount_paid=amount,
                 payment_status=PaymentStatus.PENDING,
-                payment_reference=payment_reference,  # Set the payment reference
-                payment_method=data["payment_method"].upper(),  # e.g., "MPESA" or "PAYSTACK"
+                payment_reference=payment_reference,
+                payment_method=data["payment_method"].upper(),
                 timestamp=datetime.datetime.utcnow(),
                 user_id=user.id
             )
             db.session.add(transaction)
             db.session.flush()  # Get the transaction.id before commit
-            temp_qr_code = f"pending_{uuid.uuid4()}"
-            # Create the Ticket using the transaction.id
-            new_ticket = Ticket(
-                event_id=event.id,
-                ticket_type_id=ticket_type.id,
-                quantity=data["quantity"],
-                phone_number=user.phone_number,
-                email=user.email,
-                payment_status=PaymentStatus.PENDING,
-                transaction_id=transaction.id,
-                user_id=user.id,
-                qr_code=temp_qr_code
-            )
-            db.session.add(new_ticket)
+            
+            tickets = []
+            
+            # Create individual tickets (one per quantity)
+            for _ in range(quantity):
+                temp_qr_code = f"pending_{uuid.uuid4()}"
+                new_ticket = Ticket(
+                    event_id=event.id,
+                    ticket_type_id=ticket_type.id,
+                    quantity=1,  # Each ticket record represents a single ticket
+                    phone_number=user.phone_number,
+                    email=user.email,
+                    payment_status=PaymentStatus.PENDING,
+                    transaction_id=transaction.id,
+                    user_id=user.id,
+                    qr_code=temp_qr_code
+                )
+                db.session.add(new_ticket)
+                db.session.flush()  # Get the ticket.id before commit
+                
+                # Create relationship in the TransactionTicket table
+                transaction_ticket = TransactionTicket(
+                    transaction_id=transaction.id,
+                    ticket_id=new_ticket.id
+                )
+                db.session.add(transaction_ticket)
+                tickets.append(new_ticket)
+            
             db.session.commit()
 
             # Process Payment
@@ -257,17 +564,18 @@ class TicketResource(Resource):
                 mpesa_data = {
                     "phone_number": user.phone_number,
                     "amount": amount,
-                    "ticket_id": new_ticket.id,  # Pass the ticket ID for reference
-                    "transaction_id": transaction.id  # Pass the ticket's transaction ID
+                    "transaction_id": transaction.id  # Pass the transaction ID for reference
                 }
                 mpesa = STKPush()
-                response, status_code = mpesa.post(mpesa_data) # Expecting 2 return values now
+                response, status_code = mpesa.post(mpesa_data)
 
                 if status_code == 200:
                     return response, status_code
                 else:
                     # If STK Push fails, revert the ticket creation
-                    db.session.delete(new_ticket)
+                    for ticket in tickets:
+                        db.session.delete(ticket)
+                    db.session.delete(transaction)
                     db.session.commit()
                     return response, status_code
 
@@ -279,7 +587,8 @@ class TicketResource(Resource):
                 init = initialize_paystack_payment(user.email, int(amount * 100))
                 if isinstance(init, dict) and "error" in init:
                     # Remote error – roll back and bubble up
-                    db.session.delete(new_ticket)
+                    for ticket in tickets:
+                        db.session.delete(ticket)
                     db.session.delete(transaction)
                     db.session.commit()
                     return init, 502  # or 400
@@ -296,7 +605,8 @@ class TicketResource(Resource):
                 }, 200
 
             else:
-                db.session.delete(new_ticket)
+                for ticket in tickets:
+                    db.session.delete(ticket)
                 db.session.delete(transaction)
                 db.session.commit()
                 return {"error": "Invalid payment method"}, 400
