@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables immediately
+
 import os
 import base64
 import datetime
@@ -8,9 +11,9 @@ from flask_jwt_extended import JWTManager
 from flask_migrate import Migrate
 from flask_session import Session
 from flask_cors import CORS
-from dotenv import load_dotenv
 import cloudinary
-# Import modules
+
+# Import modules that rely on env AFTER loading
 from config import Config
 from model import db
 from auth import auth_bp
@@ -23,14 +26,10 @@ from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from report import register_report_resources
 from email_utils import mail
-from admin import register_admin_resources  # Import the admin registration function
-
-# Load environment variables
-load_dotenv()
+from admin import register_admin_resources
 
 # Initialize Flask app
 app = Flask(__name__)
-
 
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
@@ -39,26 +38,24 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config.from_object(Config)
 
-
 db.init_app(app)
-app.config['JWT_COOKIE_SECURE'] = True 
-app.config['JWT_TOKEN_LOCATION'] = ['cookies']  
+app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_TOKEN_LOCATION'] = ['cookies']
 app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
 app.config['JWT_HEADER_NAME'] = 'Authorization'
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
-app.config['JWT_COOKIE_CSRF_PROTECT'] = False 
-app.config['JWT_COOKIE_SECURE'] = True 
-app.config['JWT_COOKIE_SAMESITE'] = "None"  
+app.config['JWT_COOKIE_CSRF_PROTECT'] = False
+app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_COOKIE_SAMESITE'] = "None"
 app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-
 CORS(app,
      origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
-    expose_headers=["Set-Cookie"],
+     expose_headers=["Set-Cookie"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"])
 
@@ -73,7 +70,8 @@ cloudinary.config(
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
-# ✅ Register blueprints and API resources
+
+# Register blueprints and API resources
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
@@ -84,6 +82,6 @@ register_ticket_type_resources(api)
 register_report_resources(api)
 register_admin_resources(api)  # Register admin resources
 
-# ✅ Run app
+# Run app
 if __name__ == "__main__":
     app.run(debug=True)
