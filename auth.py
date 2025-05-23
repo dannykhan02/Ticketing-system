@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, url_for, session, redirect
+from flask import Blueprint, jsonify, request, url_for, session, redirect, render_template
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity, get_jwt, jwt_required, create_access_token
 from email_validator import validate_email, EmailNotValidError
 import re
@@ -506,7 +506,7 @@ def forgot_password():
     return jsonify({"msg": "Reset link sent to your email"}), 200
 
 #  Endpoint: Reset Password (Verifies Token & Updates Password)
-@auth_bp.route('/reset-password/<token>', methods=['POST'])
+@auth_bp.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
     # Initialize serializer inside function
     serializer = URLSafeTimedSerializer(Config.SECRET_KEY)
@@ -519,15 +519,18 @@ def reset_password(token):
         print(f"Token validation error: {e}")
         return jsonify({"msg": "Invalid or expired token"}), 400
 
-    # Get the new password from the request
+    if request.method == 'GET':
+        # Return a simple message or render a form
+        return jsonify({"msg": "Token is valid. You can now reset your password.", "email": email}), 200
+        # OR: return render_template('reset_password_form.html', token=token)
+
+    # POST method (same logic you already have)
     data = request.get_json()
     new_password = data.get("password")
 
-    # Validate the new password
     if not new_password or len(new_password) < 6:
         return jsonify({"msg": "Password must be at least 6 characters long"}), 400
 
-    # Find the user by email
     user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({"msg": "User not found"}), 404
