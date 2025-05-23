@@ -497,7 +497,7 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
                 ticket_type = TicketType.query.get(ticket.ticket_type_id)
                 ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
                 
-                # Create a unique filename for download
+               
                 download_filename = f"ticket_{ticket.id}_{str(ticket_type_name).replace(' ', '_')}.png"
                 
                 # Validate QR image data before adding to email
