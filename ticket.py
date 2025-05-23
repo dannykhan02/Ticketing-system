@@ -389,7 +389,7 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
                 <div class="qr-container">
     """
     
-    # Add each QR code with its ticket info
+    
     for i, (ticket, qr_image, qr_data) in enumerate(zip(tickets, qr_codes_images, qr_codes_data)):
         ticket_type = TicketType.query.get(ticket.ticket_type_id)
         ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
