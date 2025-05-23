@@ -172,18 +172,20 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
             }}
             .event-property {{
                 display: flex;
-                margin-bottom: 10px;
-                flex-wrap: wrap;
+                margin-bottom: 12px;
+                align-items: flex-start;
+                gap: 10px;
             }}
             .property-label {{
                 font-weight: 600;
                 min-width: 100px;
                 color: #4a154b;
-                margin-bottom: 10px;
+                flex-shrink: 0;
             }}
             .property-value {{
-                flex-grow: 1;
+                flex: 1;
                 word-wrap: break-word;
+                overflow-wrap: break-word;
             }}
             .qr-container {{
                 display: flex;
@@ -193,22 +195,23 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
                 margin: 25px 0;
             }}
             .qr-code {{
-                    flex: 1 1 180px;
-                    text-align: center;
-                    margin-bottom: 15px;
-                    padding: 15px;
-                    border: 1px solid #eaeaea;
-                    border-radius: 10px;
-                    background-color: white;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-                    transition: transform 0.3s ease;
+                flex: 1 1 180px;
+                text-align: center;
+                margin-bottom: 15px;
+                padding: 15px;
+                border: 1px solid #eaeaea;
+                border-radius: 10px;
+                background-color: white;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+                transition: transform 0.3s ease;
+                min-width: 160px;
             }}
             .qr-code:hover {{
                 transform: translateY(-5px);
                 box-shadow: 0 5px 15px rgba(0,0,0,0.1);
             }}
             .ticket-label {{
-               font-weight: 600;
+                font-weight: 600;
                 margin-bottom: 10px;
                 color: #4a154b;
                 font-size: 15px;
@@ -279,38 +282,95 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
                 margin-top: 5px;
             }}
             .qr-img {{
-                   width: 100%;
-                    max-width: 180px;
-                    height: auto;
-                    padding: 10px;
-                    background-color: white;
-                    border-radius: 5px;
-                    margin: 10px auto;
-                    display: block;
+                width: 100%;
+                max-width: 180px;
+                height: auto;
+                padding: 10px;
+                background-color: white;
+                border-radius: 5px;
+                margin: 10px auto;
+                display: block;
             }}
+            
+            /* Mobile Responsive Styles */
             @media only screen and (max-width: 480px) {{
+                .wrapper {{
+                    padding: 10px;
+                }}
                 .content {{
                     padding: 20px 15px;
                 }}
-                .wrapper {{
-                    padding: 15px;
+                .header {{
+                    padding: 20px 15px;
                 }}
                 .header h1 {{
-                    font-size: 22px ;
+                    font-size: 20px;
+                }}
+                
+                /* Fix event property layout on mobile */
+                .event-property {{
+                    flex-direction: column;
+                    gap: 2px;
+                    margin-bottom: 15px;
+                    padding-bottom: 10px;
+                    border-bottom: 1px solid #f0f0f0;
+                }}
+                .property-label {{
+                    min-width: auto;
+                    margin-bottom: 3px;
+                    font-size: 14px;
+                }}
+                .property-value {{
+                    font-size: 14px;
+                    margin-left: 0;
+                }}
+                
+                /* QR code adjustments for mobile */
+                .qr-container {{
+                    gap: 15px;
                 }}
                 .qr-code {{
                     flex: 1 1 100%;
-                }}
-                .event-property {{
-                    flex-direction: column;
-                }}
-                .property-label {{
-                    min-width: 100%;
-                    margin-bottom: 5px;
+                    min-width: auto;
+                    margin-bottom: 20px;
+                    padding: 15px 10px;
                 }}
                 .qr-img {{
-                    width: 150px;
-                    height: 150px;
+                    max-width: 160px;
+                    padding: 8px;
+                }}
+                
+                /* Typography adjustments */
+                .section-title {{
+                    font-size: 16px;
+                    margin-top: 25px;
+                }}
+                .ticket-label {{
+                    font-size: 14px;
+                    padding: 4px 8px;
+                }}
+                .btn-download {{
+                    padding: 8px 15px;
+                    font-size: 12px;
+                }}
+            }}
+            
+            /* Extra small devices */
+            @media only screen and (max-width: 320px) {{
+                .wrapper {{
+                    padding: 5px;
+                }}
+                .content {{
+                    padding: 15px 10px;
+                }}
+                .qr-img {{
+                    max-width: 140px;
+                }}
+                .property-label {{
+                    font-size: 13px;
+                }}
+                .property-value {{
+                    font-size: 13px;
                 }}
             }}
         </style>
@@ -390,6 +450,7 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
     """
     
     
+
     for i, (ticket, qr_image, qr_data) in enumerate(zip(tickets, qr_codes_images, qr_codes_data)):
         ticket_type = TicketType.query.get(ticket.ticket_type_id)
         ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
@@ -398,19 +459,37 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
         download_filename = f"ticket_{ticket.id}_{str(ticket_type_name).replace(' ', '_')}.png"
 
         
+        # Validate QR image data before adding to email
+        if not qr_image or len(qr_image) < 100:  # Basic validation
+            logger.warning(f"Invalid QR image data for ticket {ticket.id}")
+            qr_display = f"<p style='color: red; text-align: center;'>QR Code generation failed for Ticket #{i+1}</p>"
+        else:
+            qr_display = f"""
+                <a href="data:image/png;base64,{qr_image}" download="{download_filename}" style="text-decoration: none;">
+                    <img src="data:image/png;base64,{qr_image}" alt="Ticket QR Code for {ticket_type_name}" class="qr-img" 
+                         style="max-width: 180px; height: auto; display: block; margin: 10px auto; border: 1px solid #ddd; padding: 5px; background: white;">
+                </a>
+                <div class="download-link">
+                    <a href="data:image/png;base64,{qr_image}" download="{download_filename}" class="btn-download">📱 Download QR Code</a>
+                </div>
+            """
+        
         body += f"""
                 <div class="qr-code">
                     <div class="ticket-label">{ticket_type_name}</div>
-                    <a href="data:image/png;base64,{qr_image}" download="{download_filename}">
-                        <img src="data:image/png;base64,{qr_image}" alt="Ticket QR Code" class="qr-img">
-                    </a>
+                    {qr_display}
                     <div class="ticket-id">Ticket #{i+1} · ID: {ticket.id}</div>
-                    <div class="download-link">
-                        <a href="data:image/png;base64,{qr_image}" download="{download_filename}" class="btn-download">Download QR</a>
+                    <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                        QR Data: {qr_data[:20]}...
                     </div>
                 </div>
         """
+
     
+    # Send the email (you'll need to implement this part based on your email service)
+    # send_email(user.email, subject, body)
+    
+
     # Complete the HTML email
     body += """
                 </div>
@@ -429,7 +508,7 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
     </body>
     </html>
     """
-    
+    logger.info(f"Confirmation email sent to {user.email} for {len(tickets)} tickets")
     try:
         send_email(user.email, subject, body, html=True)
         logger.info(f"Confirmation email sent to {user.email} with {len(tickets)} tickets")
