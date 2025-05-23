@@ -58,19 +58,23 @@ def complete_ticket_operation(transaction):
             if not ticket:
                 logger.warning(f"Ticket with ID {trans_ticket.ticket_id} not found")
                 continue
-                
+            
             # Update ticket status
             ticket.payment_status = PaymentStatus.PAID
             
             # Generate QR code for this ticket
             qr_code_data, qr_code_image = generate_qr_code(ticket)
             
-            tickets.append(ticket)
-            qr_codes_data.append(qr_code_data)
-            qr_codes_images.append(qr_code_image)
-            
-            # Log success
-            logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
+            # Only add if QR code generation was successful
+            if qr_code_data and qr_code_image:
+                tickets.append(ticket)
+                qr_codes_data.append(qr_code_data)
+                qr_codes_images.append(qr_code_image)
+                
+                # Log success
+                logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
+            else:
+                logger.error(f"Failed to generate QR code for ticket {ticket.id}")
         
         db.session.commit()
         
@@ -78,50 +82,87 @@ def complete_ticket_operation(transaction):
         if tickets:
             user = User.query.get(tickets[0].user_id)
             send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_images)
-        
+        else:
+            logger.error("No valid tickets with QR codes to send email for")
+            
     except Exception as e:
         logger.error(f"Error updating tickets for transaction {transaction.id}: {str(e)}")
+        db.session.rollback()  # Add rollback on error
         raise
 
 def generate_qr_code(ticket):
     """Generates a QR code with a secure encrypted URL and returns it as a base64-encoded image."""
-  
-    qr_code_data = ticket.qr_code
-    
-    # Generate QR code image
-    qr = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=4,
-    )
-    qr.add_data(qr_code_data)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    # Convert to base64
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    qr_code_images = base64.b64encode(buffered.getvalue()).decode()
-    
-    return qr_code_data, qr_code_images
+    try:
+        # Check if ticket has qr_code data
+        if not hasattr(ticket, 'qr_code') or not ticket.qr_code:
+            logger.error(f"Ticket {ticket.id} has no QR code data")
+            return None, None
+            
+        qr_code_data = ticket.qr_code
+        logger.info(f"Generating QR code for ticket {ticket.id} with data: {qr_code_data[:50]}...")
+        
+        # Generate QR code image
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_code_data)
+        qr.make(fit=True)
+        
+        # Create image
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Convert to base64
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        img_bytes = buffered.getvalue()
+        
+        if len(img_bytes) == 0:
+            logger.error(f"Generated empty image for ticket {ticket.id}")
+            return None, None
+            
+        qr_code_image = base64.b64encode(img_bytes).decode('utf-8')
+        
+        # Validate base64 encoding
+        if len(qr_code_image) < 100:
+            logger.error(f"Base64 encoded image too small for ticket {ticket.id}")
+            return None, None
+            
+        logger.info(f"Successfully generated QR code for ticket {ticket.id}")
+        return qr_code_data, qr_code_image
+        
+    except Exception as e:
+        logger.error(f"Error generating QR code for ticket {ticket.id}: {str(e)}")
+        return None, None
 
 def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_images, is_new=True):
     """Sends an email with multiple ticket details and embedded QR codes."""
+    
     if not tickets:
-        logger.error("No tickets to send email for")
-        return
+            logger.error("No tickets to send email for")
+            return False
         
-    # Get event details from the first ticket (all tickets are for the same event)
+        # Validate that we have matching data
+    if len(tickets) != len(qr_codes_data) or len(tickets) != len(qr_codes_images):
+            logger.error("Mismatch between tickets and QR code data arrays")
+            return False
+        
+        # Get event details from the first ticket (all tickets are for the same event)
     first_ticket = tickets[0]
     event = Event.query.get(first_ticket.event_id)
-    
+        
+    if not event:
+            logger.error(f"Event not found for ticket {first_ticket.id}")
+            return False
+        
     event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
     start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
     end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
-    
+        
     subject = f"🎫 {'Your' if is_new else 'Updated'} Tickets Confirmation - {event.name} 🎫"
-    
+        
     # Start building the HTML email body
     body = f"""
     <!DOCTYPE html>
@@ -452,39 +493,38 @@ def send_confirmation_email(user, tickets, transaction, qr_codes_data, qr_codes_
     
 
     for i, (ticket, qr_image, qr_data) in enumerate(zip(tickets, qr_codes_images, qr_codes_data)):
-        ticket_type = TicketType.query.get(ticket.ticket_type_id)
-        ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
-        
-        # Create a unique filename for download
-        download_filename = f"ticket_{ticket.id}_{str(ticket_type_name).replace(' ', '_')}.png"
-
-        
-        # Validate QR image data before adding to email
-        if not qr_image or len(qr_image) < 100:  # Basic validation
-            logger.warning(f"Invalid QR image data for ticket {ticket.id}")
-            qr_display = f"<p style='color: red; text-align: center;'>QR Code generation failed for Ticket #{i+1}</p>"
-        else:
-            qr_display = f"""
-                <a href="data:image/png;base64,{qr_image}" download="{download_filename}" style="text-decoration: none;">
-                    <img src="data:image/png;base64,{qr_image}" alt="Ticket QR Code for {ticket_type_name}" class="qr-img" 
-                         style="max-width: 180px; height: auto; display: block; margin: 10px auto; border: 1px solid #ddd; padding: 5px; background: white;">
-                </a>
-                <div class="download-link">
-                    <a href="data:image/png;base64,{qr_image}" download="{download_filename}" class="btn-download">📱 Download QR Code</a>
-                </div>
-            """
-        
-        body += f"""
-                <div class="qr-code">
-                    <div class="ticket-label">{ticket_type_name}</div>
-                    {qr_display}
-                    <div class="ticket-id">Ticket #{i+1} · ID: {ticket.id}</div>
-                    <div style="font-size: 11px; color: #666; margin-top: 5px;">
-                        QR Data: {qr_data[:20]}...
+            
+                ticket_type = TicketType.query.get(ticket.ticket_type_id)
+                ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
+                
+                # Create a unique filename for download
+                download_filename = f"ticket_{ticket.id}_{str(ticket_type_name).replace(' ', '_')}.png"
+                
+                # Validate QR image data before adding to email
+                if not qr_image or len(qr_image) < 100:
+                    logger.warning(f"Invalid QR image data for ticket {ticket.id}")
+                    qr_display = f"<p style='color: red; text-align: center;'>QR Code generation failed for Ticket #{i+1}</p>"
+                else:
+                    qr_display = f"""
+                        <a href="data:image/png;base64,{qr_image}" download="{download_filename}" style="text-decoration: none;">
+                            <img src="data:image/png;base64,{qr_image}" alt="Ticket QR Code for {ticket_type_name}" class="qr-img"
+                                  style="max-width: 180px; height: auto; display: block; margin: 10px auto; border: 1px solid #ddd; padding: 5px; background: white;">
+                        </a>
+                        <div class="download-link">
+                            <a href="data:image/png;base64,{qr_image}" download="{download_filename}" class="btn-download">📱 Download QR Code</a>
+                        </div>
+                    """
+                
+                body += f"""
+                    <div class="qr-code">
+                        <div class="ticket-label">{ticket_type_name}</div>
+                        {qr_display}
+                        <div class="ticket-id">Ticket #{i+1} · ID: {ticket.id}</div>
+                        <div style="font-size: 11px; color: #666; margin-top: 5px;">
+                            QR Data: {qr_data[:20]}...
+                        </div>
                     </div>
-                </div>
-        """
-
+                """
     
     # Send the email (you'll need to implement this part based on your email service)
     # send_email(user.email, subject, body)
