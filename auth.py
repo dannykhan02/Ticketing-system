@@ -13,6 +13,7 @@ from flask_mail import Message
 from config import Config
 import logging
 import cloudinary.uploader
+from itsdangerous import URLSafeTimedSerializer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -83,7 +84,7 @@ def google_callback():
             db.session.commit()
 
         access_token = generate_token(user)
-        
+
         # Create response with user data
         response = jsonify({
             "msg": "Login successful",
@@ -101,8 +102,8 @@ def google_callback():
             'access_token',
             access_token,
             httponly=True,
-            secure=True,  
-            samesite='None',  
+            secure=True,
+            samesite='None',
             path='/',
             domain=None,  # Let the browser handle the domain
             max_age=30*24*60*60  # 30 days in seconds
@@ -173,7 +174,7 @@ def normalize_phone(phone: str) -> str:
 def is_valid_safaricom_phone(phone: str, region="KE") -> bool:
     """Validates if the phone number is a valid Safaricom number."""
     phone = normalize_phone(phone)
-    
+
     # Additional length check
     if len(phone) not in [9, 10]:
         logger.warning(f"Invalid length for phone number: {phone}")
@@ -190,7 +191,7 @@ def is_valid_safaricom_phone(phone: str, region="KE") -> bool:
 
     prefix = phone[:4] if len(phone) >= 10 else phone[:3]
     logger.info(f"Checking prefix: {prefix} in Safaricom prefixes for number: {phone}")
-    
+
     return prefix in SAFARICOM_PREFIXES
 
 def validate_password(password: str) -> bool:
@@ -507,31 +508,40 @@ def forgot_password():
 #  Endpoint: Reset Password (Verifies Token & Updates Password)
 @auth_bp.route('/reset-password/<token>', methods=['POST'])
 def reset_password(token):
-    from itsdangerous import URLSafeTimedSerializer
-
     # Initialize serializer inside function
     serializer = URLSafeTimedSerializer(Config.SECRET_KEY)
 
     try:
+        # Load and validate the token
         email = serializer.loads(token, salt="reset-password-salt", max_age=3600)  # Token expires in 1 hour
-    except:
+    except Exception as e:
+        # Log the exception for debugging purposes
+        print(f"Token validation error: {e}")
         return jsonify({"msg": "Invalid or expired token"}), 400
 
+    # Get the new password from the request
     data = request.get_json()
     new_password = data.get("password")
 
+    # Validate the new password
     if not new_password or len(new_password) < 6:
         return jsonify({"msg": "Password must be at least 6 characters long"}), 400
 
+    # Find the user by email
     user = User.query.filter_by(email=email).first()
     if not user:
         return jsonify({"msg": "User not found"}), 404
 
-    # Hash the new password
-    user.password = generate_password_hash(new_password)
-    db.session.commit()
-
-    return jsonify({"msg": "Password reset successful"}), 200
+    try:
+        # Hash the new password
+        user.password = generate_password_hash(new_password)
+        db.session.commit()
+        return jsonify({"msg": "Password reset successful"}), 200
+    except Exception as e:
+        # Log the exception for debugging purposes
+        print(f"Error updating password: {e}")
+        db.session.rollback()
+        return jsonify({"msg": "An error occurred while updating the password"}), 500
 
 @auth_bp.route('/profile', methods=['GET'])
 @jwt_required()
@@ -539,16 +549,16 @@ def get_profile():
     """Get user profile information"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
-    
+
     if not user:
         return jsonify({"msg": "User not found"}), 404
-    
+
     profile_data = user.as_dict()
-    
+
     # If user is an organizer, include organizer profile
     if user.role == UserRole.ORGANIZER and hasattr(user, 'organizer_profile'):
         profile_data['organizer_profile'] = user.organizer_profile.as_dict()
-    
+
     return jsonify(profile_data), 200
 
 @auth_bp.route('/profile', methods=['PUT'])
@@ -557,12 +567,12 @@ def update_profile():
     """Update user profile information"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
-    
+
     if not user:
         return jsonify({"msg": "User not found"}), 404
-    
+
     data = request.get_json()
-    
+
     # Update basic user info
     if 'full_name' in data:
         user.full_name = data['full_name']
@@ -570,14 +580,14 @@ def update_profile():
         if not is_valid_safaricom_phone(data['phone_number']):
             return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
         user.phone_number = data['phone_number']
-    
+
     # If user is an organizer, update organizer profile
     if user.role == UserRole.ORGANIZER:
         if not hasattr(user, 'organizer_profile'):
             # Create organizer profile if it doesn't exist
             organizer = Organizer(user_id=user.id)
             db.session.add(organizer)
-        
+
         organizer = user.organizer_profile
         if 'company_name' in data:
             organizer.company_name = data['company_name']
@@ -593,7 +603,7 @@ def update_profile():
             organizer.tax_id = data['tax_id']
         if 'address' in data:
             organizer.address = data['address']
-    
+
     try:
         db.session.commit()
         return jsonify({"msg": "Profile updated successfully"}), 200
@@ -608,12 +618,12 @@ def get_organizers():
     """Get list of all organizers with their event counts"""
     try:
         organizers = User.query.filter_by(role=UserRole.ORGANIZER).all()
-        
+
         result = []
         for organizer in organizers:
             # Get base user data
             organizer_data = organizer.as_dict()
-            
+
             # Add organizer profile data if it exists
             if organizer.organizer_profile:
                 profile_data = organizer.organizer_profile.as_dict()
@@ -623,11 +633,11 @@ def get_organizers():
                 organizer_data['organizer_profile'] = profile_data
             else:
                 organizer_data['organizer_profile'] = None
-            
+
             result.append(organizer_data)
-        
+
         return jsonify(result), 200
-        
+
     except Exception as e:
         logger.error(f"Error fetching organizers: {str(e)}")
         return jsonify({"error": "Failed to fetch organizers"}), 500
@@ -666,10 +676,10 @@ def get_users():
     """Get list of all users with optional search"""
     try:
         search_query = request.args.get('search', '').lower()
-        
+
         # Base query
         query = User.query
-        
+
         # Apply search filter if provided
         if search_query:
             query = query.filter(
@@ -679,10 +689,10 @@ def get_users():
                     User.phone_number.ilike(f'%{search_query}%')
                 )
             )
-        
+
         # Get all users
         users = query.all()
-        
+
         # Format response
         result = []
         for user in users:
@@ -690,10 +700,9 @@ def get_users():
             # Add additional fields if needed
             user_data['is_organizer'] = user.role == UserRole.ORGANIZER
             result.append(user_data)
-        
+
         return jsonify(result), 200
-        
+
     except Exception as e:
         logger.error(f"Error fetching users: {str(e)}")
         return jsonify({"msg": "Failed to fetch users", "error": str(e)}), 500
-
