@@ -59,6 +59,9 @@ class Config:
     SESSION_COOKIE_SAMESITE = "Lax"
     PERMANENT_SESSION_LIFETIME = 86400  # Increased to 24 hours
 
-    FRONTEND_URL = " http://localhost:8080"
+  
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173') # Fallback to common local React dev server port
+    # You had 'http://localhost:8080'. While that might be your setup, 5173 is common for Vite, 3000 for Create React App.
+    # Just ensure this fallback matches your local frontend development server port.
     
     

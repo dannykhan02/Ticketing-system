@@ -477,6 +477,7 @@ def register_security():
         return jsonify({"msg": "Internal Server Error", "error": str(e)}), 500
 
 # 📌 Endpoint: Forgot Password (Sends Reset Link)
+# 📌 Endpoint: Forgot Password (Sends Reset Link)
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
     from app import mail  # Import mail instance from app.py
@@ -495,8 +496,10 @@ def forgot_password():
     # Generate password reset token
     token = serializer.dumps(email, salt="reset-password-salt")
 
-    # Create reset link
-    reset_link = url_for('auth.reset_password', token=token, _external=True)
+    # ⭐ THIS IS THE CORRECTED LINE ⭐
+    # It now uses the FRONTEND_URL from your Config class (which is dynamically loaded from environment variables)
+    reset_link = f"{Config.FRONTEND_URL}/reset-password/{token}"
+
 
     # Send email
     msg = Message("Password Reset Request", recipients=[email])
