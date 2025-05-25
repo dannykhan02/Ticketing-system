@@ -260,7 +260,7 @@ class Report(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
-    event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
+    # event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
     ticket_type = db.relationship('TicketType', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
 
     def as_dict(self):
