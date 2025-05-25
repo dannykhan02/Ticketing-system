@@ -160,9 +160,9 @@ class Event(db.Model):
     # Many-to-many relationship for likes
     likes = db.relationship('User', secondary=event_likes, backref='liked_events', lazy='dynamic')
 
-    ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
-    tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
-    reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
+    ticket_types = db.relationship('TicketType', back_populates='event', lazy=True, cascade="all, delete")
+    tickets = db.relationship('Ticket', back_populates='event', lazy=True, cascade="all, delete")
+    reports = db.relationship('Report', back_populates='event_details', lazy=True, cascade="all, delete")
 
     def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
         self.name = name
@@ -234,8 +234,8 @@ class TicketType(db.Model):
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
-    # tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
-    reports = db.relationship('Report', backref='ticket_type', lazy=True)
+    event = db.relationship('Event', back_populates='ticket_types')
+    reports = db.relationship('Report', back_populates='ticket_type', lazy=True)
 
     def as_dict(self):
         return {
@@ -252,45 +252,32 @@ class Report(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
 
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    # Make ticket_type_id nullable as not all reports will be for a specific ticket type (e.g., overall event reports)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=True, index=True)
 
-    # These fields can still be useful for quick queries and filtering, but the main data will be in report_data
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
     total_revenue = db.Column(db.Float, nullable=False, default=0.0)
 
-    # New field to store the entire generated report dictionary as JSON
-    # JSONB is a more efficient binary JSON storage type for PostgreSQL
-    # If not using PostgreSQL, use db.JSON for general JSON support
-    report_data = db.Column(JSONB, nullable=False, default={}) # Or db.JSON if not PostgreSQL
+    report_data = db.Column(JSONB, nullable=False, default={})
 
-    # Add a timestamp to know when the report was generated
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
-    # Relationships
-    # These are crucial for your `as_dict` method and other queries.
-    event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
-    ticket_type = db.relationship('TicketType', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
-
+    event_details = db.relationship('Event', back_populates='reports')
+    ticket_type = db.relationship('TicketType', back_populates='reports')
 
     def as_dict(self):
-        """
-        Returns a dictionary representation of the report, including nested report_data.
-        """
         data = {
             "id": self.id,
             "event_id": self.event_id,
-            "event_name": self.event.name if self.event else "N/A", # Safely access event name
-            "timestamp": self.timestamp.isoformat(), # ISO format for easy parsing in JSON
-            "total_tickets_sold_summary": self.total_tickets_sold, # Clarify this is the stored summary
-            "total_revenue_summary": self.total_revenue, # Clarify this is the stored summary
-            "report_data": self.report_data # Include the full report data
+            "event_name": self.event_details.name if self.event_details else "N/A",
+            "timestamp": self.timestamp.isoformat(),
+            "total_tickets_sold_summary": self.total_tickets_sold,
+            "total_revenue_summary": self.total_revenue,
+            "report_data": self.report_data
         }
         if self.ticket_type_id:
             data["ticket_type_id"] = self.ticket_type_id
-            data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type else "N/A" # Safely access ticket type name
+            data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type else "N/A"
         return data
-
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -301,16 +288,15 @@ class Ticket(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
-    quantity = db.Column(db.Integer, nullable=False, default=1)  # Always 1 for individual tickets
-    qr_code = db.Column(db.String(255), unique=True, nullable=False)  # QR code
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    qr_code = db.Column(db.String(255), unique=True, nullable=False)
     scanned = db.Column(db.Boolean, default=False)
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    merchant_request_id = db.Column(db.String(255), nullable=True)  # For payment reference
+    merchant_request_id = db.Column(db.String(255), nullable=True)
 
-    # Relationships
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
-    ticket_type = db.relationship('TicketType', backref='tickets')
-    # event = db.relationship('Event', backref='tickets')
+    ticket_type = db.relationship('TicketType', back_populates='tickets')
+    event = db.relationship('Event', back_populates='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
@@ -341,17 +327,15 @@ class Ticket(db.Model):
 class TransactionTicket(db.Model):
     __tablename__ = 'transaction_ticket'
 
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)  # Added primary key
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # Create unique constraint to prevent duplicate entries
     __table_args__ = (db.UniqueConstraint('transaction_id', 'ticket_id', name='uix_transaction_ticket'),)
 
-    # Relationships
-    transaction = db.relationship('Transaction', backref=db.backref('transaction_tickets', lazy=True))
-    ticket = db.relationship('Ticket', backref=db.backref('transaction_tickets', lazy=True))
+    transaction = db.relationship('Transaction', back_populates='transaction_tickets')
+    ticket = db.relationship('Ticket', back_populates='transaction_tickets')
 
 # Updated Transaction model
 class Transaction(db.Model):
@@ -368,12 +352,11 @@ class Transaction(db.Model):
     merchant_request_id = db.Column(db.String(255), unique=True, nullable=True)
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
-    # Relationships
     user = db.relationship('User', back_populates='transactions')
-    organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
+    organizer = db.relationship('Organizer', back_populates='transaction_history')
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
+    transaction_tickets = db.relationship('TransactionTicket', back_populates='transaction')
 
-    # Method to get all tickets associated with this transaction through the junction table
     def get_tickets(self):
         ticket_ids = [tt.ticket_id for tt in self.transaction_tickets]
         return Ticket.query.filter(Ticket.id.in_(ticket_ids)).all()
