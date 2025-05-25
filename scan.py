@@ -116,8 +116,8 @@ class TicketVerificationResource(Resource):
             identity = get_jwt_identity()
             user = User.query.get(identity)
 
-            if not user or str(user.role).upper() != "SECURITY":
-                return {"message": "Only security personnel can verify tickets"}, 403
+            # if not user or str(user.role).upper() != "SECURITY":
+            #     return {"message": "Only security personnel can verify tickets"}, 403
 
             # The ticket_id might be an actual QR code content, not just a numeric ID
             qr_code_content = ticket_id
