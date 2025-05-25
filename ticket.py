@@ -583,8 +583,8 @@ class TicketResource(Resource):
             if not user:
                 return {"error": "User not found"}, 404
 
-            if user.role != UserRole.ATTENDEE:
-                return {"error": "Only attendees can purchase tickets"}, 403
+            # if user.role != UserRole.ATTENDEE:
+            #     return {"error": "Only attendees can purchase tickets"}, 403
 
             data = request.get_json()
             required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]

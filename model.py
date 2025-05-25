@@ -2,7 +2,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import enum
-import uuid
+
 # Initialize SQLAlchemy
 db = SQLAlchemy()
 
@@ -49,7 +49,7 @@ event_likes = db.Table(
 
 # User model
 class User(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     email = db.Column(db.String(255), nullable=False, unique=True)
     password = db.Column(db.String(255))
     full_name = db.Column(db.String(100))  # New field for name storage
@@ -88,7 +88,7 @@ class User(db.Model):
         return UserRole(role)
 
 class Organizer(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
     company_name = db.Column(db.String(255), nullable=False)
     company_logo = db.Column(db.String(255), nullable=True)
@@ -125,7 +125,7 @@ class Organizer(db.Model):
 
 # Add Category model before Event model
 class Category(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
     description = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
@@ -144,7 +144,7 @@ class Category(db.Model):
 
 # Event model
 class Event(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.Text, nullable=False)
     description = db.Column(db.Text, nullable=False)
     date = db.Column(db.Date, nullable=False, index=True)  # Index for faster search
@@ -227,7 +227,7 @@ class Event(db.Model):
 
 # TicketType model
 class TicketType(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
     price = db.Column(db.Float, nullable=False)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
@@ -246,7 +246,7 @@ class TicketType(db.Model):
         }
 
 class Report(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
 
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False, index=True)
@@ -269,7 +269,7 @@ class Report(db.Model):
         }
 
 class Ticket(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     phone_number = db.Column(db.String(255), nullable=True)
     email = db.Column(db.Text, nullable=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False)
@@ -317,7 +317,7 @@ class Ticket(db.Model):
 class TransactionTicket(db.Model):
     __tablename__ = 'transaction_ticket'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))  # Added primary key
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)  # Added primary key
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -333,7 +333,7 @@ class TransactionTicket(db.Model):
 class Transaction(db.Model):
     __tablename__ = 'transaction'
 
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
@@ -371,7 +371,7 @@ class Transaction(db.Model):
 
 # Scan model
 class Scan(db.Model):
-    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
     scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     scanned_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
