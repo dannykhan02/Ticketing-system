@@ -36,7 +36,7 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     # Base query for transactions and tickets, applying date filters
     ticket_base_query = Ticket.query.filter(Ticket.event_id == event_id)
     transaction_base_query = Transaction.query.join(Ticket, Ticket.transaction_id == Transaction.id)\
-                                           .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
+                                        .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
 
     if start_date:
         transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date)
@@ -303,12 +303,12 @@ class ReportResource(Resource):
             try:
                 start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
             except ValueError:
-                return {"message": "Invalid start_date format. Use YYYY-MM-DD"}, 400
+                return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
         if end_date_str:
             try:
                 end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
             except ValueError:
-                return {"message": "Invalid end_date format. Use YYYY-MM-DD"}, 400
+                return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
 
         # Pass the date filters to get_event_report and ensure save_to_history=True for default
         report_data_or_error = get_event_report(event_id, save_to_history=True, start_date=start_date, end_date=end_date)
@@ -341,7 +341,11 @@ class ReportHistoryResource(Resource):
                                          .order_by(Report.timestamp.desc())\
                                          .all()
 
-        return jsonify([report.as_dict() for report in historical_reports]), 200
+        # Directly return the jsonify response.
+        # Flask-RESTful's .make_response will handle this correctly
+        # because jsonify returns a Flask Response object that Flask-RESTful
+        # does not attempt to re-serialize.
+        return jsonify([report.as_dict() for report in historical_reports])
 
 class ReportDeleteResource(Resource):
     @jwt_required()
@@ -395,10 +399,10 @@ class ReportDownloadPDFResource(Resource):
         end_date = None
         if start_date_str:
             try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
         if end_date_str:
             try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
 
 
         # Generate the report data (without saving to history this time, as it's a download request)
@@ -423,6 +427,7 @@ class ReportDownloadPDFResource(Resource):
                 return {"message": "Failed to generate PDF report"}, 500
 
             # Use send_file to serve the PDF
+            # Directly return the Response object from send_file
             return send_file(generated_pdf_path, as_attachment=True, download_name=f"event_report_{event.name}.pdf", mimetype='application/pdf')
         except Exception as e:
             logger.error(f"Error generating or sending PDF report for event {event_id}: {e}")
@@ -458,10 +463,10 @@ class ReportResendEmailResource(Resource):
         end_date = None
         if start_date_str:
             try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
         if end_date_str:
             try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
 
         try:
             # Generate the latest report data (without saving to history this time, just for email)
@@ -550,10 +555,10 @@ class ReportExportCSVResource(Resource):
         end_date = None
         if start_date_str:
             try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
         if end_date_str:
             try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use YYYY-MM-DD"}, 400
+            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
 
         # Generate the report data (without saving to history)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
@@ -564,6 +569,7 @@ class ReportExportCSVResource(Resource):
 
         try:
             csv_content = generate_csv_report(report_data)
+            # Directly return the Response object
             return Response(
                 csv_content,
                 mimetype="text/csv",
@@ -614,15 +620,13 @@ class OrganizerSummaryReportResource(Resource):
                 "revenue": event_total_revenue
             })
 
-        summary_report = {
+        return {
             "organizer_id": organizer.id,
-            "organizer_name": user.full_name if hasattr(user, 'full_name') and user.full_name else user.email,
+            "organizer_name": user.full_name if hasattr(user, 'full_name') else user.email,
             "total_tickets_sold_across_all_events": total_tickets_sold_org,
-            "total_revenue_across_all_events": total_revenue_org,
-            "events_details": events_summary
-        }
-
-        return summary_report, 200
+            "total_revenue_across_all_events": f"{total_revenue_org:.2f}",
+            "events_summary": events_summary
+        }, 200
 
 def register_report_resources(api):
     """Registers the ReportResource routes with Flask-RESTful API."""
