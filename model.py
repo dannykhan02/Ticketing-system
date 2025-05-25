@@ -235,7 +235,12 @@ class TicketType(db.Model):
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
     # tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
-    # reports = db.relationship('Report', backref='ticket_type', lazy=True)
+    reports = db.relationship(
+        "Report",
+        back_populates="ticket_type",
+        cascade="all, delete-orphan",
+        single_parent=True
+    )
 
     def as_dict(self):
         return {
@@ -262,7 +267,7 @@ class Report(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     event_details = db.relationship('Event', back_populates='reports')
-    ticket_type = db.relationship('TicketType', backref='reports_history', lazy=True, cascade="all, delete-orphan")
+    ticket_type = db.relationship("TicketType", back_populates="reports")
 
     def as_dict(self):
         data = {
