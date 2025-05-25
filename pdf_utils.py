@@ -14,15 +14,15 @@ logger = logging.getLogger(__name__)
 
 # Define specific colors for each ticket type, matching frontend (use uppercase keys)
 COLORS_BY_TICKET_PYTHON = {
-    'REGULAR': '#FF8042',      # Orange
-    'VIP': '#FFBB28',          # Yellow
-    'STUDENT': '#0088FE',      # Blue
-    'GROUP_OF_5': '#00C49F',   # Green
-    'COUPLES': '#FF6699',      # Pinkish
-    'EARLY_BIRD': '#AA336A',   # Purple
-    'VVIP': '#00FF00',         # Bright Green for VVIP
-    'GIVEAWAY': '#CCCCCC',     # Grey
-    'UNKNOWN_TYPE': '#A9A9A9', # Darker Grey for unknown types
+    'REGULAR': '#FF8042',        # Orange
+    'VIP': '#FFBB28',            # Yellow
+    'STUDENT': '#0088FE',        # Blue
+    'GROUP_OF_5': '#00C49F',     # Green
+    'COUPLES': '#FF6699',        # Pinkish
+    'EARLY_BIRD': '#AA336A',     # Purple
+    'VVIP': '#00FF00',           # Bright Green for VVIP
+    'GIVEAWAY': '#CCCCCC',       # Grey
+    'UNKNOWN_TYPE': '#A9A9A9',   # Darker Grey for unknown types
 }
 
 # Fallback color if a ticket type is not in COLORS_BY_TICKET_PYTHON
@@ -155,7 +155,8 @@ def generate_pdf_with_graph(
                               spaceAfter=6,
                               textColor=colors.HexColor('#444444'))) # Slightly lighter grey subheadings
 
-    styles.add(ParagraphStyle(name='BodyText',
+    # Renamed the custom BodyText style to CustomBodyText to avoid collision
+    styles.add(ParagraphStyle(name='CustomBodyText',
                               parent=styles['Normal'],
                               fontSize=10,
                               leading=14,
@@ -171,8 +172,9 @@ def generate_pdf_with_graph(
                               textColor=colors.HexColor('#777777'),
                               alignment=TA_LEFT)) # Smaller, lighter text for filters
 
+    # Updated parent to 'CustomBodyText' for DescriptionStyle
     styles.add(ParagraphStyle(name='DescriptionStyle',
-                              parent=styles['BodyText'],
+                              parent=styles['CustomBodyText'],
                               fontSize=10,
                               leading=12,
                               textColor=colors.HexColor('#666666'),
@@ -207,30 +209,30 @@ def generate_pdf_with_graph(
             elements.append(Spacer(1, 20)) # Space after graph
         except Exception as e:
             logger.error(f"[PDF] could not embed graph from {graph_path}: {e}")
-            elements.append(Paragraph("Error embedding graph image or Graph image not available.", styles['BodyText']))
+            elements.append(Paragraph("Error embedding graph image or Graph image not available.", styles['CustomBodyText']))
             elements.append(Spacer(1, 10))
     else:
-        elements.append(Paragraph("Graph image not available.", styles['BodyText']))
+        elements.append(Paragraph("Graph image not available.", styles['CustomBodyText']))
         elements.append(Spacer(1, 10))
 
 
     # Details Section
     elements.append(Paragraph("<b>Summary Details:</b>", styles['SubHeading']))
-    elements.append(Paragraph(f"<b>Total Tickets Sold:</b> {report.get('total_tickets_sold', 'N/A')}", styles['BodyText']))
+    elements.append(Paragraph(f"<b>Total Tickets Sold:</b> {report.get('total_tickets_sold', 'N/A')}", styles['CustomBodyText']))
     total_revenue = report.get('total_revenue', 0)
-    elements.append(Paragraph(f"<b>Total Revenue:</b> ${total_revenue:.2f}", styles['BodyText']))
-    elements.append(Paragraph(f"<b>Number of Attendees:</b> {report.get('number_of_attendees', 'N/A')}", styles['BodyText']))
+    elements.append(Paragraph(f"<b>Total Revenue:</b> ${total_revenue:.2f}", styles['CustomBodyText']))
+    elements.append(Paragraph(f"<b>Number of Attendees:</b> {report.get('number_of_attendees', 'N/A')}", styles['CustomBodyText']))
     elements.append(Spacer(1, 10))
 
     # Event Details
     elements.append(Paragraph("<b>Event Information:</b>", styles['SubHeading']))
-    elements.append(Paragraph(f"<b>Event Date:</b> {report.get('event_date', 'N/A')}", styles['BodyText']))
-    elements.append(Paragraph(f"<b>Event Location:</b> {report.get('event_location', 'N/A')}", styles['BodyText']))
+    elements.append(Paragraph(f"<b>Event Date:</b> {report.get('event_date', 'N/A')}", styles['CustomBodyText']))
+    elements.append(Paragraph(f"<b>Event Location:</b> {report.get('event_location', 'N/A')}", styles['CustomBodyText']))
 
     # Description (handle long text)
     description = report.get('event_description')
     if description:
-        elements.append(Paragraph(f"<b>Event Description:</b>", styles['BodyText']))
+        elements.append(Paragraph(f"<b>Event Description:</b>", styles['CustomBodyText']))
         elements.append(Paragraph(description, styles['DescriptionStyle']))
     elements.append(Spacer(1, 20))
 
