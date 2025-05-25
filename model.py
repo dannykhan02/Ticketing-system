@@ -235,7 +235,7 @@ class TicketType(db.Model):
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
     # tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
-    reports = db.relationship('Report', backref='ticket_type', lazy=True)
+    # reports = db.relationship('Report', backref='ticket_type', lazy=True)
 
     def as_dict(self):
         return {
