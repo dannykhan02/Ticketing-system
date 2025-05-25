@@ -160,8 +160,8 @@ class Event(db.Model):
     # Many-to-many relationship for likes
     likes = db.relationship('User', secondary=event_likes, backref='liked_events', lazy='dynamic')
 
-    ticket_types = db.relationship('TicketType', back_populates='event', lazy=True, cascade="all, delete")
-    tickets = db.relationship('Ticket', back_populates='event', lazy=True, cascade="all, delete")
+    ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
+    tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', back_populates='event_details', lazy=True, cascade="all, delete")
 
     def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
@@ -234,8 +234,8 @@ class TicketType(db.Model):
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)  # Add this line
 
-    event = db.relationship('Event', back_populates='ticket_types')
-    reports = db.relationship('Report', back_populates='ticket_type', lazy=True)
+    # tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
+    reports = db.relationship('Report', backref='ticket_type', lazy=True)
 
     def as_dict(self):
         return {
@@ -262,7 +262,7 @@ class Report(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     event_details = db.relationship('Event', back_populates='reports')
-    ticket_type = db.relationship('TicketType', back_populates='reports')
+    ticket_type = db.relationship('TicketType', backref='reports_history', lazy=True, cascade="all, delete-orphan")
 
     def as_dict(self):
         data = {
@@ -295,8 +295,8 @@ class Ticket(db.Model):
     merchant_request_id = db.Column(db.String(255), nullable=True)
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
-    ticket_type = db.relationship('TicketType', back_populates='tickets')
-    event = db.relationship('Event', back_populates='tickets')
+    ticket_type = db.relationship('TicketType', backref='tickets')
+    event = db.relationship('Event', backref='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
@@ -334,8 +334,8 @@ class TransactionTicket(db.Model):
 
     __table_args__ = (db.UniqueConstraint('transaction_id', 'ticket_id', name='uix_transaction_ticket'),)
 
-    transaction = db.relationship('Transaction', back_populates='transaction_tickets')
-    ticket = db.relationship('Ticket', back_populates='transaction_tickets')
+    transaction = db.relationship('Transaction', backref=db.backref('transaction_tickets', lazy=True))
+    ticket = db.relationship('Ticket', backref=db.backref('transaction_tickets', lazy=True))
 
 # Updated Transaction model
 class Transaction(db.Model):
@@ -353,7 +353,7 @@ class Transaction(db.Model):
     mpesa_receipt_number = db.Column(db.String(255), nullable=True)
 
     user = db.relationship('User', back_populates='transactions')
-    organizer = db.relationship('Organizer', back_populates='transaction_history')
+    organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
     transaction_tickets = db.relationship('TransactionTicket', back_populates='transaction')
 
