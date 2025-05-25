@@ -2,6 +2,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import enum
+from sqlalchemy.dialects.postgresql import JSONB
 
 # Initialize SQLAlchemy
 db = SQLAlchemy()
@@ -244,29 +245,38 @@ class TicketType(db.Model):
             "event_id": self.event_id,
             "quantity": self.quantity
         }
-
+#Report table
 class Report(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False, index=True)
+    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=True, index=True)
 
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
     total_revenue = db.Column(db.Float, nullable=False, default=0.0)
 
-    # Relationships (uncomment if needed)
-    # event = db.relationship('Event', backref=db.backref('reports', lazy=True))
-    # ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
+    # Use JSONB for PostgreSQL or fallback to db.JSON
+    report_data = db.Column(JSONB, nullable=False, default=dict)
+
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
+    ticket_type = db.relationship('TicketType', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
 
     def as_dict(self):
-        return {
+        data = {
             "id": self.id,
             "event_id": self.event_id,
-            "event_name": self.event.name,
-            "ticket_type": self.ticket_type.type_name.value,
-            "total_tickets_sold": self.total_tickets_sold,
-            "total_revenue": self.total_revenue
+            "event_name": self.event.name if self.event else "N/A",
+            "timestamp": self.timestamp.isoformat(),
+            "total_tickets_sold_summary": self.total_tickets_sold,
+            "total_revenue_summary": self.total_revenue,
+            "report_data": self.report_data
         }
+        if self.ticket_type_id:
+            data["ticket_type_id"] = self.ticket_type_id
+            data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type and self.ticket_type.type_name else "N/A"
+        return data
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
