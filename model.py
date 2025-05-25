@@ -2,6 +2,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import enum
+from sqlalchemy.dialects.postgresql import JSONB
 
 # Initialize SQLAlchemy
 db = SQLAlchemy()
@@ -246,27 +247,50 @@ class TicketType(db.Model):
         }
 
 class Report(db.Model):
+    __tablename__ = 'reports' # Explicitly define the table name
+
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
 
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=False, index=True)
+    # Make ticket_type_id nullable as not all reports will be for a specific ticket type (e.g., overall event reports)
+    ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=True, index=True)
 
+    # These fields can still be useful for quick queries and filtering, but the main data will be in report_data
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
     total_revenue = db.Column(db.Float, nullable=False, default=0.0)
 
-    # Relationships (uncomment if needed)
-    # event = db.relationship('Event', backref=db.backref('reports', lazy=True))
-    # ticket_type = db.relationship('TicketType', backref=db.backref('reports', lazy=True))
+    # New field to store the entire generated report dictionary as JSON
+    # JSONB is a more efficient binary JSON storage type for PostgreSQL
+    # If not using PostgreSQL, use db.JSON for general JSON support
+    report_data = db.Column(JSONB, nullable=False, default={}) # Or db.JSON if not PostgreSQL
+
+    # Add a timestamp to know when the report was generated
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    # These are crucial for your `as_dict` method and other queries.
+    event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
+    ticket_type = db.relationship('TicketType', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
+
 
     def as_dict(self):
-        return {
+        """
+        Returns a dictionary representation of the report, including nested report_data.
+        """
+        data = {
             "id": self.id,
             "event_id": self.event_id,
-            "event_name": self.event.name,
-            "ticket_type": self.ticket_type.type_name.value,
-            "total_tickets_sold": self.total_tickets_sold,
-            "total_revenue": self.total_revenue
+            "event_name": self.event.name if self.event else "N/A", # Safely access event name
+            "timestamp": self.timestamp.isoformat(), # ISO format for easy parsing in JSON
+            "total_tickets_sold_summary": self.total_tickets_sold, # Clarify this is the stored summary
+            "total_revenue_summary": self.total_revenue, # Clarify this is the stored summary
+            "report_data": self.report_data # Include the full report data
         }
+        if self.ticket_type_id:
+            data["ticket_type_id"] = self.ticket_type_id
+            data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type else "N/A" # Safely access ticket type name
+        return data
+
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
