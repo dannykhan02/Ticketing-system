@@ -296,7 +296,7 @@ class Ticket(db.Model):
 
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
     ticket_type = db.relationship('TicketType', backref='tickets')
-    event = db.relationship('Event', backref='tickets')
+    # event = db.relationship('Event', backref='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
