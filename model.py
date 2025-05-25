@@ -299,7 +299,7 @@ class Ticket(db.Model):
     purchase_date = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     merchant_request_id = db.Column(db.String(255), nullable=True)
 
-    transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
+    # transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
     ticket_type = db.relationship('TicketType', backref='tickets')
     # event = db.relationship('Event', backref='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
@@ -360,7 +360,7 @@ class Transaction(db.Model):
     user = db.relationship('User', back_populates='transactions')
     organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
-    transaction_tickets = db.relationship('TransactionTicket', back_populates='transaction')
+    # transaction_tickets = db.relationship('TransactionTicket', back_populates='transaction')
 
     def get_tickets(self):
         ticket_ids = [tt.ticket_id for tt in self.transaction_tickets]
