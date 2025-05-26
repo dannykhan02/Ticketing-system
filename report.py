@@ -16,44 +16,66 @@ from io import StringIO
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def parse_date_param(date_str, param_name):
+    """
+    Parses a date string into a datetime object.
+    Logs a warning if the format is invalid.
+    """
+    if date_str:
+        try:
+            return datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            logger.warning(f"Invalid {param_name} format: {date_str}. Expected YYYY-MM-DD.")
+    return None
+
 def get_event_report(event_id, save_to_history=True, start_date=None, end_date=None):
-    """Generates a comprehensive report for a specific event with data structured for graphs,
-    optionally filtered by a date range."""
+    """
+    Generates a comprehensive report for a specific event with data structured for graphs,
+    optionally filtered by a date range.
+
+    Args:
+        event_id (int): The ID of the event.
+        save_to_history (bool): Whether to save the report data to the database history.
+        start_date (datetime.datetime, optional): The start date for filtering.
+        end_date (datetime.datetime, optional): The end date for filtering.
+
+    Returns:
+        tuple: A tuple (report_data, status_code) or a dictionary report_data if successful.
+               Returns a tuple (error_message_dict, status_code) on error.
+    """
     report = {}
 
     event = Event.query.get(event_id)
     if not event:
-        return {"message": "Event not found"}, 404 # Return tuple for Flask-RESTful handling
+        return {"message": "Event not found"}, 404
+
+    # Validate date range presence for reports
+    if not start_date or not end_date:
+        return {"message": "Both start_date and end_date are required for report generation."}, 400
+
+    # Ensure start_date is not after end_date
+    if start_date > end_date:
+        return {"message": "Start date cannot be after end date."}, 400
 
     report['event_id'] = event_id
     report['event_name'] = event.name
-    report['event_date'] = event.date.strftime('%Y-%m-%d') if event.date else "N/A" # Handle case if date is None
+    report['event_date'] = event.date.strftime('%Y-%m-%d') if event.date else "N/A"
     report['event_location'] = event.location
-    report['event_description'] = event.description # Include event description for PDF
-    report['filter_start_date'] = start_date.strftime('%Y-%m-%d') if start_date else "N/A"
-    report['filter_end_date'] = end_date.strftime('%Y-%m-%d') if end_date else "N/A"
+    report['event_description'] = event.description
+    report['filter_start_date'] = start_date.strftime('%Y-%m-%d')
+    report['filter_end_date'] = end_date.strftime('%Y-%m-%d')
+
+    # Adjust end_date to include the entire day
+    adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
     # Base query for transactions and tickets, applying date filters
     ticket_base_query = Ticket.query.filter(Ticket.event_id == event_id)
     transaction_base_query = Transaction.query.join(Ticket, Ticket.transaction_id == Transaction.id)\
-                                    .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
+                                .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
 
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date_obj)
-            ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            transaction_base_query = transaction_base_query.filter(Transaction.timestamp <= adjusted_end_date)
-            ticket_base_query = ticket_base_query.filter(Ticket.purchase_date <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
+    # Apply date filters to base queries
+    ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date, Ticket.purchase_date <= adjusted_end_date)
+    transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date, Transaction.timestamp <= adjusted_end_date)
 
     # 1. Ticket Sales Quantity
     total_tickets_sold = ticket_base_query.count()
@@ -61,21 +83,10 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
 
     tickets_by_type_query = db.session.query(TicketType.type_name, db.func.count(Ticket.id)).\
         join(Ticket, Ticket.ticket_type_id == TicketType.id).\
-        filter(Ticket.event_id == event_id)
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
-    tickets_by_type_query = tickets_by_type_query.group_by(TicketType.type_name).all()
+        filter(Ticket.event_id == event_id,
+               Ticket.purchase_date >= start_date,
+               Ticket.purchase_date <= adjusted_end_date).\
+        group_by(TicketType.type_name).all()
 
     report['tickets_sold_by_type'] = {str(type_name): count for type_name, count in tickets_by_type_query}
     report['tickets_sold_by_type_for_graph'] = {
@@ -84,42 +95,21 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     }
 
     # 2. Number of Attendees (based on scans)
+    # Ensure scans are also filtered by the requested date range
     number_of_attendees = Scan.query.join(Ticket, Scan.ticket_id == Ticket.id).\
-        filter(Ticket.event_id == event_id)
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            number_of_attendees = number_of_attendees.filter(Scan.scanned_at >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            number_of_attendees = number_of_attendees.filter(Scan.scanned_at <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
-    number_of_attendees = number_of_attendees.distinct(Scan.ticket_id).count() # Count unique ticket IDs that were scanned
+        filter(Ticket.event_id == event_id,
+               Scan.scanned_at >= start_date,
+               Scan.scanned_at <= adjusted_end_date).\
+        distinct(Scan.ticket_id).count()
     report['number_of_attendees'] = number_of_attendees
 
     attendees_by_type_query = db.session.query(TicketType.type_name, db.func.count(db.distinct(Scan.ticket_id))).\
         join(Ticket, Scan.ticket_id == Ticket.id).\
         join(TicketType, Ticket.ticket_type_id == TicketType.id).\
-        filter(Ticket.event_id == event_id)
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
-    attendees_by_type_query = attendees_by_type_query.group_by(TicketType.type_name).all()
+        filter(Ticket.event_id == event_id,
+               Scan.scanned_at >= start_date,
+               Scan.scanned_at <= adjusted_end_date).\
+        group_by(TicketType.type_name).all()
 
     report['attendees_by_ticket_type'] = {str(type_name): count for type_name, count in attendees_by_type_query}
     report['attendees_by_ticket_type_for_graph'] = {
@@ -135,21 +125,11 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     revenue_by_type_query = db.session.query(TicketType.type_name, db.func.sum(Transaction.amount_paid)).\
         join(Ticket, Ticket.ticket_type_id == TicketType.id).\
         join(Transaction, Ticket.transaction_id == Transaction.id).\
-        filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
-    revenue_by_type_query = revenue_by_type_query.group_by(TicketType.type_name).all()
+        filter(Ticket.event_id == event_id,
+               Transaction.payment_status == 'COMPLETED',
+               Transaction.timestamp >= start_date,
+               Transaction.timestamp <= adjusted_end_date).\
+        group_by(TicketType.type_name).all()
 
     report['revenue_by_ticket_type'] = {
         str(type_name): float(revenue) if revenue else 0.0
@@ -163,21 +143,11 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     # 4. Payment Method Usage
     payment_method_usage_query = db.session.query(Transaction.payment_method, db.func.count(Transaction.id)).\
         join(Ticket, Ticket.transaction_id == Transaction.id).\
-        filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
-    if start_date:
-        try:
-            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
-            payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp >= start_date_obj)
-        except ValueError:
-            logger.warning(f"Invalid start_date format: {start_date}")
-    if end_date:
-        try:
-            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
-            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-            payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp <= adjusted_end_date)
-        except ValueError:
-            logger.warning(f"Invalid end_date format: {end_date}")
-    payment_method_usage_query = payment_method_usage_query.group_by(Transaction.payment_method).all()
+        filter(Ticket.event_id == event_id,
+               Transaction.payment_status == 'COMPLETED',
+               Transaction.timestamp >= start_date,
+               Transaction.timestamp <= adjusted_end_date).\
+        group_by(Transaction.payment_method).all()
 
     report['payment_method_usage'] = {str(method): count for method, count in payment_method_usage_query}
     report['payment_method_usage_for_graph'] = {
@@ -219,7 +189,7 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
                 db.session.add(new_ticket_type_report)
 
             db.session.commit()
-            logger.info(f"Report history saved for event {event_id}.")
+            logger.info(f"Report history saved for event {event_id} with date range {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}.")
         except SQLAlchemyError as e:
             db.session.rollback()
             logger.error(f"Error saving report history for event {event_id}: {e}")
@@ -227,29 +197,31 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
             # and might be used for email/download
 
     # Send report to organizer (only if save_to_history is True, or if explicitly requested)
-    if save_to_history: # or a separate flag for sending email if history not needed
+    # Consider adding a separate flag for email sending if not always tied to history saving
+    if save_to_history:
         send_report_to_organizer_with_pdf(report)
 
     return report
 
 def send_report_to_organizer_with_pdf(report):
+    """Sends the generated report as a PDF attachment to the event organizer."""
     event_id = report['event_id']
     event = Event.query.get(event_id)
-    # Assuming Event.organizer is a relationship to Organizer, and Organizer.user is a relationship to User
     organizer_user = event.organizer.user
     if not organizer_user or not organizer_user.email:
         logger.warning(f"No organizer email found for event: {event.name} (Event ID: {event_id})")
         return
 
     # 1. Generate graph image
-    graph_path = f"/tmp/event_report_{event.id}_graph.png"
+    # Use a more robust temporary file naming or a dedicated temporary directory
+    graph_path = f"/tmp/event_report_{event.id}_graph_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
     generated_graph_path = generate_graph_image(report, graph_path)
     if not generated_graph_path:
         logger.error(f"Failed to generate graph image for event {event.id}. Email will be sent without graph.")
         graph_path = None # Ensure graph_path is None if generation failed
 
     # 2. Generate PDF file
-    pdf_path = f"/tmp/event_report_{event.id}.pdf"
+    pdf_path = f"/tmp/event_report_{event.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     generated_pdf_path = generate_pdf_with_graph(report, event_id, pdf_path, generated_graph_path if generated_graph_path else "")
     if not generated_pdf_path:
         logger.error(f"Failed to generate PDF for event {event.id}. Email will not be sent with attachment.")
@@ -257,14 +229,17 @@ def send_report_to_organizer_with_pdf(report):
 
     # 3. Create rich email body
     email_body = f"""
-    Hello {organizer_user.full_name if hasattr(organizer_user, 'full_name') else organizer_user.email},
+    Hello {organizer_user.full_name if hasattr(organizer_user, 'full_name') and organizer_user.full_name else organizer_user.email},
 
     Attached is the latest sales report for your event: **{event.name}**.
 
     """
 
-    if report.get('filter_start_date') != "N/A" or report.get('filter_end_date') != "N/A":
+    if report.get('filter_start_date') and report.get('filter_end_date'):
         email_body += f"This report covers data from **{report.get('filter_start_date')}** to **{report.get('filter_end_date')}**.\n\n"
+    else:
+        email_body += "This report covers all available data for the event.\n\n"
+
 
     email_body += f"""
     **Overall Summary:**
@@ -307,11 +282,11 @@ def send_report_to_organizer_with_pdf(report):
     except Exception as e:
         logger.error(f"Failed to send report email for event {event.name}: {e}")
     finally:
-        # Optional: Clean up temporary files
-        if os.path.exists(graph_path):
+        # Clean up temporary files
+        if graph_path and os.path.exists(graph_path):
             os.remove(graph_path)
             logger.debug(f"Cleaned up graph file: {graph_path}")
-        if os.path.exists(pdf_path):
+        if pdf_path and os.path.exists(pdf_path):
             os.remove(pdf_path)
             logger.debug(f"Cleaned up PDF file: {pdf_path}")
 
@@ -319,7 +294,8 @@ class ReportResource(Resource):
     @jwt_required()
     def get(self, event_id):
         """Retrieve a report for a specific event (Only the event organizer can access).
-        Supports filtering by date range via query parameters."""
+        Requires 'start_date' and 'end_date' query parameters.
+        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -330,33 +306,32 @@ class ReportResource(Resource):
         if not event:
             return {"message": "Event not found"}, 404
 
-        # Ensure event.organizer is properly linked to user
         if not event.organizer or event.organizer.user_id != user.id:
             return {"message": "You are not authorized to view the report for this event"}, 403
 
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
 
-        start_date = None
-        end_date = None
+        # Use the centralized parsing function
+        start_date = parse_date_param(start_date_str, 'start_date')
+        end_date = parse_date_param(end_date_str, 'end_date')
 
-        if start_date_str:
-            try:
-                start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError:
-                return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
-        if end_date_str:
-            try:
-                end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError:
-                return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
+        # Critical: Validate date presence at the API entry point
+        if not start_date:
+            return {"message": "Missing or invalid 'start_date' query parameter. Use YYYY-MM-DD."}, 400
+        if not end_date:
+            return {"message": "Missing or invalid 'end_date' query parameter. Use YYYY-MM-DD."}, 400
+
+        # Validate date range
+        if start_date > end_date:
+            return {"message": "Start date cannot be after end date."}, 400
 
         # Pass the date filters to get_event_report and ensure save_to_history=True for default
         report_data_or_error = get_event_report(event_id, save_to_history=True, start_date=start_date, end_date=end_date)
 
-        # Check if get_event_report returned an error tuple
+        # Check if get_event_report returned an error tuple (e.g., event not found, or date validation inside)
         if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
-            return report_data_or_error # Returns {"message": "Event not found"}, 404
+            return report_data_or_error
 
         return report_data_or_error, 200 # Return the report data
 
@@ -379,13 +354,9 @@ class ReportHistoryResource(Resource):
 
         # Fetch all reports for the given event, ordered by timestamp
         historical_reports = Report.query.filter_by(event_id=event_id)\
-                                             .order_by(Report.timestamp.desc())\
-                                             .all()
+                                     .order_by(Report.timestamp.desc())\
+                                     .all()
 
-        # Directly return the jsonify response.
-        # Flask-RESTful's .make_response will handle this correctly
-        # because jsonify returns a Flask Response object that Flask-RESTful
-        # does not attempt to re-serialize.
         return jsonify([report.as_dict() for report in historical_reports])
 
 class ReportDeleteResource(Resource):
@@ -419,7 +390,9 @@ class ReportDeleteResource(Resource):
 class ReportDownloadPDFResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Download the latest generated report for an event as a PDF."""
+        """Download a report for an event as a PDF.
+        Requires 'start_date' and 'end_date' query parameters.
+        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -433,17 +406,17 @@ class ReportDownloadPDFResource(Resource):
         if not event.organizer or event.organizer.user_id != user.id:
             return {"message": "You are not authorized to download the report for this event"}, 403
 
-        # You might want to allow date filtering for downloads as well
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
-        start_date = None
-        end_date = None
-        if start_date_str:
-            try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
-        if end_date_str:
-            try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
+
+        start_date = parse_date_param(start_date_str, 'start_date')
+        end_date = parse_date_param(end_date_str, 'end_date')
+
+        if not start_date or not end_date:
+            return {"message": "Both 'start_date' and 'end_date' query parameters are required for PDF download. Use YYYY-MM-DD."}, 400
+
+        if start_date > end_date:
+            return {"message": "Start date cannot be after end date."}, 400
 
         # Generate the report data (without saving to history this time, as it's a download request)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
@@ -453,22 +426,20 @@ class ReportDownloadPDFResource(Resource):
 
         report_data = report_data_or_error # Extract the actual report data
 
-        graph_path = f"/tmp/event_report_{event_id}_graph.png"
-        pdf_path = f"/tmp/event_report_{event_id}.pdf"
+        # Use unique temporary file names to prevent conflicts
+        unique_timestamp = datetime.now().strftime('%Y%m%d%H%M%S%f')
+        graph_path = f"/tmp/event_report_{event_id}_graph_{unique_timestamp}.png"
+        pdf_path = f"/tmp/event_report_{event_id}_{unique_timestamp}.pdf"
 
         try:
-            # Generate graph first (even if not saved to PDF, it's a good practice to try)
             generated_graph_path = generate_graph_image(report_data, graph_path)
-            # Pass the result of graph generation to PDF generation
             generated_pdf_path = generate_pdf_with_graph(report_data, event_id, pdf_path, generated_graph_path if generated_graph_path else "")
 
             if not generated_pdf_path or not os.path.exists(generated_pdf_path):
                 logger.error(f"PDF file was not successfully generated for event {event_id}.")
                 return {"message": "Failed to generate PDF report"}, 500
 
-            # Use send_file to serve the PDF
-            # Directly return the Response object from send_file
-            return send_file(generated_pdf_path, as_attachment=True, download_name=f"event_report_{event.name}.pdf", mimetype='application/pdf')
+            return send_file(generated_pdf_path, as_attachment=True, download_name=f"event_report_{event.name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.pdf", mimetype='application/pdf')
         except Exception as e:
             logger.error(f"Error generating or sending PDF report for event {event_id}: {e}")
             return {"message": "Failed to generate or send PDF report"}, 500
@@ -482,7 +453,9 @@ class ReportDownloadPDFResource(Resource):
 class ReportResendEmailResource(Resource):
     @jwt_required()
     def post(self, event_id):
-        """Resend the latest report email for an event."""
+        """Resend a report email for an event.
+        Requires 'start_date' and 'end_date' query parameters.
+        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -496,20 +469,20 @@ class ReportResendEmailResource(Resource):
         if not event.organizer or event.organizer.user_id != user.id:
             return {"message": "You are not authorized to resend the report for this event"}, 403
 
-        # Allow date filtering for resend email
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
-        start_date = None
-        end_date = None
-        if start_date_str:
-            try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
-        if end_date_str:
-            try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
+
+        start_date = parse_date_param(start_date_str, 'start_date')
+        end_date = parse_date_param(end_date_str, 'end_date')
+
+        if not start_date or not end_date:
+            return {"message": "Both 'start_date' and 'end_date' query parameters are required to resend email. Use YYYY-MM-DD."}, 400
+
+        if start_date > end_date:
+            return {"message": "Start date cannot be after end date."}, 400
 
         try:
-            # Generate the latest report data (without saving to history this time, just for email)
+            # Generate the report data (without saving to history this time, just for email)
             report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
             if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
                 return report_data_or_error
@@ -574,7 +547,9 @@ def generate_csv_report(report_data):
 class ReportExportCSVResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Export the latest generated report for an event as a CSV."""
+        """Export a report for an event as a CSV.
+        Requires 'start_date' and 'end_date' query parameters.
+        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -588,17 +563,17 @@ class ReportExportCSVResource(Resource):
         if not event.organizer or event.organizer.user_id != user.id:
             return {"message": "You are not authorized to export the report for this event"}, 403
 
-        # Allow date filtering for CSV export as well
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
-        start_date = None
-        end_date = None
-        if start_date_str:
-            try: start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid start_date format. Use %Y-%m-%d"}, 400
-        if end_date_str:
-            try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-            except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
+
+        start_date = parse_date_param(start_date_str, 'start_date')
+        end_date = parse_date_param(end_date_str, 'end_date')
+
+        if not start_date or not end_date:
+            return {"message": "Both 'start_date' and 'end_date' query parameters are required for CSV export. Use YYYY-MM-DD."}, 400
+
+        if start_date > end_date:
+            return {"message": "Start date cannot be after end date."}, 400
 
         # Generate the report data (without saving to history)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
@@ -609,7 +584,6 @@ class ReportExportCSVResource(Resource):
 
         try:
             csv_content = generate_csv_report(report_data)
-            # Directly return the Response object
             return Response(
                 csv_content,
                 mimetype="text/csv",
@@ -637,11 +611,9 @@ class OrganizerSummaryReportResource(Resource):
         total_revenue_org = 0.0
         events_summary = []
 
-        # Get all events for the current organizer
         organizer_events = Event.query.filter_by(organizer_id=organizer.id).all()
 
         for event in organizer_events:
-            # For efficiency in a summary, direct query might be better than full report for each event.
             event_total_tickets = Ticket.query.filter_by(event_id=event.id).count()
             event_total_revenue_query = db.session.query(db.func.sum(Transaction.amount_paid)).\
                 join(Ticket, Ticket.transaction_id == Transaction.id).\
@@ -662,18 +634,18 @@ class OrganizerSummaryReportResource(Resource):
 
         return {
             "organizer_id": organizer.id,
-            "organizer_name": user.full_name if hasattr(user, 'full_name') else user.email,
+            "organizer_name": user.full_name if hasattr(user, 'full_name') and user.full_name else user.email,
             "total_tickets_sold_across_all_events": total_tickets_sold_org,
             "total_revenue_across_all_events": f"{total_revenue_org:.2f}",
             "events_summary": events_summary
         }, 200
 
 def register_report_resources(api):
-    """Registers the ReportResource routes with Flask-RESTful API."""
-    api.add_resource(ReportResource, "/event/<int:event_id>/report")
-    api.add_resource(ReportHistoryResource, "/event/<int:event_id>/report/history")
-    api.add_resource(ReportDeleteResource, "/report/<int:report_id>")
-    api.add_resource(ReportDownloadPDFResource, "/event/<int:event_id>/report/download/pdf")
-    api.add_resource(ReportResendEmailResource, "/event/<int:event_id>/report/resend-email")
-    api.add_resource(ReportExportCSVResource, "/event/<int:event_id>/report/export/csv")
-    api.add_resource(OrganizerSummaryReportResource, "/organizer/summary-report")
+    """Registers the Report-related resources with the Flask-RESTful API."""
+    api.add_resource(ReportResource, '/reports/events/<int:event_id>')
+    api.add_resource(ReportHistoryResource, '/reports/events/<int:event_id>/history')
+    api.add_resource(ReportDeleteResource, '/reports/<int:report_id>')
+    api.add_resource(ReportDownloadPDFResource, '/reports/events/<int:event_id>/download/pdf')
+    api.add_resource(ReportResendEmailResource, '/reports/events/<int:event_id>/resend-email')
+    api.add_resource(ReportExportCSVResource, '/reports/events/<int:event_id>/export/csv')
+    api.add_resource(OrganizerSummaryReportResource, '/reports/organizer/summary')
