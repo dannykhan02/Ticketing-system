@@ -1,7 +1,7 @@
 from flask import jsonify, request, Response, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer # Ensure Organizer model is imported
+from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import SQLAlchemyError
 import logging
@@ -50,7 +50,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
         ticket_base_query = ticket_base_query.filter(Ticket.purchase_date <= adjusted_end_date)
 
-
     # 1. Ticket Sales Quantity
     total_tickets_sold = ticket_base_query.count()
     report['total_tickets_sold'] = total_tickets_sold
@@ -79,11 +78,10 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     # Using distinct on ticket_id to count unique attendees who scanned their ticket
     number_of_attendees = Scan.query.join(Ticket, Scan.ticket_id == Ticket.id).\
         filter(Ticket.event_id == event_id)
-    if start_date:
-        number_of_attendees = number_of_attendees.filter(Scan.timestamp >= start_date)
+    number_of_attendees = number_of_attendees.filter(Scan.scanned_at >= start_date)
     if end_date:
         adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        number_of_attendees = number_of_attendees.filter(Scan.timestamp <= adjusted_end_date)
+        number_of_attendees = number_of_attendees.filter(Scan.scanned_at <= adjusted_end_date)
     number_of_attendees = number_of_attendees.distinct(Scan.ticket_id).count() # Count unique ticket IDs that were scanned
     report['number_of_attendees'] = number_of_attendees
 
@@ -92,10 +90,10 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(TicketType, Ticket.ticket_type_id == TicketType.id).\
         filter(Ticket.event_id == event_id)
     if start_date:
-        attendees_by_type_query = attendees_by_type_query.filter(Scan.timestamp >= start_date)
+        attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at >= start_date)
     if end_date:
         adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        attendees_by_type_query = attendees_by_type_query.filter(Scan.timestamp <= adjusted_end_date)
+        attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at <= adjusted_end_date)
     attendees_by_type_query = attendees_by_type_query.group_by(TicketType.type_name).all()
 
     report['attendees_by_ticket_type'] = {str(type_name): count for type_name, count in attendees_by_type_query}
@@ -103,7 +101,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         'labels': [str(type_name) for type_name, count in attendees_by_type_query],
         'data': [count for type_name, count in attendees_by_type_query]
     }
-
 
     # 3. Revenue Generated
     total_revenue_query = transaction_base_query.with_entities(db.func.sum(Transaction.amount_paid)).scalar()
@@ -277,7 +274,6 @@ def send_report_to_organizer_with_pdf(report):
             os.remove(pdf_path)
             logger.debug(f"Cleaned up PDF file: {pdf_path}")
 
-
 class ReportResource(Resource):
     @jwt_required()
     def get(self, event_id):
@@ -407,7 +403,6 @@ class ReportDownloadPDFResource(Resource):
         if end_date_str:
             try: end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
             except ValueError: return {"message": "Invalid end_date format. Use %Y-%m-%d"}, 400
-
 
         # Generate the report data (without saving to history this time, as it's a download request)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
