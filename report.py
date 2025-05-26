@@ -8,7 +8,7 @@ import logging
 from pdf_utils import generate_graph_image, generate_pdf_with_graph
 from email_utils import send_email_with_attachment
 import os
-from datetime import datetime
+from datetime import datetime, time
 import csv
 from io import StringIO
 
@@ -39,16 +39,21 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
                                     .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
 
     if start_date:
-        transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date)
-        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
-        ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date)
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date_obj)
+            ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
 
     if end_date:
-        # Add one day to end_date to include the entire end day
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        transaction_base_query = transaction_base_query.filter(Transaction.timestamp <= adjusted_end_date)
-        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
-        ticket_base_query = ticket_base_query.filter(Ticket.purchase_date <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            transaction_base_query = transaction_base_query.filter(Transaction.timestamp <= adjusted_end_date)
+            ticket_base_query = ticket_base_query.filter(Ticket.purchase_date <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
 
     # 1. Ticket Sales Quantity
     total_tickets_sold = ticket_base_query.count()
@@ -58,30 +63,42 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(Ticket, Ticket.ticket_type_id == TicketType.id).\
         filter(Ticket.event_id == event_id)
     if start_date:
-        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
-        tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date >= start_date)
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
     if end_date:
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
-        tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
     tickets_by_type_query = tickets_by_type_query.group_by(TicketType.type_name).all()
 
     report['tickets_sold_by_type'] = {str(type_name): count for type_name, count in tickets_by_type_query}
-    # Note: 'tickets_sold_by_type_for_graph' is not directly used by pdf_utils graph,
-    # but kept here for potential frontend use if needed.
     report['tickets_sold_by_type_for_graph'] = {
         'labels': [str(type_name) for type_name, count in tickets_by_type_query],
         'data': [count for type_name, count in tickets_by_type_query]
     }
 
     # 2. Number of Attendees (based on scans)
-    # Using distinct on ticket_id to count unique attendees who scanned their ticket
     number_of_attendees = Scan.query.join(Ticket, Scan.ticket_id == Ticket.id).\
         filter(Ticket.event_id == event_id)
-    number_of_attendees = number_of_attendees.filter(Scan.scanned_at >= start_date)
+    if start_date:
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            number_of_attendees = number_of_attendees.filter(Scan.scanned_at >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
     if end_date:
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        number_of_attendees = number_of_attendees.filter(Scan.scanned_at <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            number_of_attendees = number_of_attendees.filter(Scan.scanned_at <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
     number_of_attendees = number_of_attendees.distinct(Scan.ticket_id).count() # Count unique ticket IDs that were scanned
     report['number_of_attendees'] = number_of_attendees
 
@@ -90,10 +107,18 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(TicketType, Ticket.ticket_type_id == TicketType.id).\
         filter(Ticket.event_id == event_id)
     if start_date:
-        attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at >= start_date)
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
     if end_date:
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            attendees_by_type_query = attendees_by_type_query.filter(Scan.scanned_at <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
     attendees_by_type_query = attendees_by_type_query.group_by(TicketType.type_name).all()
 
     report['attendees_by_ticket_type'] = {str(type_name): count for type_name, count in attendees_by_type_query}
@@ -112,10 +137,18 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(Transaction, Ticket.transaction_id == Transaction.id).\
         filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
     if start_date:
-        revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp >= start_date)
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
     if end_date:
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            revenue_by_type_query = revenue_by_type_query.filter(Transaction.timestamp <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
     revenue_by_type_query = revenue_by_type_query.group_by(TicketType.type_name).all()
 
     report['revenue_by_ticket_type'] = {
@@ -132,10 +165,18 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(Ticket, Ticket.transaction_id == Transaction.id).\
         filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
     if start_date:
-        payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp >= start_date)
+        try:
+            start_date_obj = datetime.strptime(str(start_date), '%Y-%m-%d')
+            payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp >= start_date_obj)
+        except ValueError:
+            logger.warning(f"Invalid start_date format: {start_date}")
     if end_date:
-        adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp <= adjusted_end_date)
+        try:
+            end_date_obj = datetime.strptime(str(end_date), '%Y-%m-%d')
+            adjusted_end_date = end_date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            payment_method_usage_query = payment_method_usage_query.filter(Transaction.timestamp <= adjusted_end_date)
+        except ValueError:
+            logger.warning(f"Invalid end_date format: {end_date}")
     payment_method_usage_query = payment_method_usage_query.group_by(Transaction.payment_method).all()
 
     report['payment_method_usage'] = {str(method): count for method, count in payment_method_usage_query}
