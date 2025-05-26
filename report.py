@@ -36,17 +36,19 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     # Base query for transactions and tickets, applying date filters
     ticket_base_query = Ticket.query.filter(Ticket.event_id == event_id)
     transaction_base_query = Transaction.query.join(Ticket, Ticket.transaction_id == Transaction.id)\
-                                        .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
+                                    .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
 
     if start_date:
         transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date)
-        ticket_base_query = ticket_base_query.filter(Ticket.created_at >= start_date)
+        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
+        ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date)
 
     if end_date:
         # Add one day to end_date to include the entire end day
         adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
         transaction_base_query = transaction_base_query.filter(Transaction.timestamp <= adjusted_end_date)
-        ticket_base_query = ticket_base_query.filter(Ticket.created_at <= adjusted_end_date)
+        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
+        ticket_base_query = ticket_base_query.filter(Ticket.purchase_date <= adjusted_end_date)
 
 
     # 1. Ticket Sales Quantity
@@ -57,10 +59,12 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         join(Ticket, Ticket.ticket_type_id == TicketType.id).\
         filter(Ticket.event_id == event_id)
     if start_date:
-        tickets_by_type_query = tickets_by_type_query.filter(Ticket.created_at >= start_date)
+        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
+        tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date >= start_date)
     if end_date:
         adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        tickets_by_type_query = tickets_by_type_query.filter(Ticket.created_at <= adjusted_end_date)
+        # Corrected: Use Ticket.purchase_date instead of Ticket.created_at
+        tickets_by_type_query = tickets_by_type_query.filter(Ticket.purchase_date <= adjusted_end_date)
     tickets_by_type_query = tickets_by_type_query.group_by(TicketType.type_name).all()
 
     report['tickets_sold_by_type'] = {str(type_name): count for type_name, count in tickets_by_type_query}
@@ -338,8 +342,8 @@ class ReportHistoryResource(Resource):
 
         # Fetch all reports for the given event, ordered by timestamp
         historical_reports = Report.query.filter_by(event_id=event_id)\
-                                         .order_by(Report.timestamp.desc())\
-                                         .all()
+                                             .order_by(Report.timestamp.desc())\
+                                             .all()
 
         # Directly return the jsonify response.
         # Flask-RESTful's .make_response will handle this correctly
