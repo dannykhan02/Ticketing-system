@@ -280,7 +280,8 @@ class AdminReportResource(Resource):
         if user.role != UserRole.ADMIN:
             return {"status": "error", "message": "Admin access required"}, 403
 
-        admin_ops = AdminOperations()
+        # Fix: Pass the required db_session argument
+        admin_ops = AdminOperations(db.session)  # or whatever your session object is
 
         try:
             organizer_id = request.args.get("organizer_id")
@@ -310,7 +311,7 @@ class AdminReportResource(Resource):
                 "status": "error",
                 "message": f"An error occurred: {str(e)}"
             }, 500
-
+        
 class AdminGenerateReportPDF(Resource):
     @jwt_required()
     def get(self, event_id):
