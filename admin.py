@@ -3,15 +3,12 @@ import os
 from flask import Flask, request, jsonify, send_file
 from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime, timedelta
-# Assuming model.py contains db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
-# Also assuming JSONB is imported if using PostgreSQL specific types
 from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import current_app
-# Assuming these utility functions exist and work with dictionary data
 from pdf_utils import generate_graph_image, generate_pdf_with_graph
-from report import get_event_report # This function should now leverage the new Report table structure
+from report import get_event_report
 import logging
 
 # Configure logging
@@ -73,14 +70,8 @@ class AdminOperations:
     def get_reports_by_organizer(self, organizer_id):
         """Retrieves all reports for events created by a specific organizer."""
         try:
-            # Eagerly load event and ticket_type relationships for performance and as_dict access
-            reports = Report.query.join(Event).filter(
-                Event.organizer_id == organizer_id
-            ).options(
-                db.joinedload(Report.event),
-                db.joinedload(Report.ticket_type)
-            ).all()
-            return [report.as_dict() for report in reports]
+            reports = Report.query.join(Event).filter(Event.organizer_id == organizer_id).all()
+            return [self._enrich_report(report) for report in reports]
         except SQLAlchemyError as e:
             logger.error(f"Error retrieving reports by organizer: {e}")
             return []
@@ -88,15 +79,22 @@ class AdminOperations:
     def get_all_reports(self):
         """Retrieves all reports in the database."""
         try:
-            # Eagerly load event and ticket_type relationships for performance and as_dict access
-            reports = Report.query.options(
-                db.joinedload(Report.event),
-                db.joinedload(Report.ticket_type)
-            ).all()
-            return [report.as_dict() for report in reports]
+            reports = Report.query.all()
+            return [self._enrich_report(report) for report in reports]
         except SQLAlchemyError as e:
             logger.error(f"Error retrieving all reports: {e}")
             return []
+
+    def _enrich_report(self, report):
+        """Helper method to enrich report data with event and ticket type details."""
+        event = Event.query.get(report.event_id)
+        ticket_type = TicketType.query.get(report.ticket_type_id) if report.ticket_type_id else None
+
+        report_data = report.as_dict()
+        report_data["event_name"] = event.name if event else "N/A"
+        if ticket_type:
+            report_data["ticket_type_name"] = ticket_type.type_name.value if ticket_type.type_name else "N/A"
+        return report_data
 
     def get_organizers(self):
         """Get list of all organizers with their event counts."""
@@ -173,7 +171,6 @@ class AdminGetAllEvents(Resource):
 class AdminGetEventById(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Retrieves a specific event by its ID."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
@@ -187,22 +184,13 @@ class AdminGetEventById(Resource):
 class AdminGetNonAttendees(Resource):
     @jwt_required()
     def get(self):
-        """Retrieves all users who are not attendees."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
-
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
-
         admin_ops = AdminOperations(db)
         users_list_of_dicts = admin_ops.get_non_attendee_users()
-
-        separated_users = {
-            "organizers": [],
-            "security": [],
-            "admins": []
-        }
-
+        separated_users = {"organizers": [], "security": [], "admins": []}
         for user_dict in users_list_of_dicts:
             role = user_dict.get('role')
             if role == UserRole.ORGANIZER.value:
@@ -216,23 +204,13 @@ class AdminGetNonAttendees(Resource):
 class AdminGetUsers(Resource):
     @jwt_required()
     def get(self):
-        """Get list of all users categorized by role."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
-
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
-
         admin_ops = AdminOperations(db)
         users_list_of_dicts = admin_ops.get_users()
-
-        categorized_users = {
-            "admins": [],
-            "organizers": [],
-            "security": [],
-            "attendees": []
-        }
-
+        categorized_users = {"admins": [], "organizers": [], "security": [], "attendees": []}
         for user_dict in users_list_of_dicts:
             role = user_dict.get("role")
             if role == UserRole.ADMIN.value:
@@ -248,112 +226,68 @@ class AdminGetUsers(Resource):
 class AdminSearchUserByEmail(Resource):
     @jwt_required()
     def get(self):
-        """Searches for a user by their email address (case-insensitive)."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
             return {"message": "Admin access required"}, 403
-
         email = request.args.get('email')
         if not email:
             return {"message": "Email parameter is required"}, 400
-
         admin_ops = AdminOperations(db)
         user_dict = admin_ops.search_user_by_email(email)
-
         if user_dict:
             return [user_dict], 200
         else:
             return [], 200
 
-
 class AdminReportResource(Resource):
     @jwt_required()
     def get(self):
-        """Retrieve summarized reports for all events or specific organizer."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not user:
             return {"status": "error", "message": "User not found"}, 404
-
         if user.role != UserRole.ADMIN:
             return {"status": "error", "message": "Admin access required"}, 403
-
-        # Fix: Pass the required db_session argument
-        admin_ops = AdminOperations(db.session)  # or whatever your session object is
-
+        admin_ops = AdminOperations(db.session)
         try:
             organizer_id = request.args.get("organizer_id")
-
             if organizer_id:
                 organizer_id = int(organizer_id)
-                summary = admin_ops.get_reports_summary_by_organizer(organizer_id)
+                summary = admin_ops.get_reports_by_organizer(organizer_id)
                 message = f"Report summaries for organizer {organizer_id}"
             else:
-                summary = admin_ops.get_all_reports_summary()
+                summary = admin_ops.get_all_reports()
                 message = "All report summaries grouped by event"
-
-            return {
-                "status": "success",
-                "message": message,
-                "data": summary
-            }, 200
-
+            return {"status": "success", "message": message, "data": summary}, 200
         except ValueError:
-            return {
-                "status": "error",
-                "message": "Invalid organizer_id. Must be an integer."
-            }, 400
-
+            return {"status": "error", "message": "Invalid organizer_id. Must be an integer."}, 400
         except Exception as e:
-            return {
-                "status": "error",
-                "message": f"An error occurred: {str(e)}"
-            }, 500
-        
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
+
 class AdminGenerateReportPDF(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Generate and return a downloadable PDF report for a specific event."""
-        # Step 1: Authenticate and Authorize
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not user:
             return {"status": "error", "message": "User not found"}, 404
-
         if user.role != UserRole.ADMIN:
             return {"status": "error", "message": "Admin access required"}, 403
-
-        # Step 2: Fetch report data
-        report_data = get_event_report(event_id)  # Should return a dictionary
-
+        report_data = get_event_report(event_id)
         if isinstance(report_data, tuple) and len(report_data) == 2 and isinstance(report_data[1], int):
-            return report_data  # Assume (message, status_code)
-
+            return report_data
         if not isinstance(report_data, dict):
-            return {
-                "status": "error",
-                "message": "Failed to generate report. Unexpected format returned from get_event_report.",
-                "data_received": str(report_data)
-            }, 500
-
-        # Step 3: Setup temporary paths
+            return {"status": "error", "message": "Failed to generate report. Unexpected format returned from get_event_report.", "data_received": str(report_data)}, 500
         tmp_dir = os.path.join(current_app.root_path, 'tmp')
         os.makedirs(tmp_dir, exist_ok=True)
-
         graph_path = os.path.join(tmp_dir, f"event_report_{event_id}_graph.png")
         pdf_path = os.path.join(tmp_dir, f"event_report_{event_id}.pdf")
-
-        # Step 4: Generate Graph Image
         try:
             generate_graph_image(report_data, graph_path)
         except Exception as e:
             logger.error(f"[Graph Error] Event {event_id}: {e}")
             return {"status": "error", "message": "Failed to generate graph", "error": str(e)}, 500
-
-        # Step 5: Generate PDF
         try:
             generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
         except Exception as e:
@@ -362,14 +296,10 @@ class AdminGenerateReportPDF(Resource):
                 os.remove(graph_path)
             return {"status": "error", "message": "Failed to generate PDF", "error": str(e)}, 500
         finally:
-            # Always clean up graph after PDF creation
             if os.path.exists(graph_path):
                 os.remove(graph_path)
-
-        # Step 6: Send file and schedule cleanup
         try:
             response = send_file(pdf_path, as_attachment=True, download_name=f"event_report_{event_id}.pdf")
-
             @response.call_on_close
             def remove_file():
                 try:
@@ -377,17 +307,14 @@ class AdminGenerateReportPDF(Resource):
                         os.remove(pdf_path)
                 except Exception as e:
                     logger.error(f"[Cleanup Error] Could not remove file {pdf_path}: {e}")
-
             return response
         except Exception as e:
             logger.error(f"[Send File Error] {pdf_path}: {e}")
             return {"status": "error", "message": "Failed to send PDF", "error": str(e)}, 500
 
-# The following classes are kept but their resources will be removed from registration (based on original comment)
 class AdminGetOrganizers(Resource):
     @jwt_required()
     def get(self):
-        """Get list of all organizers with their event counts."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
@@ -399,7 +326,6 @@ class AdminGetOrganizers(Resource):
 class AdminDeleteOrganizer(Resource):
     @jwt_required()
     def delete(self, organizer_id):
-        """Delete an organizer."""
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         if not current_user or current_user.role != UserRole.ADMIN:
@@ -408,12 +334,11 @@ class AdminDeleteOrganizer(Resource):
         return admin_ops.delete_organizer(organizer_id)
 
 def register_admin_resources(api):
-    """Registers admin-specific API resources with the Flask-RESTful API."""
     api.add_resource(AdminGetUsers, "/admin/users")
     api.add_resource(AdminGetOrganizerEvents, "/admin/organizer/<int:organizer_id>/events")
     api.add_resource(AdminGetAllEvents, "/admin/events")
     api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")
     api.add_resource(AdminGetNonAttendees, "/admin/users/non-attendees")
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
-    api.add_resource(AdminReportResource, "/admin/reports/summary")  # Updated endpoint
+    api.add_resource(AdminReportResource, "/admin/reports/summary")
     api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
