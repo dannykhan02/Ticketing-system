@@ -415,5 +415,5 @@ def register_admin_resources(api):
     api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")
     api.add_resource(AdminGetNonAttendees, "/admin/users/non-attendees")
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
-    api.add_resource(AdminReportResource, "/admin/reports")
+    api.add_resource(AdminReportResource, "/admin/reports/summary")  # Updated endpoint
     api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
