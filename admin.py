@@ -270,99 +270,117 @@ class AdminSearchUserByEmail(Resource):
 class AdminReportResource(Resource):
     @jwt_required()
     def get(self):
-        """Retrieve all reports for admin or specific reports for organizers."""
+        """Retrieve summarized reports for all events or specific organizer."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
 
         if not user:
-            return {"message": "User not found"}, 404
+            return {"status": "error", "message": "User not found"}, 404
 
         if user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
+            return {"status": "error", "message": "Admin access required"}, 403
 
-        admin_ops = AdminOperations(db)
-        organizer_id = request.args.get('organizer_id')
-        
-        if organizer_id:
-            try:
+        admin_ops = AdminOperations()
+
+        try:
+            organizer_id = request.args.get("organizer_id")
+
+            if organizer_id:
                 organizer_id = int(organizer_id)
-            except ValueError:
-                return {"message": "Invalid organizer_id format. Must be an integer."}, 400
-            reports = admin_ops.get_reports_by_organizer(organizer_id)
-        else:
-            reports = admin_ops.get_all_reports()
-        
-        return reports, 200
+                summary = admin_ops.get_reports_summary_by_organizer(organizer_id)
+                message = f"Report summaries for organizer {organizer_id}"
+            else:
+                summary = admin_ops.get_all_reports_summary()
+                message = "All report summaries grouped by event"
+
+            return {
+                "status": "success",
+                "message": message,
+                "data": summary
+            }, 200
+
+        except ValueError:
+            return {
+                "status": "error",
+                "message": "Invalid organizer_id. Must be an integer."
+            }, 400
+
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"An error occurred: {str(e)}"
+            }, 500
 
 class AdminGenerateReportPDF(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Generate and return a PDF report for a specific event."""
+        """Generate and return a downloadable PDF report for a specific event."""
+        # Step 1: Authenticate and Authorize
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
 
         if not user:
-            return {"message": "User not found"}, 404
+            return {"status": "error", "message": "User not found"}, 404
 
         if user.role != UserRole.ADMIN:
-            return {"message": "Admin access required"}, 403
+            return {"status": "error", "message": "Admin access required"}, 403
 
-        # Generate the report data - this should now fetch from the Report table
-        # We need a way to get the latest report for an event, or pass report_id
-        # For simplicity, assuming get_event_report still fetches data to construct
-        # a report dictionary, but it should ideally look up the Report table.
-        # If get_event_report directly retrieves a Report object, report_data will be that object.
-        # For now, it's assumed get_event_report returns a dictionary that can be used.
-        report_data = get_event_report(event_id) # This function needs to be updated to use the Report model
+        # Step 2: Fetch report data
+        report_data = get_event_report(event_id)  # Should return a dictionary
 
         if isinstance(report_data, tuple) and len(report_data) == 2 and isinstance(report_data[1], int):
-            return report_data
-        if not isinstance(report_data, dict):
-            return {"message": "Failed to generate report data: unexpected format from get_event_report. Expected a dictionary.", "data_received": report_data}, 500
+            return report_data  # Assume (message, status_code)
 
-        # Ensure temporary directory exists
+        if not isinstance(report_data, dict):
+            return {
+                "status": "error",
+                "message": "Failed to generate report. Unexpected format returned from get_event_report.",
+                "data_received": str(report_data)
+            }, 500
+
+        # Step 3: Setup temporary paths
         tmp_dir = os.path.join(current_app.root_path, 'tmp')
         os.makedirs(tmp_dir, exist_ok=True)
 
         graph_path = os.path.join(tmp_dir, f"event_report_{event_id}_graph.png")
         pdf_path = os.path.join(tmp_dir, f"event_report_{event_id}.pdf")
 
+        # Step 4: Generate Graph Image
         try:
-            # generate_graph_image should be updated to accept the new report_data structure
             generate_graph_image(report_data, graph_path)
         except Exception as e:
-            logger.error(f"Error generating graph image for event {event_id}: {e}")
-            return {"message": "Failed to generate report graph", "error": str(e)}, 500
+            logger.error(f"[Graph Error] Event {event_id}: {e}")
+            return {"status": "error", "message": "Failed to generate graph", "error": str(e)}, 500
 
+        # Step 5: Generate PDF
         try:
-            # generate_pdf_with_graph should be updated to accept the new report_data structure
             generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
         except Exception as e:
-            logger.error(f"Error generating PDF for event {event_id}: {e}")
+            logger.error(f"[PDF Error] Event {event_id}: {e}")
             if os.path.exists(graph_path):
                 os.remove(graph_path)
-            return {"message": "Failed to generate PDF report", "error": str(e)}, 500
+            return {"status": "error", "message": "Failed to generate PDF", "error": str(e)}, 500
         finally:
+            # Always clean up graph after PDF creation
             if os.path.exists(graph_path):
                 os.remove(graph_path)
 
+        # Step 6: Send file and schedule cleanup
         try:
             response = send_file(pdf_path, as_attachment=True, download_name=f"event_report_{event_id}.pdf")
-            
-            @response.after_request
-            def remove_file(response):
+
+            @response.call_on_close
+            def remove_file():
                 try:
-                    import time
-                    time.sleep(0.1)
                     if os.path.exists(pdf_path):
                         os.remove(pdf_path)
                 except Exception as e:
-                    logger.error(f"Error removing generated PDF file {pdf_path}: {e}")
-                return response
+                    logger.error(f"[Cleanup Error] Could not remove file {pdf_path}: {e}")
+
             return response
         except Exception as e:
-            logger.error(f"Error sending PDF file {pdf_path}: {e}")
-            return {"message": "Failed to send PDF report", "error": str(e)}, 500
+            logger.error(f"[Send File Error] {pdf_path}: {e}")
+            return {"status": "error", "message": "Failed to send PDF", "error": str(e)}, 500
 
 # The following classes are kept but their resources will be removed from registration (based on original comment)
 class AdminGetOrganizers(Resource):
