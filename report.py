@@ -32,16 +32,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     """
     Generates a comprehensive report for a specific event with data structured for graphs,
     optionally filtered by a date range.
-
-    Args:
-        event_id (int): The ID of the event.
-        save_to_history (bool): Whether to save the report data to the database history.
-        start_date (datetime.datetime, optional): The start date for filtering.
-        end_date (datetime.datetime, optional): The end date for filtering.
-
-    Returns:
-        tuple: A tuple (report_data, status_code) or a dictionary report_data if successful.
-               Returns a tuple (error_message_dict, status_code) on error.
     """
     report = {}
 
@@ -49,11 +39,9 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     if not event:
         return {"message": "Event not found"}, 404
 
-    # Validate date range presence for reports
     if not start_date or not end_date:
         return {"message": "Both start_date and end_date are required for report generation."}, 400
 
-    # Ensure start_date is not after end_date
     if start_date > end_date:
         return {"message": "Start date cannot be after end date."}, 400
 
@@ -65,19 +53,15 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
     report['filter_start_date'] = start_date.strftime('%Y-%m-%d')
     report['filter_end_date'] = end_date.strftime('%Y-%m-%d')
 
-    # Adjust end_date to include the entire day
     adjusted_end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-    # Base query for transactions and tickets, applying date filters
     ticket_base_query = Ticket.query.filter(Ticket.event_id == event_id)
     transaction_base_query = Transaction.query.join(Ticket, Ticket.transaction_id == Transaction.id)\
                                 .filter(Ticket.event_id == event_id, Transaction.payment_status == 'COMPLETED')
 
-    # Apply date filters to base queries
     ticket_base_query = ticket_base_query.filter(Ticket.purchase_date >= start_date, Ticket.purchase_date <= adjusted_end_date)
     transaction_base_query = transaction_base_query.filter(Transaction.timestamp >= start_date, Transaction.timestamp <= adjusted_end_date)
 
-    # 1. Ticket Sales Quantity
     total_tickets_sold = ticket_base_query.count()
     report['total_tickets_sold'] = total_tickets_sold
 
@@ -94,8 +78,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         'data': [count for type_name, count in tickets_by_type_query]
     }
 
-    # 2. Number of Attendees (based on scans)
-    # Ensure scans are also filtered by the requested date range
     number_of_attendees = Scan.query.join(Ticket, Scan.ticket_id == Ticket.id).\
         filter(Ticket.event_id == event_id,
                Scan.scanned_at >= start_date,
@@ -117,7 +99,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         'data': [count for type_name, count in attendees_by_type_query]
     }
 
-    # 3. Revenue Generated
     total_revenue_query = transaction_base_query.with_entities(db.func.sum(Transaction.amount_paid)).scalar()
     total_revenue = float(total_revenue_query) if total_revenue_query else 0.0
     report['total_revenue'] = total_revenue
@@ -140,7 +121,6 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         'data': [float(revenue) if revenue else 0.0 for type_name, revenue in revenue_by_type_query]
     }
 
-    # 4. Payment Method Usage
     payment_method_usage_query = db.session.query(Transaction.payment_method, db.func.count(Transaction.id)).\
         join(Ticket, Ticket.transaction_id == Transaction.id).\
         filter(Ticket.event_id == event_id,
@@ -155,19 +135,16 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         'data': [count for method, count in payment_method_usage_query]
     }
 
-    # Save/update reports only if save_to_history is True
     if save_to_history:
         try:
-            # Create a new report entry for the overall event
             new_event_report = Report(
                 event_id=event_id,
                 total_tickets_sold=report['total_tickets_sold'],
                 total_revenue=report['total_revenue'],
-                report_data=report # Save the entire generated report dictionary
+                report_data=report
             )
             db.session.add(new_event_report)
 
-            # Save/update reports for each ticket type
             for type_name, count in tickets_by_type_query:
                 revenue = dict(revenue_by_type_query).get(type_name, 0.0)
                 ticket_type = TicketType.query.filter_by(type_name=type_name).first()
@@ -180,7 +157,7 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
                     ticket_type_id=ticket_type.id,
                     total_tickets_sold=count,
                     total_revenue=float(revenue) if revenue else 0.0,
-                    report_data={ # Save specific data for this ticket type report
+                    report_data={
                         "ticket_type": str(type_name),
                         "total_tickets_sold": count,
                         "total_revenue": float(revenue) if revenue else 0.0,
@@ -193,11 +170,7 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         except SQLAlchemyError as e:
             db.session.rollback()
             logger.error(f"Error saving report history for event {event_id}: {e}")
-            # Do not return error here, as the report data itself is still valid
-            # and might be used for email/download
 
-    # Send report to organizer (only if save_to_history is True, or if explicitly requested)
-    # Consider adding a separate flag for email sending if not always tied to history saving
     if save_to_history:
         send_report_to_organizer_with_pdf(report)
 
@@ -212,77 +185,140 @@ def send_report_to_organizer_with_pdf(report):
         logger.warning(f"No organizer email found for event: {event.name} (Event ID: {event_id})")
         return
 
-    # 1. Generate graph image
-    # Use a more robust temporary file naming or a dedicated temporary directory
     graph_path = f"/tmp/event_report_{event.id}_graph_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
     generated_graph_path = generate_graph_image(report, graph_path)
     if not generated_graph_path:
         logger.error(f"Failed to generate graph image for event {event.id}. Email will be sent without graph.")
-        graph_path = None # Ensure graph_path is None if generation failed
+        graph_path = None
 
-    # 2. Generate PDF file
     pdf_path = f"/tmp/event_report_{event.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     generated_pdf_path = generate_pdf_with_graph(report, event_id, pdf_path, generated_graph_path if generated_graph_path else "")
     if not generated_pdf_path:
         logger.error(f"Failed to generate PDF for event {event.id}. Email will not be sent with attachment.")
-        pdf_path = None # Ensure pdf_path is None if generation failed
+        pdf_path = None
 
-    # 3. Create rich email body
     email_body = f"""
-    Hello {organizer_user.full_name if hasattr(organizer_user, 'full_name') and organizer_user.full_name else organizer_user.email},
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
-    Attached is the latest sales report for your event: **{event.name}**.
+            body {{
+                font-family: 'Poppins', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 0;
+                background-color: #f5f5f5;
+            }}
+            .email-container {{
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }}
+            .email-header {{
+                background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
+                color: white;
+                padding: 25px 15px;
+                text-align: center;
+            }}
+            .email-header h1 {{
+                margin: 0;
+                font-size: 24px;
+                letter-spacing: 0.5px;
+            }}
+            .email-body {{
+                padding: 25px 20px;
+            }}
+            .highlight {{
+                background-color: #f6f3ff;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 15px 0;
+                border-left: 4px solid #4a154b;
+            }}
+            .footer {{
+                margin-top: 30px;
+                text-align: center;
+                color: #777;
+                font-size: 14px;
+                padding-top: 20px;
+                border-top: 1px solid #eee;
+            }}
+            .section-title {{
+                position: relative;
+                padding-left: 15px;
+                margin-top: 30px;
+                color: #4a154b;
+                font-weight: 600;
+            }}
+            .section-title:before {{
+                content: '';
+                position: absolute;
+                left: 0;
+                top: 0;
+                height: 100%;
+                width: 5px;
+                background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
+                border-radius: 5px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="email-container">
+            <div class="email-header">
+                <h1>📊 Event Report</h1>
+            </div>
+            <div class="email-body">
+                <p>Hello {organizer_user.full_name if hasattr(organizer_user, 'full_name') and organizer_user.full_name else organizer_user.email},</p>
 
+                <div class="highlight">
+                    <h2>📊 Your Event Report is Ready!</h2>
+                </div>
+
+                <p>Attached is the latest sales report for your event: <strong>{event.name}</strong>.</p>
+
+                {f"<p>This report covers data from <strong>{report.get('filter_start_date')}</strong> to <strong>{report.get('filter_end_date')}</strong>.</p>" if report.get('filter_start_date') and report.get('filter_end_date') else "<p>This report covers all available data for the event.</p>"}
+
+                <h3 class="section-title">📌 Overall Summary</h3>
+                <p><strong>Total Tickets Sold:</strong> {report['total_tickets_sold']}</p>
+                <p><strong>Total Revenue:</strong> ${report['total_revenue']:.2f}</p>
+                <p><strong>Number of Attendees:</strong> {report['number_of_attendees']}</p>
+
+                <h3 class="section-title">🎟️ Ticket Sales by Type</h3>
+                {f"<p>{'<br>'.join([f'- {ticket_type}: {count} tickets' for ticket_type, count in report['tickets_sold_by_type'].items()])}</p>" if report.get('tickets_sold_by_type') else "<p>No ticket sales data available.</p>"}
+
+                <h3 class="section-title">💰 Revenue by Ticket Type</h3>
+                {f"<p>{'<br>'.join([f'- {ticket_type}: ${revenue:.2f}' for ticket_type, revenue in report['revenue_by_ticket_type'].items()])}</p>" if report.get('revenue_by_ticket_type') else "<p>No revenue data available.</p>"}
+
+                <div class="footer">
+                    <p>Regards,</p>
+                    <p>Your Event System Team</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
     """
 
-    if report.get('filter_start_date') and report.get('filter_end_date'):
-        email_body += f"This report covers data from **{report.get('filter_start_date')}** to **{report.get('filter_end_date')}**.\n\n"
-    else:
-        email_body += "This report covers all available data for the event.\n\n"
-
-
-    email_body += f"""
-    **Overall Summary:**
-    Total Tickets Sold: {report['total_tickets_sold']}
-    Total Revenue: ${report['total_revenue']:.2f}
-    Number of Attendees: {report['number_of_attendees']}
-
-    **Ticket Sales by Type:**
-    """
-    if report.get('tickets_sold_by_type'):
-        for ticket_type, count in report['tickets_sold_by_type'].items():
-            email_body += f"- {ticket_type}: {count} tickets\n"
-    else:
-        email_body += "No ticket sales data available.\n"
-
-    email_body += f"""
-    **Revenue by Ticket Type:**
-    """
-    if report.get('revenue_by_ticket_type'):
-        for ticket_type, revenue in report['revenue_by_ticket_type'].items():
-            email_body += f"- {ticket_type}: ${revenue:.2f}\n"
-    else:
-        email_body += "No revenue data available.\n"
-
-    email_body += f"""
-
-    Regards,
-    Your Event System Team
-    """
-
-    # 4. Send the email with the PDF
     try:
         send_email_with_attachment(
             recipient=organizer_user.email,
             subject=f"📊 Event Report - {event.name}",
             body=email_body,
-            attachment_path=pdf_path # Will be None if PDF generation failed
+            attachment_path=pdf_path
         )
         logger.info(f"Report email (with PDF if generated) sent to {organizer_user.email}")
     except Exception as e:
         logger.error(f"Failed to send report email for event {event.name}: {e}")
     finally:
-        # Clean up temporary files
         if graph_path and os.path.exists(graph_path):
             os.remove(graph_path)
             logger.debug(f"Cleaned up graph file: {graph_path}")
@@ -293,9 +329,6 @@ def send_report_to_organizer_with_pdf(report):
 class ReportResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Retrieve a report for a specific event (Only the event organizer can access).
-        Requires 'start_date' and 'end_date' query parameters.
-        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -312,33 +345,27 @@ class ReportResource(Resource):
         start_date_str = request.args.get('start_date')
         end_date_str = request.args.get('end_date')
 
-        # Use the centralized parsing function
         start_date = parse_date_param(start_date_str, 'start_date')
         end_date = parse_date_param(end_date_str, 'end_date')
 
-        # Critical: Validate date presence at the API entry point
         if not start_date:
             return {"message": "Missing or invalid 'start_date' query parameter. Use YYYY-MM-DD."}, 400
         if not end_date:
             return {"message": "Missing or invalid 'end_date' query parameter. Use YYYY-MM-DD."}, 400
 
-        # Validate date range
         if start_date > end_date:
             return {"message": "Start date cannot be after end date."}, 400
 
-        # Pass the date filters to get_event_report and ensure save_to_history=True for default
         report_data_or_error = get_event_report(event_id, save_to_history=True, start_date=start_date, end_date=end_date)
 
-        # Check if get_event_report returned an error tuple (e.g., event not found, or date validation inside)
         if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
             return report_data_or_error
 
-        return report_data_or_error, 200 # Return the report data
+        return report_data_or_error, 200
 
 class ReportHistoryResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Retrieve historical reports for a specific event."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -352,7 +379,6 @@ class ReportHistoryResource(Resource):
         if not event.organizer or event.organizer.user_id != user.id:
             return {"message": "You are not authorized to view the report history for this event"}, 403
 
-        # Fetch all reports for the given event, ordered by timestamp
         historical_reports = Report.query.filter_by(event_id=event_id)\
                                      .order_by(Report.timestamp.desc())\
                                      .all()
@@ -362,7 +388,6 @@ class ReportHistoryResource(Resource):
 class ReportDeleteResource(Resource):
     @jwt_required()
     def delete(self, report_id):
-        """Delete a specific historical report."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
 
@@ -390,9 +415,6 @@ class ReportDeleteResource(Resource):
 class ReportDownloadPDFResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Download a report for an event as a PDF.
-        Requires 'start_date' and 'end_date' query parameters.
-        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -418,15 +440,13 @@ class ReportDownloadPDFResource(Resource):
         if start_date > end_date:
             return {"message": "Start date cannot be after end date."}, 400
 
-        # Generate the report data (without saving to history this time, as it's a download request)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
 
         if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
             return report_data_or_error
 
-        report_data = report_data_or_error # Extract the actual report data
+        report_data = report_data_or_error
 
-        # Use unique temporary file names to prevent conflicts
         unique_timestamp = datetime.now().strftime('%Y%m%d%H%M%S%f')
         graph_path = f"/tmp/event_report_{event_id}_graph_{unique_timestamp}.png"
         pdf_path = f"/tmp/event_report_{event_id}_{unique_timestamp}.pdf"
@@ -444,7 +464,6 @@ class ReportDownloadPDFResource(Resource):
             logger.error(f"Error generating or sending PDF report for event {event_id}: {e}")
             return {"message": "Failed to generate or send PDF report"}, 500
         finally:
-            # Clean up temporary files
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
             if os.path.exists(graph_path):
@@ -453,9 +472,6 @@ class ReportDownloadPDFResource(Resource):
 class ReportResendEmailResource(Resource):
     @jwt_required()
     def post(self, event_id):
-        """Resend a report email for an event.
-        Requires 'start_date' and 'end_date' query parameters.
-        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -482,12 +498,10 @@ class ReportResendEmailResource(Resource):
             return {"message": "Start date cannot be after end date."}, 400
 
         try:
-            # Generate the report data (without saving to history this time, just for email)
             report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
             if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
                 return report_data_or_error
 
-            # If report data is valid, proceed to send email
             send_report_to_organizer_with_pdf(report_data_or_error)
             return {"message": "Report email resent successfully"}, 200
         except Exception as e:
@@ -495,47 +509,41 @@ class ReportResendEmailResource(Resource):
             return {"message": "Failed to resend report email"}, 500
 
 def generate_csv_report(report_data):
-    """Generates CSV content from report data."""
     output = StringIO()
     writer = csv.writer(output)
 
-    # Add general event information
     writer.writerow(["Event ID", report_data.get('event_id', 'N/A')])
     writer.writerow(["Event Name", report_data.get('event_name', 'N/A')])
     writer.writerow(["Event Date", report_data.get('event_date', 'N/A')])
     writer.writerow(["Event Location", report_data.get('event_location', 'N/A')])
     writer.writerow(["Report Start Date Filter", report_data.get('filter_start_date', 'N/A')])
     writer.writerow(["Report End Date Filter", report_data.get('filter_end_date', 'N/A')])
-    writer.writerow([]) # Blank row for separation
+    writer.writerow([])
 
     writer.writerow(["Overall Summary"])
     writer.writerow(["Total Tickets Sold", report_data.get('total_tickets_sold', 0)])
     writer.writerow(["Total Revenue", f"{report_data.get('total_revenue', 0.0):.2f}"])
     writer.writerow(["Number of Attendees", report_data.get('number_of_attendees', 0)])
-    writer.writerow([]) # Blank row for separation
+    writer.writerow([])
 
-    # Ticket Sales by Type
     writer.writerow(["Ticket Sales by Type"])
     writer.writerow(["Ticket Type", "Tickets Sold"])
     for ticket_type, count in report_data.get('tickets_sold_by_type', {}).items():
         writer.writerow([ticket_type, count])
     writer.writerow([])
 
-    # Revenue by Ticket Type
     writer.writerow(["Revenue by Ticket Type"])
     writer.writerow(["Ticket Type", "Revenue"])
     for ticket_type, revenue in report_data.get('revenue_by_ticket_type', {}).items():
         writer.writerow([ticket_type, f"{revenue:.2f}"])
     writer.writerow([])
 
-    # Attendees by Ticket Type
     writer.writerow(["Attendees by Ticket Type"])
     writer.writerow(["Ticket Type", "Attendees"])
     for ticket_type, attendees in report_data.get('attendees_by_ticket_type', {}).items():
         writer.writerow([ticket_type, attendees])
     writer.writerow([])
 
-    # Payment Method Usage
     writer.writerow(["Payment Method Usage"])
     writer.writerow(["Payment Method", "Count"])
     for method, count in report_data.get('payment_method_usage', {}).items():
@@ -547,9 +555,6 @@ def generate_csv_report(report_data):
 class ReportExportCSVResource(Resource):
     @jwt_required()
     def get(self, event_id):
-        """Export a report for an event as a CSV.
-        Requires 'start_date' and 'end_date' query parameters.
-        """
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         event = Event.query.get(event_id)
@@ -575,12 +580,11 @@ class ReportExportCSVResource(Resource):
         if start_date > end_date:
             return {"message": "Start date cannot be after end date."}, 400
 
-        # Generate the report data (without saving to history)
         report_data_or_error = get_event_report(event_id, save_to_history=False, start_date=start_date, end_date=end_date)
         if isinstance(report_data_or_error, tuple) and len(report_data_or_error) == 2:
             return report_data_or_error
 
-        report_data = report_data_or_error # Extract the actual report data
+        report_data = report_data_or_error
 
         try:
             csv_content = generate_csv_report(report_data)
@@ -596,14 +600,13 @@ class ReportExportCSVResource(Resource):
 class OrganizerSummaryReportResource(Resource):
     @jwt_required()
     def get(self):
-        """Provides a summary of tickets sold, revenues, and events for the current organizer."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
 
         if not user or user.role.value != "ORGANIZER":
             return {"message": "Only organizers can access summary reports"}, 403
 
-        organizer = Organizer.query.filter_by(user_id=user.id).first() # Ensure correct access to Organizer
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
         if not organizer:
             return {"message": "Organizer profile not found for this user"}, 404
 
@@ -641,7 +644,6 @@ class OrganizerSummaryReportResource(Resource):
         }, 200
 
 def register_report_resources(api):
-    """Registers the Report-related resources with the Flask-RESTful API."""
     api.add_resource(ReportResource, '/reports/events/<int:event_id>')
     api.add_resource(ReportHistoryResource, '/reports/events/<int:event_id>/history')
     api.add_resource(ReportDeleteResource, '/reports/<int:report_id>')
