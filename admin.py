@@ -1,8 +1,10 @@
 import json
 import os
+import csv
+from io import StringIO
 from flask import Flask, request, jsonify, send_file
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime, timedelta
+from datetime import datetime
 from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -67,19 +69,29 @@ class AdminOperations:
             logger.error(f"Error searching user by email: {e}")
             return None
 
-    def get_reports_by_organizer(self, organizer_id):
-        """Retrieves all reports for events created by a specific organizer."""
+    def get_reports_by_organizer(self, organizer_id, start_date=None, end_date=None):
+        """Retrieves all reports for events created by a specific organizer with optional date filtering."""
         try:
-            reports = Report.query.join(Event).filter(Event.organizer_id == organizer_id).all()
+            query = Report.query.join(Event).filter(Event.organizer_id == organizer_id)
+            if start_date:
+                query = query.filter(Report.timestamp >= start_date)
+            if end_date:
+                query = query.filter(Report.timestamp <= end_date)
+            reports = query.all()
             return [self._enrich_report(report) for report in reports]
         except SQLAlchemyError as e:
             logger.error(f"Error retrieving reports by organizer: {e}")
             return []
 
-    def get_all_reports(self):
-        """Retrieves all reports in the database."""
+    def get_all_reports(self, start_date=None, end_date=None):
+        """Retrieves all reports in the database with optional date filtering."""
         try:
-            reports = Report.query.all()
+            query = Report.query
+            if start_date:
+                query = query.filter(Report.timestamp >= start_date)
+            if end_date:
+                query = query.filter(Report.timestamp <= end_date)
+            reports = query.all()
             return [self._enrich_report(report) for report in reports]
         except SQLAlchemyError as e:
             logger.error(f"Error retrieving all reports: {e}")
@@ -249,19 +261,29 @@ class AdminReportResource(Resource):
             return {"status": "error", "message": "User not found"}, 404
         if user.role != UserRole.ADMIN:
             return {"status": "error", "message": "Admin access required"}, 403
+
         admin_ops = AdminOperations(db.session)
+
         try:
             organizer_id = request.args.get("organizer_id")
+            start_date_str = request.args.get("start_date")
+            end_date_str = request.args.get("end_date")
+
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
+
             if organizer_id:
                 organizer_id = int(organizer_id)
-                summary = admin_ops.get_reports_by_organizer(organizer_id)
+                summary = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
                 message = f"Report summaries for organizer {organizer_id}"
             else:
-                summary = admin_ops.get_all_reports()
+                summary = admin_ops.get_all_reports(start_date, end_date)
                 message = "All report summaries grouped by event"
+
             return {"status": "success", "message": message, "data": summary}, 200
-        except ValueError:
-            return {"status": "error", "message": "Invalid organizer_id. Must be an integer."}, 400
+
+        except ValueError as ve:
+            return {"status": "error", "message": str(ve)}, 400
         except Exception as e:
             return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
 
@@ -312,6 +334,63 @@ class AdminGenerateReportPDF(Resource):
             logger.error(f"[Send File Error] {pdf_path}: {e}")
             return {"status": "error", "message": "Failed to send PDF", "error": str(e)}, 500
 
+class AdminExportAllReportsResource(Resource):
+    @jwt_required()
+    def get(self):
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+        if not user:
+            return {"status": "error", "message": "User not found"}, 404
+        if user.role != UserRole.ADMIN:
+            return {"status": "error", "message": "Admin access required"}, 403
+
+        admin_ops = AdminOperations(db.session)
+
+        try:
+            organizer_id = request.args.get("organizer_id")
+            start_date_str = request.args.get("start_date")
+            end_date_str = request.args.get("end_date")
+
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
+
+            if organizer_id:
+                organizer_id = int(organizer_id)
+                reports = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
+            else:
+                reports = admin_ops.get_all_reports(start_date, end_date)
+
+            # Create CSV file in memory
+            si = StringIO()
+            csv_writer = csv.writer(si)
+            csv_writer.writerow(["Event Name", "Total Revenue", "Total Tickets", "Ticket Type", "Revenue by Type", "Tickets by Type"])
+
+            for report in reports:
+                csv_writer.writerow([
+                    report.get("event_name", "N/A"),
+                    report.get("total_revenue_summary", 0),
+                    report.get("total_tickets_sold_summary", 0),
+                    report.get("ticket_type_name", "N/A"),
+                    report.get("amount", 0),
+                    report.get("tickets", 0)
+                ])
+
+            # Prepare the response
+            output = si.getvalue()
+            si.close()
+
+            return send_file(
+                StringIO(output),
+                mimetype='text/csv',
+                as_attachment=True,
+                download_name='all_reports.csv'
+            )
+
+        except ValueError as ve:
+            return {"status": "error", "message": str(ve)}, 400
+        except Exception as e:
+            return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
+
 class AdminGetOrganizers(Resource):
     @jwt_required()
     def get(self):
@@ -342,3 +421,4 @@ def register_admin_resources(api):
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
     api.add_resource(AdminReportResource, "/admin/reports/summary")
     api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
+    api.add_resource(AdminExportAllReportsResource, "/admin/reports/export-all")
