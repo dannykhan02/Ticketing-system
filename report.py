@@ -197,6 +197,10 @@ def send_report_to_organizer_with_pdf(report):
         logger.error(f"Failed to generate PDF for event {event.id}. Email will not be sent with attachment.")
         pdf_path = None
 
+    event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
+    start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
+    end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
+
     email_body = f"""
     <!DOCTYPE html>
     <html>
@@ -237,6 +241,28 @@ def send_report_to_organizer_with_pdf(report):
             .email-body {{
                 padding: 25px 20px;
             }}
+            .event-details {{
+                margin-bottom: 25px;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 20px;
+            }}
+            .event-property {{
+                display: flex;
+                margin-bottom: 12px;
+                align-items: flex-start;
+                gap: 10px;
+            }}
+            .property-label {{
+                font-weight: 600;
+                min-width: 100px;
+                color: #4a154b;
+                flex-shrink: 0;
+            }}
+            .property-value {{
+                flex: 1;
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+            }}
             .highlight {{
                 background-color: #f6f3ff;
                 padding: 15px;
@@ -269,6 +295,29 @@ def send_report_to_organizer_with_pdf(report):
                 background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
                 border-radius: 5px;
             }}
+
+            /* Mobile Responsive Styles */
+            @media only screen and (max-width: 480px) {{
+                .email-body {{
+                    padding: 20px 15px;
+                }}
+                .event-property {{
+                    flex-direction: column;
+                    gap: 2px;
+                    margin-bottom: 15px;
+                    padding-bottom: 10px;
+                    border-bottom: 1px solid #f0f0f0;
+                }}
+                .property-label {{
+                    min-width: auto;
+                    margin-bottom: 3px;
+                    font-size: 14px;
+                }}
+                .property-value {{
+                    font-size: 14px;
+                    margin-left: 0;
+                }}
+            }}
         </style>
     </head>
     <body>
@@ -277,26 +326,62 @@ def send_report_to_organizer_with_pdf(report):
                 <h1>📊 Event Report</h1>
             </div>
             <div class="email-body">
-                <p>Hello {organizer_user.full_name if hasattr(organizer_user, 'full_name') and organizer_user.full_name else organizer_user.email},</p>
+                <p>Dear {organizer_user.full_name if hasattr(organizer_user, 'full_name') and organizer_user.full_name else organizer_user.email},</p>
 
                 <div class="highlight">
                     <h2>📊 Your Event Report is Ready!</h2>
                 </div>
 
-                <p>Attached is the latest sales report for your event: <strong>{event.name}</strong>.</p>
+                <div class="event-details">
+                    <h3 class="section-title">📌 Event Details</h3>
 
-                {f"<p>This report covers data from <strong>{report.get('filter_start_date')}</strong> to <strong>{report.get('filter_end_date')}</strong>.</p>" if report.get('filter_start_date') and report.get('filter_end_date') else "<p>This report covers all available data for the event.</p>"}
+                    <div class="event-property">
+                        <div class="property-label">Event:</div>
+                        <div class="property-value">{event.name}</div>
+                    </div>
+
+                    <div class="event-property">
+                        <div class="property-label">Location:</div>
+                        <div class="property-value">{event.location}</div>
+                    </div>
+
+                    <div class="event-property">
+                        <div class="property-label">Date:</div>
+                        <div class="property-value">{event_date}</div>
+                    </div>
+
+                    <div class="event-property">
+                        <div class="property-label">Time:</div>
+                        <div class="property-value">{start_time} - {end_time}</div>
+                    </div>
+
+                    <div class="event-property">
+                        <div class="property-label">Description:</div>
+                        <div class="property-value">{event.description}</div>
+                    </div>
+                </div>
 
                 <h3 class="section-title">📌 Overall Summary</h3>
-                <p><strong>Total Tickets Sold:</strong> {report['total_tickets_sold']}</p>
-                <p><strong>Total Revenue:</strong> ${report['total_revenue']:.2f}</p>
-                <p><strong>Number of Attendees:</strong> {report['number_of_attendees']}</p>
+                <div class="event-property">
+                    <div class="property-label">Total Tickets Sold:</div>
+                    <div class="property-value">{report['total_tickets_sold']}</div>
+                </div>
+
+                <div class="event-property">
+                    <div class="property-label">Total Revenue:</div>
+                    <div class="property-value">${report['total_revenue']:.2f}</div>
+                </div>
+
+                <div class="event-property">
+                    <div class="property-label">Number of Attendees:</div>
+                    <div class="property-value">{report['number_of_attendees']}</div>
+                </div>
 
                 <h3 class="section-title">🎟️ Ticket Sales by Type</h3>
-                {f"<p>{'<br>'.join([f'- {ticket_type}: {count} tickets' for ticket_type, count in report['tickets_sold_by_type'].items()])}</p>" if report.get('tickets_sold_by_type') else "<p>No ticket sales data available.</p>"}
+                {f"<div>{''.join([f'<p>- {ticket_type}: {count} tickets</p>' for ticket_type, count in report['tickets_sold_by_type'].items()])}</div>" if report.get('tickets_sold_by_type') else "<p>No ticket sales data available.</p>"}
 
                 <h3 class="section-title">💰 Revenue by Ticket Type</h3>
-                {f"<p>{'<br>'.join([f'- {ticket_type}: ${revenue:.2f}' for ticket_type, revenue in report['revenue_by_ticket_type'].items()])}</p>" if report.get('revenue_by_ticket_type') else "<p>No revenue data available.</p>"}
+                {f"<div>{''.join([f'<p>- {ticket_type}: ${revenue:.2f}</p>' for ticket_type, revenue in report['revenue_by_ticket_type'].items()])}</div>" if report.get('revenue_by_ticket_type') else "<p>No revenue data available.</p>"}
 
                 <div class="footer">
                     <p>Regards,</p>
