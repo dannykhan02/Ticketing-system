@@ -301,7 +301,8 @@ class Event(db.Model):
                 "quantity": ticket.quantity,
                 "payment_status": ticket.payment_status.value,
                 "ticket_type": {
-                    "price": ticket.ticket_type.price
+                   "price":  float(ticket.ticket_type.price)
+                    
                 } if ticket.ticket_type else None
             } for ticket in self.tickets] if self.tickets else [],
             "featured": self.featured,
