@@ -180,7 +180,7 @@ class EventResource(Resource):
         if not event:
             return {"error": "Event not found"}, 404
 
-        if user.role != "ORGANIZER" or event.organizer_id != organizer.id:
+        if user.role != UserRole.ORGANIZER or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
         data = request.get_json()
