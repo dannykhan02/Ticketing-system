@@ -68,7 +68,6 @@ class STKPush(Resource):
         """Initiates STK Push for ticket payment."""
         phone_number = mpesa_data.get("phone_number")
         amount = mpesa_data.get("amount")
-        ticket_id = mpesa_data.get("ticket_id")
         transaction_id = mpesa_data.get("transaction_id")
 
         # Normalize the phone number
@@ -76,8 +75,8 @@ class STKPush(Resource):
         if not phone_number:
             return {"error": "Invalid phone number format"}, 400
 
-        if not phone_number or not amount or not ticket_id or not transaction_id:
-            return {"error": "Phone number, amount, ticket_id, and transaction_id are required"}, 400
+        if not phone_number or not amount or not transaction_id:
+            return {"error": "Phone number, amount, and transaction_id are required"}, 400
 
         # Get access token for M-Pesa API
         access_token = get_access_token()
@@ -99,32 +98,51 @@ class STKPush(Resource):
             "PartyB": BUSINESS_SHORTCODE,
             "PhoneNumber": phone_number,
             "CallBackURL": CALLBACK_URL,
-            "AccountReference": transaction_id,  # Use the ticket's transaction ID
-            "TransactionDesc": f"Payment for ticket ID {ticket_id}"
+            "AccountReference": str(transaction_id),  # Use the transaction ID as string
+            "TransactionDesc": f"Payment for transaction ID {transaction_id}"
         }
 
-        response = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
-                                 json=payload, headers=headers)
-        response_data = response.json()
+        try:
+            response = requests.post("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+                                    json=payload, headers=headers)
+            response_data = response.json()
 
-        # Log the response to inspect its structure
-        logging.info(f"STK Push response: {response_data}")
+            # Log the response to inspect its structure
+            logging.info(f"STK Push response: {response_data}")
 
-        if response_data.get("ResponseCode") == "0":
-            merchant_request_id = response_data.get("MerchantRequestID")
+            if response_data.get("ResponseCode") == "0":
+                merchant_request_id = response_data.get("MerchantRequestID")
+                checkout_request_id = response_data.get("CheckoutRequestID")
 
-            # Update the Ticket with the merchant request ID
-            ticket = Ticket.query.get(ticket_id)
-            if ticket:
-                ticket.merchant_request_id = merchant_request_id
-                db.session.commit()
+                # Update the Transaction with the merchant request ID and checkout request ID
+                transaction = Transaction.query.get(transaction_id)
+                if transaction:
+                    # Store both IDs in the transaction for tracking
+                    # You might need to add these fields to your Transaction model
+                    transaction.merchant_request_id = merchant_request_id
+                    transaction.checkout_request_id = checkout_request_id
+                    db.session.commit()
 
-            return {
-                "message": "STK Push initiated",
-                "data": response_data
-            }, 200
-        else:
-            return {"error": "Failed to initiate STK Push", "details": response_data}, 400
+                return {
+                    "message": "STK Push initiated successfully",
+                    "merchant_request_id": merchant_request_id,
+                    "checkout_request_id": checkout_request_id
+                }, 200
+            else:
+                error_message = response_data.get("errorMessage", "Unknown error")
+                logging.error(f"STK Push failed: {response_data}")
+                return {
+                    "error": "Failed to initiate STK Push", 
+                    "details": error_message
+                }, 400
+
+        except requests.RequestException as e:
+            logging.error(f"Request error during STK Push: {e}")
+            return {"error": "Network error occurred during payment initiation"}, 500
+        except Exception as e:
+            logging.error(f"Unexpected error during STK Push: {e}")
+            return {"error": "An unexpected error occurred"}, 500
+
 
 class STKCallback(Resource):
     def __init__(self, complete_ticket_operation_func):
