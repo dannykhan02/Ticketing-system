@@ -3,6 +3,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import enum
 from sqlalchemy.dialects.postgresql import JSONB
+from decimal import Decimal
 
 # Initialize SQLAlchemy
 db = SQLAlchemy()
@@ -41,12 +42,92 @@ class PaymentMethod(enum.Enum):
     MPESA = 'Mpesa'
     PAYSTACK = 'Paystack'
 
+# New Currency-related Enums
+class CurrencyCode(enum.Enum):
+    USD = "USD"  # US Dollar
+    EUR = "EUR"  # Euro
+    GBP = "GBP"  # British Pound
+    KES = "KES"  # Kenyan Shilling (your local currency)
+    UGX = "UGX"  # Ugandan Shilling
+    TZS = "TZS"  # Tanzanian Shilling
+    NGN = "NGN"  # Nigerian Naira
+    GHS = "GHS"  # Ghanaian Cedi
+    ZAR = "ZAR"  # South African Rand
+    JPY = "JPY"  # Japanese Yen
+    CAD = "CAD"  # Canadian Dollar
+    AUD = "AUD"  # Australian Dollar
+
+
 # Add a new association table for likes
 event_likes = db.Table(
     'event_likes',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('event_id', db.Integer, db.ForeignKey('event.id'), primary_key=True)
 )
+
+# New Currency Model
+class Currency(db.Model):
+    __tablename__ = 'currencies'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    code = db.Column(db.Enum(CurrencyCode), unique=True, nullable=False)
+    name = db.Column(db.String(100), nullable=False)  # e.g., "US Dollar"
+    symbol = db.Column(db.String(10), nullable=False)  # e.g., "$"
+    is_base_currency = db.Column(db.Boolean, default=False)  # One currency should be base
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    exchange_rates_from = db.relationship('ExchangeRate', foreign_keys='ExchangeRate.from_currency_id', backref='from_currency', lazy=True)
+    exchange_rates_to = db.relationship('ExchangeRate', foreign_keys='ExchangeRate.to_currency_id', backref='to_currency', lazy=True)
+    ticket_types = db.relationship('TicketType', backref='currency', lazy=True)
+    transactions = db.relationship('Transaction', backref='currency', lazy=True)
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "code": self.code.value,
+            "name": self.name,
+            "symbol": self.symbol,
+            "is_base_currency": self.is_base_currency,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
+
+# New Exchange Rate Model
+class ExchangeRate(db.Model):
+    __tablename__ = 'exchange_rates'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    from_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)
+    to_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)
+    rate = db.Column(db.Numeric(15, 6), nullable=False)  # High precision for exchange rates
+    effective_date = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    source = db.Column(db.String(100), nullable=True)  # e.g., "API", "Manual", "Bank"
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Unique constraint to prevent duplicate active rates for same currency pair
+    __table_args__ = (
+        db.UniqueConstraint('from_currency_id', 'to_currency_id', 'is_active', 
+                          name='uix_active_exchange_rate'),
+    )
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "from_currency": self.from_currency.code.value if self.from_currency else None,
+            "to_currency": self.to_currency.code.value if self.to_currency else None,
+            "rate": float(self.rate),
+            "effective_date": self.effective_date.isoformat(),
+            "source": self.source,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
 
 # User model
 class User(db.Model):
@@ -64,6 +145,8 @@ class User(db.Model):
     tickets = db.relationship('Ticket', backref='buyer', lazy=True)
     transactions = db.relationship('Transaction', back_populates='user', lazy=True)
     scans = db.relationship('Scan', backref='scanner', lazy=True)
+    # Reports relationship - user can be an organizer creating reports
+    reports = db.relationship('Report', backref='organizer_user', lazy=True)
 
     def set_password(self, password):
         self.password = generate_password_hash(password)
@@ -226,56 +309,133 @@ class Event(db.Model):
             "category": self.event_category.name if self.event_category else None
         }
 
-# TicketType model
+# TicketType model - Updated with currency support
 class TicketType(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
-    price = db.Column(db.Float, nullable=False)
+    price = db.Column(db.Numeric(10, 2), nullable=False)  # Changed to Numeric for precision
+    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # New currency field
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
-    quantity = db.Column(db.Integer, nullable=False)  # Add this line
+    quantity = db.Column(db.Integer, nullable=False)
 
-    # tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
+    tickets = db.relationship('Ticket', backref='ticket_type', lazy=True)
     reports = db.relationship('Report', backref='ticket_type', lazy=True)
+
+    def get_price_in_currency(self, target_currency_id):
+        """Convert ticket price to target currency"""
+        if self.currency_id == target_currency_id:
+            return self.price
+        
+        # Get the latest exchange rate
+        rate = ExchangeRate.query.filter_by(
+            from_currency_id=self.currency_id,
+            to_currency_id=target_currency_id,
+            is_active=True
+        ).order_by(ExchangeRate.effective_date.desc()).first()
+        
+        if rate:
+            return self.price * rate.rate
+        
+        return self.price  # Return original price if no rate found
 
     def as_dict(self):
         return {
             "id": self.id,
             "type_name": self.type_name.value,
-            "price": self.price,
+            "price": float(self.price),
+            "currency": self.currency.code.value if self.currency else None,
+            "currency_symbol": self.currency.symbol if self.currency else None,
             "event_id": self.event_id,
             "quantity": self.quantity
         }
-#Report table
+
+# Updated Report table with currency conversion support
 class Report(db.Model):
+    __tablename__ = 'reports'
+    
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    
+    # Core relationships
+    organizer_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=True, index=True)
-
+    
+    # Currency fields
+    base_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # Original currency
+    
+    # Scope of the report
+    report_scope = db.Column(db.String(50), nullable=False, default="event_summary")
+    
+    # Numeric summaries in base currency
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
-    total_revenue = db.Column(db.Float, nullable=False, default=0.0)
-
-    # Use JSONB for PostgreSQL or fallback to db.JSON
+    total_revenue = db.Column(db.Numeric(12, 2), nullable=False, default=0.0)  # In base currency
+    number_of_attendees = db.Column(db.Integer, nullable=True, default=0)
+    
+    # Raw report data with currency breakdown
     report_data = db.Column(JSONB, nullable=False, default=dict)
-
+    
+    # Metadata
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-
+    report_date = db.Column(db.Date, nullable=True)
+    
     # Relationships
-    # event = db.relationship('Event', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
-    # ticket_type = db.relationship('TicketType', backref=db.backref('reports_history', lazy=True, cascade="all, delete-orphan"))
+    base_currency = db.relationship('Currency', backref='reports', lazy=True)
+    
+    def get_revenue_in_currency(self, target_currency_id):
+        """Convert total revenue to target currency"""
+        if self.base_currency_id == target_currency_id:
+            return self.total_revenue
+        
+        # Get the latest exchange rate
+        rate = ExchangeRate.query.filter_by(
+            from_currency_id=self.base_currency_id,
+            to_currency_id=target_currency_id,
+            is_active=True
+        ).order_by(ExchangeRate.effective_date.desc()).first()
+        
+        if rate:
+            return self.total_revenue * rate.rate
+        
+        return self.total_revenue  # Return original if no rate found
 
-    def as_dict(self):
+    def as_dict(self, target_currency_id=None):
+        # Calculate revenue in target currency if specified
+        if target_currency_id:
+            converted_revenue = self.get_revenue_in_currency(target_currency_id)
+            target_currency = Currency.query.get(target_currency_id)
+            revenue_info = {
+                "total_revenue": float(converted_revenue),
+                "currency": target_currency.code.value if target_currency else None,
+                "currency_symbol": target_currency.symbol if target_currency else None,
+                "original_revenue": float(self.total_revenue),
+                "original_currency": self.base_currency.code.value if self.base_currency else None
+            }
+        else:
+            revenue_info = {
+                "total_revenue": float(self.total_revenue),
+                "currency": self.base_currency.code.value if self.base_currency else None,
+                "currency_symbol": self.base_currency.symbol if self.base_currency else None
+            }
+
         data = {
             "id": self.id,
+            "organizer_id": self.organizer_id,
             "event_id": self.event_id,
             "event_name": self.event.name if self.event else "N/A",
+            "organizer_name": self.organizer_user.full_name if self.organizer_user else "N/A",
             "timestamp": self.timestamp.isoformat(),
-            "total_tickets_sold_summary": self.total_tickets_sold,
-            "total_revenue_summary": self.total_revenue,
-            "report_data": self.report_data
+            "report_date": self.report_date.isoformat() if self.report_date else None,
+            "scope": self.report_scope,
+            "total_tickets_sold": self.total_tickets_sold,
+            "number_of_attendees": self.number_of_attendees,
+            "report_data": self.report_data,
+            **revenue_info
         }
+        
         if self.ticket_type_id:
             data["ticket_type_id"] = self.ticket_type_id
             data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type and self.ticket_type.type_name else "N/A"
+        
         return data
 
 class Ticket(db.Model):
@@ -295,8 +455,6 @@ class Ticket(db.Model):
 
     # Relationships
     transaction = db.relationship('Transaction', back_populates='tickets', foreign_keys=[transaction_id])
-    ticket_type = db.relationship('TicketType', backref='tickets')
-    # event = db.relationship('Event', backref='tickets')
     payment_status = db.Column(db.Enum(PaymentStatus), default=PaymentStatus.PENDING)
     scans = db.relationship('Scan', backref='ticket', lazy=True)
 
@@ -304,6 +462,12 @@ class Ticket(db.Model):
     def total_price(self):
         ticket_type = TicketType.query.get(self.ticket_type_id)
         return ticket_type.price if ticket_type else 0
+
+    def get_price_in_currency(self, target_currency_id):
+        """Get ticket price in target currency"""
+        if self.ticket_type:
+            return self.ticket_type.get_price_in_currency(target_currency_id)
+        return 0
 
     def as_dict(self):
         return {
@@ -320,14 +484,15 @@ class Ticket(db.Model):
             "scanned": self.scanned,
             "purchase_date": self.purchase_date.isoformat(),
             "merchant_request_id": self.merchant_request_id,
-            "total_price": self.total_price
+            "total_price": float(self.total_price),
+            "currency": self.ticket_type.currency.code.value if self.ticket_type and self.ticket_type.currency else None
         }
 
 # Fixed TransactionTicket model (junction table)
 class TransactionTicket(db.Model):
     __tablename__ = 'transaction_ticket'
 
-    id = db.Column(db.Integer, primary_key=True, autoincrement=True)  # Added primary key
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=False)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -339,12 +504,13 @@ class TransactionTicket(db.Model):
     transaction = db.relationship('Transaction', backref=db.backref('transaction_tickets', lazy=True))
     ticket = db.relationship('Ticket', backref=db.backref('transaction_tickets', lazy=True))
 
-# Updated Transaction model
+# Updated Transaction model with currency support
 class Transaction(db.Model):
     __tablename__ = 'transaction'
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    amount_paid = db.Column(db.Numeric(8, 2), nullable=False)
+    amount_paid = db.Column(db.Numeric(10, 2), nullable=False)  # Changed to Numeric
+    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # New currency field
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
@@ -359,15 +525,49 @@ class Transaction(db.Model):
     organizer = db.relationship('Organizer', backref=db.backref('transaction_history', lazy=True))
     tickets = db.relationship('Ticket', back_populates='transaction', foreign_keys=[Ticket.transaction_id])
 
-    # Method to get all tickets associated with this transaction through the junction table
+    def get_amount_in_currency(self, target_currency_id):
+        """Convert transaction amount to target currency"""
+        if self.currency_id == target_currency_id:
+            return self.amount_paid
+        
+        # Get the latest exchange rate
+        rate = ExchangeRate.query.filter_by(
+            from_currency_id=self.currency_id,
+            to_currency_id=target_currency_id,
+            is_active=True
+        ).order_by(ExchangeRate.effective_date.desc()).first()
+        
+        if rate:
+            return self.amount_paid * rate.rate
+        
+        return self.amount_paid  # Return original if no rate found
+
     def get_tickets(self):
+        """Get all tickets associated with this transaction through the junction table"""
         ticket_ids = [tt.ticket_id for tt in self.transaction_tickets]
         return Ticket.query.filter(Ticket.id.in_(ticket_ids)).all()
 
-    def as_dict(self):
+    def as_dict(self, target_currency_id=None):
+        # Calculate amount in target currency if specified
+        if target_currency_id:
+            converted_amount = self.get_amount_in_currency(target_currency_id)
+            target_currency = Currency.query.get(target_currency_id)
+            amount_info = {
+                "amount_paid": float(converted_amount),
+                "currency": target_currency.code.value if target_currency else None,
+                "currency_symbol": target_currency.symbol if target_currency else None,
+                "original_amount": float(self.amount_paid),
+                "original_currency": self.currency.code.value if self.currency else None
+            }
+        else:
+            amount_info = {
+                "amount_paid": float(self.amount_paid),
+                "currency": self.currency.code.value if self.currency else None,
+                "currency_symbol": self.currency.symbol if self.currency else None
+            }
+
         return {
             "id": self.id,
-            "amount_paid": float(self.amount_paid),
             "payment_status": self.payment_status.value,
             "payment_reference": self.payment_reference,
             "payment_method": self.payment_method.value,
@@ -376,7 +576,8 @@ class Transaction(db.Model):
             "mpesa_receipt_number": self.mpesa_receipt_number,
             "user_id": self.user_id,
             "organizer_id": self.organizer_id,
-            "ticket_count": len(self.transaction_tickets) if hasattr(self, 'transaction_tickets') else 0
+            "ticket_count": len(self.transaction_tickets) if hasattr(self, 'transaction_tickets') else 0,
+            **amount_info
         }
 
 # Scan model
@@ -393,3 +594,58 @@ class Scan(db.Model):
             "scanned_at": self.scanned_at.isoformat(),
             "scanned_by": self.scanned_by
         }
+
+# Utility functions for currency operations
+class CurrencyConverter:
+    @staticmethod
+    def get_base_currency():
+        """Get the base currency (should be only one)"""
+        return Currency.query.filter_by(is_base_currency=True, is_active=True).first()
+    
+    @staticmethod
+    def convert_amount(amount, from_currency_id, to_currency_id):
+        """Convert amount between currencies"""
+        if from_currency_id == to_currency_id:
+            return amount
+        
+        rate = ExchangeRate.query.filter_by(
+            from_currency_id=from_currency_id,
+            to_currency_id=to_currency_id,
+            is_active=True
+        ).order_by(ExchangeRate.effective_date.desc()).first()
+        
+        if rate:
+            return Decimal(str(amount)) * rate.rate
+        
+        return amount
+    
+    @staticmethod
+    def get_latest_rate(from_currency_id, to_currency_id):
+        """Get the latest exchange rate between two currencies"""
+        return ExchangeRate.query.filter_by(
+            from_currency_id=from_currency_id,
+            to_currency_id=to_currency_id,
+            is_active=True
+        ).order_by(ExchangeRate.effective_date.desc()).first()
+    
+    @staticmethod
+    def update_exchange_rate(from_currency_id, to_currency_id, new_rate, source="API"):
+        """Update exchange rate - deactivate old rate and create new one"""
+        # Deactivate existing rates
+        ExchangeRate.query.filter_by(
+            from_currency_id=from_currency_id,
+            to_currency_id=to_currency_id,
+            is_active=True
+        ).update({'is_active': False})
+        
+        # Create new rate
+        new_exchange_rate = ExchangeRate(
+            from_currency_id=from_currency_id,
+            to_currency_id=to_currency_id,
+            rate=Decimal(str(new_rate)),
+            source=source,
+            is_active=True
+        )
+        
+        db.session.add(new_exchange_rate)
+        return new_exchange_rate
