@@ -180,15 +180,34 @@ class EventResource(Resource):
         if not event:
             return {"error": "Event not found"}, 404
 
-        if user.role != "ORGANIZER" or event.organizer_id != organizer.id:
+        if user.role != UserRole.ORGANIZER or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
-        data = request.get_json()
+        data = request.form
+        files = request.files
         if not data:
             return {"error": "No data provided"}, 400
-
+         
         try:
             # Validate and update event date
+           
+            image_url = None
+            if 'file' in files:
+                file = files['file']
+                if file and file.filename != '':
+                    if not allowed_file(file.filename):
+                        return {"message": "Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP"}, 400
+                    
+                    try:
+                        upload_result = cloudinary.uploader.upload(
+                            file,
+                            folder="event_images",
+                            resource_type="auto"
+                        )
+                        image_url = upload_result.get('secure_url')
+                    except Exception as e:
+                        logger.error(f"Error uploading event image: {str(e)}")
+                        return {"message": "Failed to upload event image"}, 500
             if "date" in data:
                 try:
                     event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
@@ -229,7 +248,7 @@ class EventResource(Resource):
             event.name = data.get("name", event.name)
             event.description = data.get("description", event.description)
             event.location = data.get("location", event.location)
-            event.image = data.get("image", event.image)
+            event.category_id = data.get("category_id", event.category_id)
 
             db.session.commit()
             return {"message": "Update successful", "event": event.as_dict()}, 200

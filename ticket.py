@@ -525,7 +525,7 @@ class TicketResource(Resource):
     def get(self, ticket_id=None):
         """Get a specific ticket or all tickets for the authenticated user."""
         try:
-            identity = get_jwt_identity()  # Get authenticated user ID
+            identity = get_jwt_identity()  
             user = User.query.get(identity)
 
             if not user:
@@ -583,9 +583,6 @@ class TicketResource(Resource):
             if not user:
                 return {"error": "User not found"}, 404
 
-            # if user.role != UserRole.ATTENDEE:
-            #     return {"error": "Only attendees can purchase tickets"}, 403
-
             data = request.get_json()
             required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]
             if not all(field in data for field in required_fields):
@@ -626,10 +623,16 @@ class TicketResource(Resource):
             db.session.add(transaction)
             db.session.flush()  # Get the transaction.id before commit
             
+            # Ensure transaction has an ID
+            if not transaction.id:
+                db.session.rollback()
+                return {"error": "Failed to create transaction"}, 500
+                
             tickets = []
+            transaction_tickets = []
             
             # Create individual tickets (one per quantity)
-            for _ in range(quantity):
+            for i in range(quantity):
                 temp_qr_code = f"pending_{uuid.uuid4()}"
                 new_ticket = Ticket(
                     event_id=event.id,
@@ -643,21 +646,39 @@ class TicketResource(Resource):
                     qr_code=temp_qr_code
                 )
                 db.session.add(new_ticket)
-                db.session.flush()  # Get the ticket.id before commit
-                
-                # Create relationship in the TransactionTicket table
-                transaction_ticket = TransactionTicket(
-                    transaction_id=transaction.id,
-                    ticket_id=new_ticket.id
-                )
-                db.session.add(transaction_ticket)
                 tickets.append(new_ticket)
             
+            # Flush to get ticket IDs
+            db.session.flush()
+            
+            # Verify all tickets have IDs
+            for ticket in tickets:
+                if not ticket.id:
+                    db.session.rollback()
+                    return {"error": "Failed to create tickets"}, 500
+            
+            # Create relationships in the TransactionTicket table
+            for ticket in tickets:
+                transaction_ticket = TransactionTicket(
+                    transaction_id=transaction.id,
+                    ticket_id=ticket.id
+                )
+                db.session.add(transaction_ticket)
+                transaction_tickets.append(transaction_ticket)
+            
+            # Commit the transaction, tickets, and relationships
             db.session.commit()
 
             # Process Payment
             if data["payment_method"] == "Mpesa":
                 if "phone_number" not in data or normalize_phone_number(data["phone_number"]) != normalize_phone_number(user.phone_number):
+                    # Rollback everything if phone number validation fails
+                    for tt in transaction_tickets:
+                        db.session.delete(tt)
+                    for ticket in tickets:
+                        db.session.delete(ticket)
+                    db.session.delete(transaction)
+                    db.session.commit()
                     return {"error": "Phone number must be the registered one"}, 400
 
                 # Initiate STK Push using the imported class
@@ -672,7 +693,9 @@ class TicketResource(Resource):
                 if status_code == 200:
                     return response, status_code
                 else:
-                    # If STK Push fails, revert the ticket creation
+                    # If STK Push fails, revert everything
+                    for tt in transaction_tickets:
+                        db.session.delete(tt)
                     for ticket in tickets:
                         db.session.delete(ticket)
                     db.session.delete(transaction)
@@ -681,22 +704,32 @@ class TicketResource(Resource):
 
             elif data["payment_method"] == "Paystack":
                 if not user.email:
+                    # Rollback everything if email validation fails
+                    for tt in transaction_tickets:
+                        db.session.delete(tt)
+                    for ticket in tickets:
+                        db.session.delete(ticket)
+                    db.session.delete(transaction)
+                    db.session.commit()
                     return {"error": "User email is required for Paystack payment"}, 400
 
                 # Initialize Paystack payment
                 init = initialize_paystack_payment(user.email, int(amount * 100))
                 if isinstance(init, dict) and "error" in init:
-                    # Remote error – roll back and bubble up
+                    # Remote error – roll back everything
+                    for tt in transaction_tickets:
+                        db.session.delete(tt)
                     for ticket in tickets:
                         db.session.delete(ticket)
                     db.session.delete(transaction)
                     db.session.commit()
-                    return init, 502  # or 400
+                    return init, 502
 
                 # Save the Paystack reference
                 transaction.payment_reference = init["reference"]
                 db.session.commit()
                 logger.info(f"Paystack payment initialized with reference: {init['reference']}")
+                
                 # Return the authorization URL so front-end can redirect
                 return {
                     "message": "Payment initialized",
@@ -705,6 +738,9 @@ class TicketResource(Resource):
                 }, 200
 
             else:
+                # Invalid payment method - rollback everything
+                for tt in transaction_tickets:
+                    db.session.delete(tt)
                 for ticket in tickets:
                     db.session.delete(ticket)
                 db.session.delete(transaction)
@@ -712,6 +748,7 @@ class TicketResource(Resource):
                 return {"error": "Invalid payment method"}, 400
 
         except OperationalError as e:
+            db.session.rollback()
             logger.error(f"Database error: {e}")
             return {"error": "Database connection error"}, 500
 
