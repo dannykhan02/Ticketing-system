@@ -525,7 +525,7 @@ class TicketResource(Resource):
     def get(self, ticket_id=None):
         """Get a specific ticket or all tickets for the authenticated user."""
         try:
-            identity = get_jwt_identity()  # Get authenticated user ID
+            identity = get_jwt_identity()  
             user = User.query.get(identity)
 
             if not user:
