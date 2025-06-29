@@ -4,7 +4,7 @@ import csv
 from io import StringIO
 from flask import Flask, request, jsonify, send_file, Response
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime
+from datetime import datetime, time
 from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -15,6 +15,16 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class DateUtils:
+    @staticmethod
+    def adjust_end_date(end_date):
+        """Adjust end date to include the entire day"""
+        if isinstance(end_date, datetime):
+            return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        else:
+            # If it's a date object, combine it with time to make it a datetime
+            return datetime.combine(end_date, time(23, 59, 59, 999999))
 
 class AdminOperations:
     def __init__(self, db_session):

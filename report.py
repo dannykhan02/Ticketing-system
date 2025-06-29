@@ -1,3 +1,6 @@
+import matplotlib
+matplotlib.use('Agg')  # Set the backend to 'Agg' to avoid GUI issues
+
 from flask import jsonify, request, Response, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -57,7 +60,11 @@ class DateUtils:
     @staticmethod
     def adjust_end_date(end_date: datetime) -> datetime:
         """Adjust end date to include the entire day"""
-        return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        if isinstance(end_date, datetime):
+            return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        else:
+            # If it's a date object, combine it with time to make it a datetime
+            return datetime.combine(end_date, time(23, 59, 59, 999999))
 
 class ChartGenerator:
     """Handles chart generation for reports"""
@@ -112,8 +119,7 @@ class ChartGenerator:
             logger.error(f"Error creating pie chart: {e}")
             return None
 
-    def create_bar_chart(self, data: Dict[str, float], title: str,
-                        xlabel: str, ylabel: str) -> Optional[str]:
+    def create_bar_chart(self, data: Dict[str, float], title: str, xlabel: str, ylabel: str) -> Optional[str]:
         """Create a bar chart for revenue or other metrics"""
         if not data:
             return None
@@ -123,15 +129,14 @@ class ChartGenerator:
                 categories = list(data.keys())
                 values = list(data.values())
 
-                bars = ax.bar(categories, values,
-                            color=plt.cm.viridis(range(len(categories))))
+                bars = ax.bar(categories, values, color=plt.cm.viridis(range(len(categories))))
 
                 # Add value labels on bars
                 for bar in bars:
                     height = bar.get_height()
                     ax.text(bar.get_x() + bar.get_width()/2., height,
-                           f'${height:.2f}' if 'Revenue' in ylabel else f'{height:.0f}',
-                           ha='center', va='bottom', fontweight='bold')
+                            f'${height:.2f}' if 'Revenue' in ylabel else f'{height:.0f}',
+                            ha='center', va='bottom', fontweight='bold')
 
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
@@ -148,8 +153,7 @@ class ChartGenerator:
             logger.error(f"Error creating bar chart: {e}")
             return None
 
-    def create_comparison_chart(self, sold_data: Dict[str, int],
-                              attended_data: Dict[str, int], title: str) -> Optional[str]:
+    def create_comparison_chart(self, sold_data: Dict[str, int], attended_data: Dict[str, int], title: str) -> Optional[str]:
         """Create a comparison chart for sales vs attendance"""
         if not sold_data or not attended_data:
             return None
@@ -163,17 +167,15 @@ class ChartGenerator:
                 x = range(len(categories))
                 width = 0.35
 
-                bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
-                              label='Tickets Sold', color='skyblue', alpha=0.8)
-                bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
-                              label='Attendees', color='lightcoral', alpha=0.8)
+                bars1 = ax.bar([i - width/2 for i in x], sold_counts, width, label='Tickets Sold', color='skyblue', alpha=0.8)
+                bars2 = ax.bar([i + width/2 for i in x], attended_counts, width, label='Attendees', color='lightcoral', alpha=0.8)
 
                 # Add value labels
                 for bars in [bars1, bars2]:
                     for bar in bars:
                         height = bar.get_height()
                         ax.text(bar.get_x() + bar.get_width()/2., height,
-                               f'{int(height)}', ha='center', va='bottom', fontweight='bold')
+                                f'{int(height)}', ha='center', va='bottom', fontweight='bold')
 
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel('Ticket Type', fontsize=12, fontweight='bold')
@@ -217,8 +219,7 @@ class ChartGenerator:
                 chart_paths.append(chart_path)
 
         # Sales vs Attendance Comparison
-        if (report_data.get('tickets_sold_by_type') and
-            report_data.get('attendees_by_ticket_type')):
+        if report_data.get('tickets_sold_by_type') and report_data.get('attendees_by_ticket_type'):
             chart_path = self.create_comparison_chart(
                 report_data['tickets_sold_by_type'],
                 report_data['attendees_by_ticket_type'],
@@ -279,8 +280,7 @@ class PDFReportGenerator:
         """Create summary table for the report"""
         attendance_rate = 0
         if report_data.get('total_tickets_sold', 0) > 0:
-            attendance_rate = (report_data.get('number_of_attendees', 0) /
-                             report_data.get('total_tickets_sold', 1) * 100)
+            attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
 
         summary_data = [
             ['Metric', 'Value'],
@@ -291,8 +291,7 @@ class PDFReportGenerator:
         ]
 
         if report_data.get('total_tickets_sold', 0) > 0:
-            avg_revenue = (report_data.get('total_revenue', 0.0) /
-                          report_data.get('total_tickets_sold', 1))
+            avg_revenue = (report_data.get('total_revenue', 0.0) / report_data.get('total_tickets_sold', 1))
             summary_data.append(['Average Revenue per Ticket', f"${avg_revenue:.2f}"])
 
         table = Table(summary_data, colWidths=[3*inch, 2*inch])
@@ -412,8 +411,7 @@ class PDFReportGenerator:
 
         return insights
 
-    def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str],
-                    output_path: str) -> Optional[str]:
+    def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
         """Generate comprehensive PDF report"""
         try:
             doc = SimpleDocTemplate(
@@ -510,8 +508,7 @@ class DatabaseQueryService:
             return None
 
     @staticmethod
-    def get_tickets_sold_by_type(event_id: int, start_date: datetime,
-                               end_date: datetime) -> List[Tuple[str, int]]:
+    def get_tickets_sold_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get tickets sold by type within date range"""
         try:
             return db.session.query(TicketType.type_name, db.func.count(Ticket.id)).\
@@ -527,8 +524,7 @@ class DatabaseQueryService:
             return []
 
     @staticmethod
-    def get_revenue_by_type(event_id: int, start_date: datetime,
-                          end_date: datetime) -> List[Tuple[str, float]]:
+    def get_revenue_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, float]]:
         """Get revenue by ticket type within date range"""
         try:
             return db.session.query(TicketType.type_name, db.func.sum(Transaction.amount_paid)).\
@@ -546,8 +542,7 @@ class DatabaseQueryService:
             return []
 
     @staticmethod
-    def get_attendees_by_type(event_id: int, start_date: datetime,
-                            end_date: datetime) -> List[Tuple[str, int]]:
+    def get_attendees_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get attendees by ticket type within date range"""
         try:
             return db.session.query(TicketType.type_name, db.func.count(db.distinct(Scan.ticket_id))).\
@@ -564,8 +559,7 @@ class DatabaseQueryService:
             return []
 
     @staticmethod
-    def get_payment_method_usage(event_id: int, start_date: datetime,
-                               end_date: datetime) -> List[Tuple[str, int]]:
+    def get_payment_method_usage(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get payment method usage within date range"""
         try:
             return db.session.query(Transaction.payment_method, db.func.count(Transaction.id)).\
@@ -582,8 +576,7 @@ class DatabaseQueryService:
             return []
 
     @staticmethod
-    def get_total_revenue(event_id: int, start_date: datetime,
-                        end_date: datetime) -> float:
+    def get_total_revenue(event_id: int, start_date: datetime, end_date: datetime) -> float:
         """Get total revenue within date range"""
         try:
             result = db.session.query(db.func.sum(Transaction.amount_paid)).\
@@ -600,8 +593,7 @@ class DatabaseQueryService:
             return 0.0
 
     @staticmethod
-    def get_total_tickets_sold(event_id: int, start_date: datetime,
-                             end_date: datetime) -> int:
+    def get_total_tickets_sold(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Get total tickets sold within date range"""
         try:
             return Ticket.query.filter(
@@ -614,8 +606,7 @@ class DatabaseQueryService:
             return 0
 
     @staticmethod
-    def get_total_attendees(event_id: int, start_date: datetime,
-                          end_date: datetime) -> int:
+    def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Get total attendees within date range"""
         try:
             return Scan.query.join(Ticket, Scan.ticket_id == Ticket.id).\
@@ -640,8 +631,8 @@ class EmailService:
         end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
 
         organizer_name = (organizer_user.full_name
-                         if hasattr(organizer_user, 'full_name') and organizer_user.full_name
-                         else organizer_user.email)
+                        if hasattr(organizer_user, 'full_name') and organizer_user.full_name
+                        else organizer_user.email)
 
         ticket_sales_html = EmailService._format_ticket_sales(report_data.get('tickets_sold_by_type'))
         revenue_html = EmailService._format_revenue_data(report_data.get('revenue_by_ticket_type'))
@@ -1120,7 +1111,7 @@ def get_event_report(event_id, save_to_history=True, start_date=None, end_date=N
         try:
             new_report = Report(
                 event_id=event.id,
-                data=report_data,
+                report_data=report_data,
                 timestamp=datetime.now()
             )
             db.session.add(new_report)
@@ -1369,10 +1360,10 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             event_tickets = Ticket.query.filter_by(event_id=event.id).count()
 
             event_revenue_query = (db.session.query(db.func.sum(Transaction.amount_paid))
-                                 .join(Ticket, Ticket.transaction_id == Transaction.id)
-                                 .filter(Ticket.event_id == event.id,
-                                        Transaction.payment_status == 'COMPLETED')
-                                 .scalar())
+                                  .join(Ticket, Ticket.transaction_id == Transaction.id)
+                                  .filter(Ticket.event_id == event.id,
+                                           Transaction.payment_status == 'COMPLETED')
+                                  .scalar())
 
             event_revenue = float(event_revenue_query) if event_revenue_query else 0.0
             total_tickets_sold += event_tickets
@@ -1386,8 +1377,8 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
                 "revenue": event_revenue
             })
         organizer_name = (organizer.user.full_name
-                         if hasattr(organizer.user, 'full_name') and organizer.user.full_name
-                         else organizer.user.email)
+                          if hasattr(organizer.user, 'full_name') and organizer.user.full_name
+                          else organizer.user.email)
         return {
             "organizer_id": organizer.id,
             "organizer_name": organizer_name,
