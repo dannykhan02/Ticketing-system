@@ -545,7 +545,7 @@ class TicketResource(Resource):
                     "location": event.location,
                     "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
                     "quantity": ticket.quantity,
-                    "price": ticket_type.price,
+                    "price":  float(ticket_type.price),
                     "status": ticket.payment_status.value,
                     "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
                 }, 200
@@ -563,7 +563,7 @@ class TicketResource(Resource):
                         "location": event.location,
                         "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
                         "quantity": ticket.quantity,
-                        "price": ticket_type.price,
+                        "price":  float(ticket_type.price),
                         "status": ticket.payment_status.value,
                         "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
                     })
@@ -684,7 +684,7 @@ class TicketResource(Resource):
                 # Initiate STK Push using the imported class
                 mpesa_data = {
                     "phone_number": user.phone_number,
-                    "amount": amount,
+                    "amount": float(amount),
                     "transaction_id": transaction.id  # Pass the transaction ID for reference
                 }
                 mpesa = STKPush()
