@@ -50,17 +50,18 @@ def generate_password():
     return encoded_password, timestamp
 
 def normalize_phone_number(phone_number):
-    """Convert phone number to Safaricom's required format (2547XXXXXXXX)."""
-    phone_number = phone_number.strip()  # Remove spaces
+    """Convert phone number to Safaricom's required format (254XXXXXXXXX)."""
+    phone_number = phone_number.strip()
 
     if phone_number.startswith("+254"):
-        return phone_number[1:]  # Remove the "+"
-    elif phone_number.startswith("07"):
-        return "254" + phone_number[1:]  # Replace "07" with "2547"
-    elif phone_number.startswith("254"):
-        return phone_number  # Already in correct format
+        return phone_number[1:]  # Remove '+'
+    elif phone_number.startswith("0") and len(phone_number) == 10:
+        return "254" + phone_number[1:]  # Convert '0XXXXXXXXX' to '254XXXXXXXXX'
+    elif phone_number.startswith("254") and len(phone_number) == 12:
+        return phone_number  # Already normalized
     else:
-        return None  # Invalid number
+        return None  # Invalid format
+
 
 class STKPush(Resource):
     @jwt_required()
