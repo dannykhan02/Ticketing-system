@@ -64,4 +64,3 @@ class Config:
     # You had 'http://localhost:8080'. While that might be your setup, 5173 is common for Vite, 3000 for Create React App.
     # Just ensure this fallback matches your local frontend development server port.
     
-    

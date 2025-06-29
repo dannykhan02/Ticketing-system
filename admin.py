@@ -2,20 +2,29 @@ import json
 import os
 import csv
 from io import StringIO
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, Response
 from sqlalchemy.exc import SQLAlchemyError
-from datetime import datetime
+from datetime import datetime, time
 from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketType, Report, Organizer
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import current_app
-from pdf_utils import generate_graph_image, generate_pdf_with_graph
-from report import get_event_report
+from report import get_event_report, ReportConfig, PDFReportGenerator, ChartGenerator, FileManager, EmailService, CSVExporter
 import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class DateUtils:
+    @staticmethod
+    def adjust_end_date(end_date):
+        """Adjust end date to include the entire day"""
+        if isinstance(end_date, datetime):
+            return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        else:
+            # If it's a date object, combine it with time to make it a datetime
+            return datetime.combine(end_date, time(23, 59, 59, 999999))
 
 class AdminOperations:
     def __init__(self, db_session):
@@ -33,10 +42,7 @@ class AdminOperations:
     def get_all_events(self):
         """Retrieves all events in the database."""
         try:
-            events = Event.query.options(
-                db.joinedload(Event.organizer),
-                db.joinedload(Event.tickets).joinedload(Ticket.ticket_type)
-            ).all()
+            events = Event.query.all()
             return [event.as_dict() for event in events]
         except SQLAlchemyError as e:
             logger.error(f"Error retrieving all events: {e}")
@@ -100,12 +106,8 @@ class AdminOperations:
     def _enrich_report(self, report):
         """Helper method to enrich report data with event and ticket type details."""
         event = Event.query.get(report.event_id)
-        ticket_type = TicketType.query.get(report.ticket_type_id) if report.ticket_type_id else None
-
         report_data = report.as_dict()
         report_data["event_name"] = event.name if event else "N/A"
-        if ticket_type:
-            report_data["ticket_type_name"] = ticket_type.type_name.value if ticket_type.type_name else "N/A"
         return report_data
 
     def get_organizers(self):
@@ -146,8 +148,7 @@ class AdminOperations:
     def get_users(self):
         """Get list of all users."""
         try:
-            query = User.query
-            users = query.all()
+            users = User.query.all()
             result = []
             for user in users:
                 user_data = user.as_dict()
@@ -296,43 +297,38 @@ class AdminGenerateReportPDF(Resource):
             return {"status": "error", "message": "User not found"}, 404
         if user.role != UserRole.ADMIN:
             return {"status": "error", "message": "Admin access required"}, 403
+
         report_data = get_event_report(event_id)
         if isinstance(report_data, tuple) and len(report_data) == 2 and isinstance(report_data[1], int):
             return report_data
+
         if not isinstance(report_data, dict):
             return {"status": "error", "message": "Failed to generate report. Unexpected format returned from get_event_report.", "data_received": str(report_data)}, 500
-        tmp_dir = os.path.join(current_app.root_path, 'tmp')
-        os.makedirs(tmp_dir, exist_ok=True)
-        graph_path = os.path.join(tmp_dir, f"event_report_{event_id}_graph.png")
-        pdf_path = os.path.join(tmp_dir, f"event_report_{event_id}.pdf")
+
+        config = ReportConfig()
+        pdf_generator = PDFReportGenerator(config)
+        chart_generator = ChartGenerator(config)
+        chart_paths = chart_generator.create_all_charts(report_data)
+
+        pdf_path = FileManager.generate_unique_paths(event_id)[1]
+        generated_pdf_path = pdf_generator.generate_pdf(report_data, chart_paths, pdf_path)
+
+        if not generated_pdf_path or not os.path.exists(generated_pdf_path):
+            logger.error(f"PDF file was not successfully generated for event {event_id}.")
+            return {"message": "Failed to generate PDF report"}, 500
+
         try:
-            generate_graph_image(report_data, graph_path)
-        except Exception as e:
-            logger.error(f"[Graph Error] Event {event_id}: {e}")
-            return {"status": "error", "message": "Failed to generate graph", "error": str(e)}, 500
-        try:
-            generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
-        except Exception as e:
-            logger.error(f"[PDF Error] Event {event_id}: {e}")
-            if os.path.exists(graph_path):
-                os.remove(graph_path)
-            return {"status": "error", "message": "Failed to generate PDF", "error": str(e)}, 500
-        finally:
-            if os.path.exists(graph_path):
-                os.remove(graph_path)
-        try:
-            response = send_file(pdf_path, as_attachment=True, download_name=f"event_report_{event_id}.pdf")
-            @response.call_on_close
-            def remove_file():
-                try:
-                    if os.path.exists(pdf_path):
-                        os.remove(pdf_path)
-                except Exception as e:
-                    logger.error(f"[Cleanup Error] Could not remove file {pdf_path}: {e}")
+            filename = f"event_report_{event_id}.pdf"
+            response = send_file(
+                generated_pdf_path,
+                as_attachment=True,
+                download_name=filename
+            )
+            FileManager.cleanup_files(pdf_path)
             return response
         except Exception as e:
-            logger.error(f"[Send File Error] {pdf_path}: {e}")
-            return {"status": "error", "message": "Failed to send PDF", "error": str(e)}, 500
+            logger.error(f"Error sending PDF report for event {event_id}: {e}")
+            return {"message": "Failed to send PDF report"}, 500
 
 class AdminExportAllReportsResource(Resource):
     @jwt_required()
@@ -360,30 +356,13 @@ class AdminExportAllReportsResource(Resource):
             else:
                 reports = admin_ops.get_all_reports(start_date, end_date)
 
-            # Create CSV file in memory
-            si = StringIO()
-            csv_writer = csv.writer(si)
-            csv_writer.writerow(["Event Name", "Total Revenue", "Total Tickets", "Ticket Type", "Revenue by Type", "Tickets by Type"])
+            csv_content = CSVExporter.generate_csv_report({"reports": reports})
+            filename = f"all_reports_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
 
-            for report in reports:
-                csv_writer.writerow([
-                    report.get("event_name", "N/A"),
-                    report.get("total_revenue_summary", 0),
-                    report.get("total_tickets_sold_summary", 0),
-                    report.get("ticket_type_name", "N/A"),
-                    report.get("amount", 0),
-                    report.get("tickets", 0)
-                ])
-
-            # Prepare the response
-            output = si.getvalue()
-            si.close()
-
-            return send_file(
-                StringIO(output),
-                mimetype='text/csv',
-                as_attachment=True,
-                download_name='all_reports.csv'
+            return Response(
+                csv_content,
+                mimetype="text/csv",
+                headers={"Content-disposition": f"attachment; filename={filename}"}
             )
 
         except ValueError as ve:
