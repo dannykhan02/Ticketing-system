@@ -1,8 +1,8 @@
-"""initial
+"""updates
 
-Revision ID: 52be13242395
+Revision ID: 839d0028aec6
 Revises: 
-Create Date: 2025-06-25 19:23:47.925654
+Create Date: 2025-07-01 22:06:51.833614
 
 """
 from alembic import op
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '52be13242395'
+revision = '839d0028aec6'
 down_revision = None
 branch_labels = None
 depends_on = None
@@ -27,6 +27,18 @@ def upgrade():
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('name')
     )
+    op.create_table('currencies',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('code', sa.Enum('USD', 'EUR', 'GBP', 'KES', 'UGX', 'TZS', 'NGN', 'GHS', 'ZAR', 'JPY', 'CAD', 'AUD', name='currencycode'), nullable=False),
+    sa.Column('name', sa.String(length=100), nullable=False),
+    sa.Column('symbol', sa.String(length=10), nullable=False),
+    sa.Column('is_base_currency', sa.Boolean(), nullable=True),
+    sa.Column('is_active', sa.Boolean(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=True),
+    sa.Column('updated_at', sa.DateTime(), nullable=True),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('code')
+    )
     op.create_table('user',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('email', sa.String(length=255), nullable=False),
@@ -40,6 +52,21 @@ def upgrade():
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('email'),
     sa.UniqueConstraint('google_id')
+    )
+    op.create_table('exchange_rates',
+    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('from_currency_id', sa.Integer(), nullable=False),
+    sa.Column('to_currency_id', sa.Integer(), nullable=False),
+    sa.Column('rate', sa.Numeric(precision=15, scale=6), nullable=False),
+    sa.Column('effective_date', sa.DateTime(), nullable=False),
+    sa.Column('source', sa.String(length=100), nullable=True),
+    sa.Column('is_active', sa.Boolean(), nullable=True),
+    sa.Column('created_at', sa.DateTime(), nullable=True),
+    sa.Column('updated_at', sa.DateTime(), nullable=True),
+    sa.ForeignKeyConstraint(['from_currency_id'], ['currencies.id'], ),
+    sa.ForeignKeyConstraint(['to_currency_id'], ['currencies.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('from_currency_id', 'to_currency_id', 'is_active', name='uix_active_exchange_rate')
     )
     op.create_table('organizer',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -79,7 +106,8 @@ def upgrade():
 
     op.create_table('transaction',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('amount_paid', sa.Numeric(precision=8, scale=2), nullable=False),
+    sa.Column('amount_paid', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('currency_id', sa.Integer(), nullable=False),
     sa.Column('payment_status', sa.Enum('PENDING', 'COMPLETED', 'PAID', 'FAILED', 'REFUNDED', 'CANCELED', 'CHARGEBACK', 'ON_HOLD', name='paymentstatus'), nullable=False),
     sa.Column('payment_reference', sa.Text(), nullable=False),
     sa.Column('payment_method', sa.Enum('MPESA', 'PAYSTACK', name='paymentmethod'), nullable=False),
@@ -88,6 +116,7 @@ def upgrade():
     sa.Column('organizer_id', sa.Integer(), nullable=True),
     sa.Column('merchant_request_id', sa.String(length=255), nullable=True),
     sa.Column('mpesa_receipt_number', sa.String(length=255), nullable=True),
+    sa.ForeignKeyConstraint(['currency_id'], ['currencies.id'], ),
     sa.ForeignKeyConstraint(['organizer_id'], ['organizer.id'], ),
     sa.ForeignKeyConstraint(['user_id'], ['user.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -103,30 +132,43 @@ def upgrade():
     op.create_table('ticket_type',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('type_name', sa.Enum('REGULAR', 'VIP', 'STUDENT', 'GROUP_OF_5', 'COUPLES', 'EARLY_BIRD', 'VVIP', 'GIVEAWAY', name='tickettypeenum'), nullable=False),
-    sa.Column('price', sa.Float(), nullable=False),
+    sa.Column('price', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('currency_id', sa.Integer(), nullable=True),
     sa.Column('event_id', sa.Integer(), nullable=False),
     sa.Column('quantity', sa.Integer(), nullable=False),
+    sa.ForeignKeyConstraint(['currency_id'], ['currencies.id'], ),
     sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     with op.batch_alter_table('ticket_type', schema=None) as batch_op:
         batch_op.create_index(batch_op.f('ix_ticket_type_event_id'), ['event_id'], unique=False)
 
-    op.create_table('report',
+    op.create_table('reports',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
+    sa.Column('organizer_id', sa.Integer(), nullable=False),
     sa.Column('event_id', sa.Integer(), nullable=False),
     sa.Column('ticket_type_id', sa.Integer(), nullable=True),
+    sa.Column('base_currency_id', sa.Integer(), nullable=False),
+    sa.Column('converted_currency_id', sa.Integer(), nullable=True),
+    sa.Column('total_revenue', sa.Numeric(precision=12, scale=2), nullable=False),
+    sa.Column('converted_revenue', sa.Numeric(precision=12, scale=2), nullable=True),
+    sa.Column('report_scope', sa.String(length=50), nullable=False),
     sa.Column('total_tickets_sold', sa.Integer(), nullable=False),
-    sa.Column('total_revenue', sa.Float(), nullable=False),
+    sa.Column('number_of_attendees', sa.Integer(), nullable=True),
     sa.Column('report_data', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('timestamp', sa.DateTime(), nullable=False),
+    sa.Column('report_date', sa.Date(), nullable=True),
+    sa.ForeignKeyConstraint(['base_currency_id'], ['currencies.id'], ),
+    sa.ForeignKeyConstraint(['converted_currency_id'], ['currencies.id'], ),
     sa.ForeignKeyConstraint(['event_id'], ['event.id'], ),
+    sa.ForeignKeyConstraint(['organizer_id'], ['user.id'], ),
     sa.ForeignKeyConstraint(['ticket_type_id'], ['ticket_type.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    with op.batch_alter_table('report', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_report_event_id'), ['event_id'], unique=False)
-        batch_op.create_index(batch_op.f('ix_report_ticket_type_id'), ['ticket_type_id'], unique=False)
+    with op.batch_alter_table('reports', schema=None) as batch_op:
+        batch_op.create_index(batch_op.f('ix_reports_event_id'), ['event_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_reports_organizer_id'), ['organizer_id'], unique=False)
+        batch_op.create_index(batch_op.f('ix_reports_ticket_type_id'), ['ticket_type_id'], unique=False)
 
     op.create_table('ticket',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -178,11 +220,12 @@ def downgrade():
     op.drop_table('transaction_ticket')
     op.drop_table('scan')
     op.drop_table('ticket')
-    with op.batch_alter_table('report', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_report_ticket_type_id'))
-        batch_op.drop_index(batch_op.f('ix_report_event_id'))
+    with op.batch_alter_table('reports', schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f('ix_reports_ticket_type_id'))
+        batch_op.drop_index(batch_op.f('ix_reports_organizer_id'))
+        batch_op.drop_index(batch_op.f('ix_reports_event_id'))
 
-    op.drop_table('report')
+    op.drop_table('reports')
     with op.batch_alter_table('ticket_type', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_ticket_type_event_id'))
 
@@ -194,6 +237,8 @@ def downgrade():
 
     op.drop_table('event')
     op.drop_table('organizer')
+    op.drop_table('exchange_rates')
     op.drop_table('user')
+    op.drop_table('currencies')
     op.drop_table('category')
     # ### end Alembic commands ###

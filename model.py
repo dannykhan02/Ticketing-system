@@ -315,7 +315,7 @@ class TicketType(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     type_name = db.Column(db.Enum(TicketTypeEnum), nullable=False)
     price = db.Column(db.Numeric(10, 2), nullable=False)  # Changed to Numeric for precision
-    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # New currency field
+    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=True)  # New currency field
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
     quantity = db.Column(db.Integer, nullable=False)
 
