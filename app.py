@@ -13,7 +13,7 @@ import cloudinary
 
 # Load configuration
 from config import Config
-from model import db
+from model import db, Currency, CurrencyCode  # ✅ include Currency model + enum
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
 from Event import register_event_resources
@@ -27,8 +27,8 @@ from admin_report import register_admin_report_resources
 from email_utils import mail
 from admin import register_admin_resources
 
-# ✅ Import currency-related resources as a module
-from currency_routes import register_currency_resources # This is correct and remains the same
+# ✅ Import currency-related resources
+from currency_routes import register_currency_resources
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -57,7 +57,7 @@ app.config['SESSION_TYPE'] = 'sqlalchemy'
 app.config['SESSION_SQLALCHEMY'] = db
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Enable CORS for frontends
+# Enable CORS
 CORS(app,
      origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
@@ -74,14 +74,14 @@ migrate = Migrate(app, db)
 mail.init_app(app)
 init_oauth(app)
 
-# Cloudinary config
+# Cloudinary setup
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
 
-# Register all routes and resources
+# Register routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
@@ -92,9 +92,50 @@ register_ticket_type_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
+register_currency_resources(api)  # ✅ Register currency routes
 
-# ✅ Register all currency-related API routes in one function
-register_currency_resources(api) # This call now correctly registers all currency routes from currency_routes.py
+# ✅ Currency seeding logic (runs once)
+from sqlalchemy.exc import IntegrityError
+
+with app.app_context():
+    db.create_all()  # Ensure all tables exist
+
+    if Currency.query.count() == 0:
+        print("🔁 Seeding currencies...")
+
+        currency_info = {
+            "USD": {"name": "US Dollar", "symbol": "$"},
+            "EUR": {"name": "Euro", "symbol": "€"},
+            "GBP": {"name": "British Pound", "symbol": "£"},
+            "KES": {"name": "Kenyan Shilling", "symbol": "KSh"},
+            "UGX": {"name": "Ugandan Shilling", "symbol": "USh"},
+            "TZS": {"name": "Tanzanian Shilling", "symbol": "TSh"},
+            "NGN": {"name": "Nigerian Naira", "symbol": "₦"},
+            "GHS": {"name": "Ghanaian Cedi", "symbol": "₵"},
+            "ZAR": {"name": "South African Rand", "symbol": "R"},
+            "JPY": {"name": "Japanese Yen", "symbol": "¥"},
+            "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
+            "AUD": {"name": "Australian Dollar", "symbol": "A$"},
+        }
+
+        currency_objects = []
+        for code in CurrencyCode:
+            info = currency_info.get(code.value)
+            currency = Currency(
+                code=code,
+                name=info["name"],
+                symbol=info["symbol"],
+                is_base_currency=(code.value == "USD")  # set base
+            )
+            currency_objects.append(currency)
+
+        db.session.bulk_save_objects(currency_objects)
+        try:
+            db.session.commit()
+            print("✅ Currency seeding complete.")
+        except IntegrityError:
+            db.session.rollback()
+            print("⚠️ Currency seeding skipped (already exists).")
 
 # Run app
 if __name__ == "__main__":
