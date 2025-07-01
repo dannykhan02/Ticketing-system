@@ -51,16 +51,16 @@ class Config:
     # SQLAlchemy Session Configuration
     SESSION_TYPE = "sqlalchemy"
     SESSION_SQLALCHEMY_TABLE = 'sessions'
-    SESSION_PERMANENT = True  # Changed to True for persistent sessions
+    SESSION_PERMANENT = True
     SESSION_USE_SIGNER = True
     SESSION_KEY_PREFIX = "session:"
-    SESSION_COOKIE_SECURE = True  # Set to True for production
+    SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
-    PERMANENT_SESSION_LIFETIME = 86400  # Increased to 24 hours
+    PERMANENT_SESSION_LIFETIME = 86400  # 24 hours
 
-  
-    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173') # Fallback to common local React dev server port
-    # You had 'http://localhost:8080'. While that might be your setup, 5173 is common for Vite, 3000 for Create React App.
-    # Just ensure this fallback matches your local frontend development server port.
-    
+    # Frontend URL
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+
+    # ✅ CurrencyAPI
+    CURRENCY_API_KEY = os.getenv("CURRENCY_API_KEY")

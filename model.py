@@ -361,32 +361,32 @@ class Report(db.Model):
     ticket_type_id = db.Column(db.Integer, db.ForeignKey('ticket_type.id'), nullable=True, index=True)
     
     # Currency fields
-    base_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # Original currency
+    base_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)
+    converted_currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=True)
     
-    # Scope of the report
+    # Revenue fields
+    total_revenue = db.Column(db.Numeric(12, 2), nullable=False, default=0.0)
+    converted_revenue = db.Column(db.Numeric(12, 2), nullable=True)
+    
+    # Report scope and data
     report_scope = db.Column(db.String(50), nullable=False, default="event_summary")
-    
-    # Numeric summaries in base currency
     total_tickets_sold = db.Column(db.Integer, nullable=False, default=0)
-    total_revenue = db.Column(db.Numeric(12, 2), nullable=False, default=0.0)  # In base currency
     number_of_attendees = db.Column(db.Integer, nullable=True, default=0)
-    
-    # Raw report data with currency breakdown
     report_data = db.Column(JSONB, nullable=False, default=dict)
     
     # Metadata
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     report_date = db.Column(db.Date, nullable=True)
-    
+
     # Relationships
-    base_currency = db.relationship('Currency', backref='reports', lazy=True)
-    
+    base_currency = db.relationship('Currency', foreign_keys=[base_currency_id], backref='base_reports', lazy=True)
+    converted_currency = db.relationship('Currency', foreign_keys=[converted_currency_id], backref='converted_reports', lazy=True)
+
     def get_revenue_in_currency(self, target_currency_id):
-        """Convert total revenue to target currency"""
+        """Convert total revenue to target currency using latest local exchange rate."""
         if self.base_currency_id == target_currency_id:
             return self.total_revenue
-        
-        # Get the latest exchange rate
+
         rate = ExchangeRate.query.filter_by(
             from_currency_id=self.base_currency_id,
             to_currency_id=target_currency_id,
@@ -395,12 +395,22 @@ class Report(db.Model):
         
         if rate:
             return self.total_revenue * rate.rate
-        
-        return self.total_revenue  # Return original if no rate found
+
+        return self.total_revenue  # Fallback: original value if no rate found
 
     def as_dict(self, target_currency_id=None):
-        # Calculate revenue in target currency if specified
-        if target_currency_id:
+        """Return dictionary with revenue data in requested or stored currency."""
+        # Use stored converted values if they exist
+        if self.converted_currency and self.converted_revenue:
+            revenue_info = {
+                "total_revenue": float(self.converted_revenue),
+                "currency": self.converted_currency.code.value,
+                "currency_symbol": self.converted_currency.symbol,
+                "original_revenue": float(self.total_revenue),
+                "original_currency": self.base_currency.code.value if self.base_currency else None
+            }
+        elif target_currency_id:
+            # Convert dynamically if requested via API
             converted_revenue = self.get_revenue_in_currency(target_currency_id)
             target_currency = Currency.query.get(target_currency_id)
             revenue_info = {
@@ -411,6 +421,7 @@ class Report(db.Model):
                 "original_currency": self.base_currency.code.value if self.base_currency else None
             }
         else:
+            # Fallback to base currency
             revenue_info = {
                 "total_revenue": float(self.total_revenue),
                 "currency": self.base_currency.code.value if self.base_currency else None,
@@ -431,12 +442,13 @@ class Report(db.Model):
             "report_data": self.report_data,
             **revenue_info
         }
-        
+
         if self.ticket_type_id:
             data["ticket_type_id"] = self.ticket_type_id
             data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type and self.ticket_type.type_name else "N/A"
         
         return data
+
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)

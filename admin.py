@@ -9,7 +9,7 @@ from model import db, User, Event, UserRole, Ticket, Transaction, Scan, TicketTy
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from flask import current_app
-from report import get_event_report, ReportConfig, PDFReportGenerator, ChartGenerator, FileManager, EmailService, CSVExporter
+# from report import get_event_report, ReportConfig, PDFReportGenerator, ChartGenerator, FileManager, EmailService, CSVExporter
 import logging
 
 # Configure logging
@@ -75,40 +75,40 @@ class AdminOperations:
             logger.error(f"Error searching user by email: {e}")
             return None
 
-    def get_reports_by_organizer(self, organizer_id, start_date=None, end_date=None):
-        """Retrieves all reports for events created by a specific organizer with optional date filtering."""
-        try:
-            query = Report.query.join(Event).filter(Event.organizer_id == organizer_id)
-            if start_date:
-                query = query.filter(Report.timestamp >= start_date)
-            if end_date:
-                query = query.filter(Report.timestamp <= end_date)
-            reports = query.all()
-            return [self._enrich_report(report) for report in reports]
-        except SQLAlchemyError as e:
-            logger.error(f"Error retrieving reports by organizer: {e}")
-            return []
+    # def get_reports_by_organizer(self, organizer_id, start_date=None, end_date=None):
+    #     """Retrieves all reports for events created by a specific organizer with optional date filtering."""
+    #     try:
+    #         query = Report.query.join(Event).filter(Event.organizer_id == organizer_id)
+    #         if start_date:
+    #             query = query.filter(Report.timestamp >= start_date)
+    #         if end_date:
+    #             query = query.filter(Report.timestamp <= end_date)
+    #         reports = query.all()
+    #         return [self._enrich_report(report) for report in reports]
+    #     except SQLAlchemyError as e:
+    #         logger.error(f"Error retrieving reports by organizer: {e}")
+    #         return []
 
-    def get_all_reports(self, start_date=None, end_date=None):
-        """Retrieves all reports in the database with optional date filtering."""
-        try:
-            query = Report.query
-            if start_date:
-                query = query.filter(Report.timestamp >= start_date)
-            if end_date:
-                query = query.filter(Report.timestamp <= end_date)
-            reports = query.all()
-            return [self._enrich_report(report) for report in reports]
-        except SQLAlchemyError as e:
-            logger.error(f"Error retrieving all reports: {e}")
-            return []
+    # def get_all_reports(self, start_date=None, end_date=None):
+    #     """Retrieves all reports in the database with optional date filtering."""
+    #     try:
+    #         query = Report.query
+    #         if start_date:
+    #             query = query.filter(Report.timestamp >= start_date)
+    #         if end_date:
+    #             query = query.filter(Report.timestamp <= end_date)
+    #         reports = query.all()
+    #         return [self._enrich_report(report) for report in reports]
+    #     except SQLAlchemyError as e:
+    #         logger.error(f"Error retrieving all reports: {e}")
+    #         return []
 
-    def _enrich_report(self, report):
-        """Helper method to enrich report data with event and ticket type details."""
-        event = Event.query.get(report.event_id)
-        report_data = report.as_dict()
-        report_data["event_name"] = event.name if event else "N/A"
-        return report_data
+    # def _enrich_report(self, report):
+    #     """Helper method to enrich report data with event and ticket type details."""
+    #     event = Event.query.get(report.event_id)
+    #     report_data = report.as_dict()
+    #     report_data["event_name"] = event.name if event else "N/A"
+    #     return report_data
 
     def get_organizers(self):
         """Get list of all organizers with their event counts."""
@@ -253,122 +253,122 @@ class AdminSearchUserByEmail(Resource):
         else:
             return [], 200
 
-class AdminReportResource(Resource):
-    @jwt_required()
-    def get(self):
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user:
-            return {"status": "error", "message": "User not found"}, 404
-        if user.role != UserRole.ADMIN:
-            return {"status": "error", "message": "Admin access required"}, 403
+# class AdminReportResource(Resource):
+#     @jwt_required()
+#     def get(self):
+#         current_user_id = get_jwt_identity()
+#         user = User.query.get(current_user_id)
+#         if not user:
+#             return {"status": "error", "message": "User not found"}, 404
+#         if user.role != UserRole.ADMIN:
+#             return {"status": "error", "message": "Admin access required"}, 403
+#
+#         admin_ops = AdminOperations(db.session)
+#
+#         try:
+#             organizer_id = request.args.get("organizer_id")
+#             start_date_str = request.args.get("start_date")
+#             end_date_str = request.args.get("end_date")
+#
+#             start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
+#             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
+#
+#             if organizer_id:
+#                 organizer_id = int(organizer_id)
+#                 summary = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
+#                 message = f"Report summaries for organizer {organizer_id}"
+#             else:
+#                 summary = admin_ops.get_all_reports(start_date, end_date)
+#                 message = "All report summaries grouped by event"
+#
+#             return {"status": "success", "message": message, "data": summary}, 200
+#
+#         except ValueError as ve:
+#             return {"status": "error", "message": str(ve)}, 400
+#         except Exception as e:
+#             return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
 
-        admin_ops = AdminOperations(db.session)
+# class AdminGenerateReportPDF(Resource):
+#     @jwt_required()
+#     def get(self, event_id):
+#         current_user_id = get_jwt_identity()
+#         user = User.query.get(current_user_id)
+#         if not user:
+#             return {"status": "error", "message": "User not found"}, 404
+#         if user.role != UserRole.ADMIN:
+#             return {"status": "error", "message": "Admin access required"}, 403
+#
+#         report_data = get_event_report(event_id)
+#         if isinstance(report_data, tuple) and len(report_data) == 2 and isinstance(report_data[1], int):
+#             return report_data
+#
+#         if not isinstance(report_data, dict):
+#             return {"status": "error", "message": "Failed to generate report. Unexpected format returned from get_event_report.", "data_received": str(report_data)}, 500
+#
+#         config = ReportConfig()
+#         pdf_generator = PDFReportGenerator(config)
+#         chart_generator = ChartGenerator(config)
+#         chart_paths = chart_generator.create_all_charts(report_data)
+#
+#         pdf_path = FileManager.generate_unique_paths(event_id)[1]
+#         generated_pdf_path = pdf_generator.generate_pdf(report_data, chart_paths, pdf_path)
+#
+#         if not generated_pdf_path or not os.path.exists(generated_pdf_path):
+#             logger.error(f"PDF file was not successfully generated for event {event_id}.")
+#             return {"message": "Failed to generate PDF report"}, 500
+#
+#         try:
+#             filename = f"event_report_{event_id}.pdf"
+#             response = send_file(
+#                 generated_pdf_path,
+#                 as_attachment=True,
+#                 download_name=filename
+#             )
+#             FileManager.cleanup_files(pdf_path)
+#             return response
+#         except Exception as e:
+#             logger.error(f"Error sending PDF report for event {event_id}: {e}")
+#             return {"message": "Failed to send PDF report"}, 500
 
-        try:
-            organizer_id = request.args.get("organizer_id")
-            start_date_str = request.args.get("start_date")
-            end_date_str = request.args.get("end_date")
-
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
-
-            if organizer_id:
-                organizer_id = int(organizer_id)
-                summary = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
-                message = f"Report summaries for organizer {organizer_id}"
-            else:
-                summary = admin_ops.get_all_reports(start_date, end_date)
-                message = "All report summaries grouped by event"
-
-            return {"status": "success", "message": message, "data": summary}, 200
-
-        except ValueError as ve:
-            return {"status": "error", "message": str(ve)}, 400
-        except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
-
-class AdminGenerateReportPDF(Resource):
-    @jwt_required()
-    def get(self, event_id):
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user:
-            return {"status": "error", "message": "User not found"}, 404
-        if user.role != UserRole.ADMIN:
-            return {"status": "error", "message": "Admin access required"}, 403
-
-        report_data = get_event_report(event_id)
-        if isinstance(report_data, tuple) and len(report_data) == 2 and isinstance(report_data[1], int):
-            return report_data
-
-        if not isinstance(report_data, dict):
-            return {"status": "error", "message": "Failed to generate report. Unexpected format returned from get_event_report.", "data_received": str(report_data)}, 500
-
-        config = ReportConfig()
-        pdf_generator = PDFReportGenerator(config)
-        chart_generator = ChartGenerator(config)
-        chart_paths = chart_generator.create_all_charts(report_data)
-
-        pdf_path = FileManager.generate_unique_paths(event_id)[1]
-        generated_pdf_path = pdf_generator.generate_pdf(report_data, chart_paths, pdf_path)
-
-        if not generated_pdf_path or not os.path.exists(generated_pdf_path):
-            logger.error(f"PDF file was not successfully generated for event {event_id}.")
-            return {"message": "Failed to generate PDF report"}, 500
-
-        try:
-            filename = f"event_report_{event_id}.pdf"
-            response = send_file(
-                generated_pdf_path,
-                as_attachment=True,
-                download_name=filename
-            )
-            FileManager.cleanup_files(pdf_path)
-            return response
-        except Exception as e:
-            logger.error(f"Error sending PDF report for event {event_id}: {e}")
-            return {"message": "Failed to send PDF report"}, 500
-
-class AdminExportAllReportsResource(Resource):
-    @jwt_required()
-    def get(self):
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user:
-            return {"status": "error", "message": "User not found"}, 404
-        if user.role != UserRole.ADMIN:
-            return {"status": "error", "message": "Admin access required"}, 403
-
-        admin_ops = AdminOperations(db.session)
-
-        try:
-            organizer_id = request.args.get("organizer_id")
-            start_date_str = request.args.get("start_date")
-            end_date_str = request.args.get("end_date")
-
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
-
-            if organizer_id:
-                organizer_id = int(organizer_id)
-                reports = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
-            else:
-                reports = admin_ops.get_all_reports(start_date, end_date)
-
-            csv_content = CSVExporter.generate_csv_report({"reports": reports})
-            filename = f"all_reports_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
-
-            return Response(
-                csv_content,
-                mimetype="text/csv",
-                headers={"Content-disposition": f"attachment; filename={filename}"}
-            )
-
-        except ValueError as ve:
-            return {"status": "error", "message": str(ve)}, 400
-        except Exception as e:
-            return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
+# class AdminExportAllReportsResource(Resource):
+#     @jwt_required()
+#     def get(self):
+#         current_user_id = get_jwt_identity()
+#         user = User.query.get(current_user_id)
+#         if not user:
+#             return {"status": "error", "message": "User not found"}, 404
+#         if user.role != UserRole.ADMIN:
+#             return {"status": "error", "message": "Admin access required"}, 403
+#
+#         admin_ops = AdminOperations(db.session)
+#
+#         try:
+#             organizer_id = request.args.get("organizer_id")
+#             start_date_str = request.args.get("start_date")
+#             end_date_str = request.args.get("end_date")
+#
+#             start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else None
+#             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date() if end_date_str else None
+#
+#             if organizer_id:
+#                 organizer_id = int(organizer_id)
+#                 reports = admin_ops.get_reports_by_organizer(organizer_id, start_date, end_date)
+#             else:
+#                 reports = admin_ops.get_all_reports(start_date, end_date)
+#
+#             csv_content = CSVExporter.generate_csv_report({"reports": reports})
+#             filename = f"all_reports_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+#
+#             return Response(
+#                 csv_content,
+#                 mimetype="text/csv",
+#                 headers={"Content-disposition": f"attachment; filename={filename}"}
+#             )
+#
+#         except ValueError as ve:
+#             return {"status": "error", "message": str(ve)}, 400
+#         except Exception as e:
+#             return {"status": "error", "message": f"An error occurred: {str(e)}"}, 500
 
 class AdminGetOrganizers(Resource):
     @jwt_required()
@@ -398,6 +398,6 @@ def register_admin_resources(api):
     api.add_resource(AdminGetEventById, "/admin/events/<int:event_id>")
     api.add_resource(AdminGetNonAttendees, "/admin/users/non-attendees")
     api.add_resource(AdminSearchUserByEmail, "/admin/users/search")
-    api.add_resource(AdminReportResource, "/admin/reports/summary")
-    api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
-    api.add_resource(AdminExportAllReportsResource, "/admin/reports/export-all")
+    # api.add_resource(AdminReportResource, "/admin/reports/summary")
+    # api.add_resource(AdminGenerateReportPDF, "/admin/reports/<int:event_id>/pdf")
+    # api.add_resource(AdminExportAllReportsResource, "/admin/reports/export-all")

@@ -1,3 +1,6 @@
+import csv
+import logging
+from typing import Dict, Any
 import matplotlib.pyplot as plt
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -5,7 +8,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 import os
-import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -13,15 +15,15 @@ logger = logging.getLogger(__name__)
 
 # Define specific colors for each ticket type - using string hex values for matplotlib
 COLORS_BY_TICKET_MATPLOTLIB = {
-    'REGULAR': '#FF8042',        # Orange
-    'VIP': '#FFBB28',            # Yellow
-    'STUDENT': '#0088FE',        # Blue
-    'GROUP_OF_5': '#00C49F',     # Green
-    'COUPLES': '#FF6699',        # Pink
-    'EARLY_BIRD': '#AA336A',     # Purple
-    'VVIP': '#00FF00',           # Bright Green for VVIP
-    'GIVEAWAY': '#CCCCCC',       # Grey
-    'UNKNOWN_TYPE': '#A9A9A9',   # Darker Grey for unknown types
+    'REGULAR': '#FF8042',    # Orange
+    'VIP': '#FFBB28',        # Yellow
+    'STUDENT': '#0088FE',    # Blue
+    'GROUP_OF_5': '#00C49F', # Green
+    'COUPLES': '#FF6699',    # Pink
+    'EARLY_BIRD': '#AA336A', # Purple
+    'VVIP': '#00FF00',       # Bright Green for VVIP
+    'GIVEAWAY': '#CCCCCC',   # Grey
+    'UNKNOWN_TYPE': '#A9A9A9', # Darker Grey for unknown types
 }
 
 # Separate color definitions for ReportLab (using HexColor objects)
@@ -41,7 +43,7 @@ COLORS_BY_TICKET_REPORTLAB = {
 FALLBACK_COLOR_MATPLOTLIB = '#808080'
 FALLBACK_COLOR_REPORTLAB = colors.HexColor('#808080')
 
-def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
+def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
     """
     Generate a donut chart image for Revenue by Ticket Type.
 
@@ -62,10 +64,10 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
 
         # Filter out zero or negative values and prepare data
         filtered_data = {k: v for k, v in revenue_data.items() if v > 0}
-        
+
         if not filtered_data:
             logger.warning("No positive revenue data found for chart generation")
-            
+
         # Extract labels (ticket types) and values (revenue amounts)
         labels = [label.upper() for label in filtered_data.keys()] if filtered_data else ['No Data']
         values = list(filtered_data.values()) if filtered_data else [1]
@@ -80,8 +82,8 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
         # Configure chart based on data availability
         if not filtered_data:
             logger.info("No revenue data > 0 to plot in donut chart. Generating placeholder.")
-            ax.text(0, 0, "No Revenue Data Available", ha='center', va='center', 
-                   color='#cccccc', fontsize=16, weight='bold')
+            ax.text(0, 0, "No Revenue Data Available", ha='center', va='center',
+                    color='#cccccc', fontsize=16, weight='bold')
             autopct = None
         else:
             autopct = lambda pct: f'{pct:.1f}%\n(${values[int(pct/100*len(values))]:.0f})' if pct > 5 else ''
@@ -106,7 +108,7 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
         if filtered_data:
             total_revenue = sum(values)
             ax.text(0, 0, f'Total Revenue\n${total_revenue:.2f}', ha='center', va='center',
-                   color='#ffffff', fontsize=12, weight='bold')
+                    color='#ffffff', fontsize=12, weight='bold')
 
         # Enhanced styling
         ax.axis('equal')
@@ -114,8 +116,8 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
         plt.tight_layout()
 
         # Save with higher quality
-        plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight', 
-                   facecolor=fig.get_facecolor(), edgecolor='none')
+        plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
+                    facecolor=fig.get_facecolor(), edgecolor='none')
         logger.info(f"Graph image successfully saved to {path}")
 
     except Exception as e:
@@ -124,12 +126,12 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
         try:
             fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
             ax.set_facecolor('#1e1e1e')
-            ax.text(0, 0, "Error Generating Chart\nPlease check data format", 
-                   ha='center', va='center', color='#ff6b6b', fontsize=14, weight='bold')
+            ax.text(0, 0, "Error Generating Chart\nPlease check data format",
+                    ha='center', va='center', color='#ff6b6b', fontsize=14, weight='bold')
             ax.axis('equal')
             plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
-            plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight', 
-                       facecolor=fig.get_facecolor())
+            plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
+                        facecolor=fig.get_facecolor())
             logger.info(f"Fallback error chart saved to {path}")
         except Exception as fallback_error:
             logger.error(f"Error creating fallback graph: {fallback_error}")
@@ -144,15 +146,15 @@ def generate_graph_image(report: dict, path: str = "report_graph.png") -> str:
 
     return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
 
-def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket_report.pdf", 
-                           graph_path: str = "report_graph.png") -> str:
+def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket_report.pdf",
+                            graph_path: str = "report_graph.png") -> str:
     """
     Build a comprehensive one-page PDF report with embedded sales graph and event details.
 
     Parameters
     ----------
     report : dict
-        Output of get_event_report(); MUST contain 'event_name', 'total_tickets_sold', 
+        Output of get_event_report(); MUST contain 'event_name', 'total_tickets_sold',
         'total_revenue', etc.
     event_id : int
         Used in the report title if event_name is missing.
@@ -170,7 +172,7 @@ def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket
     if not isinstance(report, dict):
         logger.error("Report parameter must be a dictionary")
         return ""
-    
+
     # Ensure graph image exists or generate it
     if not os.path.exists(graph_path) or os.path.getsize(graph_path) == 0:
         logger.info(f"Graph image not found at {graph_path}, generating new one")
@@ -184,14 +186,14 @@ def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket
     try:
         # Initialize PDF document with metadata
         doc = SimpleDocTemplate(
-            pdf_path, 
+            pdf_path,
             pagesize=A4,
             rightMargin=72,
             leftMargin=72,
             topMargin=72,
             bottomMargin=72
         )
-        
+
         styles = getSampleStyleSheet()
 
         # Enhanced custom styles
@@ -253,7 +255,7 @@ def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket
         event_name = report.get('event_name', f'Event ID {event_id}')
         title = f"Event Analytics Report"
         subtitle = f"{event_name}"
-        
+
         elements.append(Paragraph(title, styles['ReportTitle']))
         elements.append(Paragraph(subtitle, styles['SubHeading']))
         elements.append(Spacer(1, 12))
@@ -287,28 +289,28 @@ def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket
 
         # Key metrics section with improved formatting
         elements.append(Paragraph("📈 Key Performance Metrics", styles['SubHeading']))
-        
+
         total_tickets = report.get('total_tickets_sold', 0)
         total_revenue = report.get('total_revenue', 0)
         attendees = report.get('number_of_attendees', 0)
-        
+
         elements.append(Paragraph(f"<b>Total Tickets Sold:</b> {total_tickets:,}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Total Revenue Generated:</b> ${total_revenue:,.2f}", styles['HighlightText']))
         elements.append(Paragraph(f"<b>Number of Attendees:</b> {attendees:,}", styles['CustomBodyText']))
-        
+
         # Calculate average ticket price if possible
         if total_tickets > 0:
             avg_price = total_revenue / total_tickets
             elements.append(Paragraph(f"<b>Average Ticket Price:</b> ${avg_price:.2f}", styles['CustomBodyText']))
-        
+
         elements.append(Spacer(1, 16))
 
         # Event details section
         elements.append(Paragraph("📅 Event Information", styles['SubHeading']))
-        
+
         event_date = report.get('event_date', 'Not specified')
         event_location = report.get('event_location', 'Not specified')
-        
+
         elements.append(Paragraph(f"<b>Event Date:</b> {event_date}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Event Location:</b> {event_location}", styles['CustomBodyText']))
 
@@ -340,3 +342,23 @@ def generate_pdf_with_graph(report: dict, event_id: int, pdf_path: str = "ticket
         return ""
 
     return pdf_path if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0 else ""
+
+class PDFReportGenerator:
+    @staticmethod
+    def generate_pdf_report(report_data: Dict) -> str:
+        event_id = report_data.get("event_id", 0)
+        pdf_path = f"report_{event_id}.pdf"
+        graph_path = f"report_graph_{event_id}.png"
+        return generate_pdf_with_graph(report_data, event_id, pdf_path, graph_path)
+
+class CSVExporter:
+    @staticmethod
+    def generate_csv_report(data: Dict) -> str:
+        if not data:
+            return ""
+
+        # Example: Convert report data to CSV format
+        output = "Field1,Field2\n"
+        output += f"{data.get('field1', '')},{data.get('field2', '')}\n"
+
+        return output
