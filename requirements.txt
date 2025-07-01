@@ -47,7 +47,7 @@ pycparser==2.22
 PyJWT==2.9.0
 pyparsing==3.2.3
 pypng==0.20220715.0
-currencyapicom==0.2.0
+currencyapicom==0.1.1
 
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.0
