@@ -22,7 +22,7 @@ class AdminReportConfig:
     """Configuration for admin report generation"""
     include_charts: bool = True
     include_email: bool = False
-    format_type: str = 'json'  # json, pdf, csv
+    format_type: str = 'json'
     currency_conversion: bool = True
     target_currency_id: Optional[int] = None
     date_range_days: int = 30
@@ -613,13 +613,12 @@ class AdminEventListResource(Resource):
                 Event.name,
                 Event.date,
                 Event.location,
-                Event.status,
                 func.count(Report.id).label('report_count')
             ).select_from(Event)\
             .join(Organizer, Event.organizer_id == Organizer.id)\
             .outerjoin(Report, Event.id == Report.event_id)\
             .filter(Organizer.user_id == organizer_id)\
-            .group_by(Event.id, Event.name, Event.date, Event.location, Event.status)\
+            .group_by(Event.id, Event.name, Event.date, Event.location)\
             .order_by(Event.date.desc())\
             .all()
 
@@ -630,7 +629,6 @@ class AdminEventListResource(Resource):
                     "name": event.name,
                     "event_date": event.date.isoformat() if event.date else None,
                     "location": event.location,
-                    "status": event.status.value if event.status else None,
                     "report_count": event.report_count
                 })
 
