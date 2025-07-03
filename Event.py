@@ -12,12 +12,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
-MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+MAX_FILE_SIZE = 5 * 1024 * 1024
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 class EventResource(Resource):
-    
+
     def get(self, event_id=None):
         """Retrieve an event by ID or return all events if no ID is provided."""
         if event_id:
@@ -29,15 +30,14 @@ class EventResource(Resource):
             except (OperationalError, SQLAlchemyError) as e:
                 logger.error(f"Database error: {str(e)}")
                 return {"message": "Database connection error"}, 500
-        
-      
+
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
-        
+
         try:
             # Get all events with pagination
             events = Event.query.paginate(page=page, per_page=per_page, error_out=False)
-            
+
             if not events.items:
                 return {
                     'events': [],
@@ -45,7 +45,7 @@ class EventResource(Resource):
                     'pages': 0,
                     'current_page': page
                 }
-            
+
             return {
                 'events': [{
                     'id': event.id,
@@ -62,13 +62,10 @@ class EventResource(Resource):
                         'id': event.organizer.id,
                         'company_name': event.organizer.company_name,
                         'company_logo': event.organizer.company_logo,
-                        'media': event.organizer.social_media_links ,
+                        'media': event.organizer.social_media_links,
                         'address': event.organizer.address,
                         'website': event.organizer.website,
                         'company_description': event.organizer.company_description
-
-
-
                     },
                     'likes_count': event.likes.count()
                 } for event in events.items],
@@ -87,9 +84,9 @@ class EventResource(Resource):
     def post(self):
         """Create a new event (Only organizers can create events)."""
         try:
-            identity = get_jwt_identity()  # Get current user
+            identity = get_jwt_identity()
             user = User.query.get(identity)
-            
+
             if not user or user.role != UserRole.ORGANIZER:
                 return {"message": "Only organizers can create events"}, 403
 
@@ -97,7 +94,6 @@ class EventResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-           
             data = request.form
             files = request.files
 
@@ -114,7 +110,7 @@ class EventResource(Resource):
                 if file and file.filename != '':
                     if not allowed_file(file.filename):
                         return {"message": "Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP"}, 400
-                    
+
                     try:
                         upload_result = cloudinary.uploader.upload(
                             file,
@@ -129,7 +125,7 @@ class EventResource(Resource):
             # Parse dates and times
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
             start_time = datetime.strptime(data["start_time"], "%H:%M").time()
-            
+
             end_time = None
             if "end_time" in data and data["end_time"]:
                 end_time = datetime.strptime(data["end_time"], "%H:%M").time()
@@ -161,7 +157,7 @@ class EventResource(Resource):
             db.session.commit()
             return {"message": "Event created successfully", "event": event.as_dict(), "id": event.id}, 201
 
-        except ValueError as e:  # Catch validation errors
+        except ValueError as e:
             return {"error": str(e)}, 400
         except Exception as e:
             db.session.rollback()
@@ -184,13 +180,11 @@ class EventResource(Resource):
         if user.role != UserRole.ORGANIZER or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
-        # ✅ Expect JSON data instead of form
         data = request.get_json()
         if not data:
             return {"error": "No data provided or invalid JSON"}, 400
 
         try:
-            # Update date
             if "date" in data:
                 try:
                     event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
@@ -200,23 +194,20 @@ class EventResource(Resource):
                 except ValueError:
                     return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
-            # Update start_time
             if "start_time" in data:
                 try:
                     event.start_time = datetime.strptime(data["start_time"], "%H:%M").time()
                 except ValueError:
                     return {"error": "Invalid start_time format. Use HH:MM"}, 400
 
-            # Update end_time
             if "end_time" in data:
                 try:
                     event.end_time = datetime.strptime(data["end_time"], "%H:%M").time()
                 except ValueError:
                     return {"error": "Invalid end_time format. Use HH:MM"}, 400
             else:
-                event.end_time = None  # optional
+                event.end_time = None
 
-            # Time validation
             if event.start_time and event.end_time:
                 start_datetime = datetime.combine(event.date, event.start_time)
                 end_datetime = datetime.combine(event.date, event.end_time)
@@ -226,7 +217,6 @@ class EventResource(Resource):
                 if start_datetime >= end_datetime:
                     return {"error": "Start time must be before end time"}, 400
 
-            # Update other fields
             event.name = data.get("name", event.name)
             event.description = data.get("description", event.description)
             event.location = data.get("location", event.location)
@@ -249,12 +239,11 @@ class EventResource(Resource):
             event = Event.query.get(event_id)
             if not event:
                 return {"error": "Event not found"}, 404
-            # Find the organizer profile for the current user (if they are an organizer)
+
             organizer = Organizer.query.filter_by(user_id=user.id).first()
 
-            # Check if the user is the event's organizer OR an Admin
             is_organizer = organizer and event.organizer_id == organizer.id
-            is_admin = user.role.value == UserRole.ADMIN.value  # Use Enum
+            is_admin = user.role.value == UserRole.ADMIN.value
 
             if not (is_organizer or is_admin):
                 return {"message": "Only the event creator (organizer) or Admin can delete this event"}, 403
@@ -263,16 +252,13 @@ class EventResource(Resource):
             db.session.commit()
             return {"message": "Event deleted successfully"}, 200
         except Exception as e:
-             db.session.rollback() # Rollback in case of unexpected error before commit
-             logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True) # Log traceback
-             return {"error": "An unexpected error occurred during event deletion."}, 500
-
+            db.session.rollback()
+            logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True)
+            return {"error": "An unexpected error occurred during event deletion."}, 500
 
 class EventLikeResource(Resource):
     """Resource for handling event likes."""
 
-
-class EventLikeResource(Resource):
     @jwt_required()
     def post(self, event_id):
         """Like an event."""
@@ -307,22 +293,18 @@ class EventLikeResource(Resource):
         db.session.commit()
         return {"message": "Event unliked successfully", "likes_count": event.likes.count()}, 200
 
-
 class OrganizerEventsResource(Resource):
     @jwt_required()
     def get(self):
         """Retrieve events created by the logged-in organizer."""
-        current_user_id = get_jwt_identity()  # Get current user ID
-        user = User.query.get(current_user_id)  # Get current user object
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
 
-        # Check if the user exists and has the ORGANIZER role
-        if not user or user.role.value != UserRole.ORGANIZER.value:  # Use Enum
+        if not user or user.role.value != UserRole.ORGANIZER.value:
             return {"message": "Only organizers can access their events"}, 403
 
-        # Find the Organizer profile linked to this user
         organizer = Organizer.query.filter_by(user_id=user.id).first()
 
-        # If an organizer profile exists, filter events by organizer_id
         if organizer:
             events = Event.query.filter_by(organizer_id=organizer.id).all()
             logger.info(f"Fetched events for organizer_id {organizer.id}: {len(events)} events")
@@ -331,7 +313,6 @@ class OrganizerEventsResource(Resource):
         else:
             logger.warning(f"User {current_user_id} has ORGANIZER role but no Organizer profile found.")
             return {"message": "Organizer profile not found for this user."}, 404
-
 
 class CategoryResource(Resource):
     def get(self):
@@ -364,12 +345,10 @@ class CategoryResource(Resource):
             db.session.rollback()
             return {"message": str(e)}, 400
 
-
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
     api.add_resource(CategoryResource, "/categories")
-    # Resource for liking/unliking events
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
