@@ -174,6 +174,7 @@ class EventResource(Resource):
         user = User.query.get(identity)
         event = Event.query.get(event_id)
         organizer = Organizer.query.filter_by(user_id=user.id).first()
+
         if not user:
             return {"error": "User not found"}, 404
 
@@ -183,31 +184,13 @@ class EventResource(Resource):
         if user.role != UserRole.ORGANIZER or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
-        data = request.form
-        files = request.files
+        # ✅ Expect JSON data instead of form
+        data = request.get_json()
         if not data:
-            return {"error": "No data provided"}, 400
-         
+            return {"error": "No data provided or invalid JSON"}, 400
+
         try:
-            # Validate and update event date
-           
-            image_url = None
-            if 'file' in files:
-                file = files['file']
-                if file and file.filename != '':
-                    if not allowed_file(file.filename):
-                        return {"message": "Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP"}, 400
-                    
-                    try:
-                        upload_result = cloudinary.uploader.upload(
-                            file,
-                            folder="event_images",
-                            resource_type="auto"
-                        )
-                        image_url = upload_result.get('secure_url')
-                    except Exception as e:
-                        logger.error(f"Error uploading event image: {str(e)}")
-                        return {"message": "Failed to upload event image"}, 500
+            # Update date
             if "date" in data:
                 try:
                     event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
@@ -215,36 +198,35 @@ class EventResource(Resource):
                         return {"error": "Event date cannot be in the past"}, 400
                     event.date = event_date
                 except ValueError:
-                    return {"error": "Invalid date format. Use-MM-DD"}, 400
+                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
-            # Validate and update start_time
+            # Update start_time
             if "start_time" in data:
                 try:
                     event.start_time = datetime.strptime(data["start_time"], "%H:%M").time()
                 except ValueError:
                     return {"error": "Invalid start_time format. Use HH:MM"}, 400
 
-            # Validate and update end_time (optional)
+            # Update end_time
             if "end_time" in data:
                 try:
                     event.end_time = datetime.strptime(data["end_time"], "%H:%M").time()
                 except ValueError:
                     return {"error": "Invalid end_time format. Use HH:MM"}, 400
             else:
-                event.end_time = None  # No end_time means "Till Late"
+                event.end_time = None  # optional
 
-            # Validate time logic (allowing overnight events)
+            # Time validation
             if event.start_time and event.end_time:
                 start_datetime = datetime.combine(event.date, event.start_time)
                 end_datetime = datetime.combine(event.date, event.end_time)
 
-                if end_datetime <= start_datetime:  # Handles overnight cases
+                if end_datetime <= start_datetime:
                     end_datetime += timedelta(days=1)
-
                 if start_datetime >= end_datetime:
                     return {"error": "Start time must be before end time"}, 400
 
-            # Update other event attributes
+            # Update other fields
             event.name = data.get("name", event.name)
             event.description = data.get("description", event.description)
             event.location = data.get("location", event.location)
