@@ -180,11 +180,20 @@ class EventResource(Resource):
         if user.role != UserRole.ORGANIZER or event.organizer_id != organizer.id:
             return {"message": "Only the event creator (organizer) can update this event"}, 403
 
-        data = request.get_json()
-        if not data:
-            return {"error": "No data provided or invalid JSON"}, 400
-
+        content_type = request.content_type or ""
+        
         try:
+            if "application/json" in content_type:
+                data = request.get_json()
+            elif "multipart/form-data" in content_type:
+                data = request.form
+            else:
+                return {"error": "Unsupported Content-Type"}, 415
+
+            if not data:
+                return {"error": "No data provided"}, 400
+
+            # Parse and update fields
             if "date" in data:
                 try:
                     event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
@@ -222,12 +231,24 @@ class EventResource(Resource):
             event.location = data.get("location", event.location)
             event.category_id = data.get("category_id", event.category_id)
 
+            # Handle file if present
+            if "file" in request.files:
+                file = request.files["file"]
+                if file and allowed_file(file.filename):
+                    upload_result = cloudinary.uploader.upload(
+                        file,
+                        folder="event_images",
+                        resource_type="auto"
+                    )
+                    event.image = upload_result.get("secure_url")
+
             db.session.commit()
             return {"message": "Update successful", "event": event.as_dict()}, 200
 
         except Exception as e:
             db.session.rollback()
             return {"error": f"An error occurred: {str(e)}"}, 500
+
 
     @jwt_required()
     def delete(self, event_id):
