@@ -3,7 +3,7 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Report, Event, User, Organizer, Currency, ExchangeRate, TicketType
 from pdf_utils import PDFReportGenerator, CSVExporter
-from email_utils import send_email_with_attachment  # Import the email utility
+from email_utils import send_email_with_attachment
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, and_, or_
@@ -53,9 +53,9 @@ class AdminReportService:
             query = Event.query.join(Organizer).filter(Organizer.user_id == organizer_id)
 
             if start_date:
-                query = query.filter(Event.event_date >= start_date)
+                query = query.filter(Event.date >= start_date)
             if end_date:
-                query = query.filter(Event.event_date <= end_date)
+                query = query.filter(Event.date <= end_date)
 
             return query.all()
         except SQLAlchemyError as e:
@@ -157,7 +157,7 @@ class AdminReportService:
                 event_details.append({
                     "event_id": event.id,
                     "event_name": event.name,
-                    "event_date": event.event_date.isoformat() if event.event_date else None,
+                    "event_date": event.date.isoformat() if event.date else None,
                     "location": event.location,
                     "tickets_sold": event_tickets,
                     "revenue": event_revenue,
@@ -291,7 +291,7 @@ class AdminReportService:
                 "event_info": {
                     "event_id": event.id,
                     "event_name": event.name,
-                    "event_date": event.event_date.isoformat() if event.event_date else None,
+                    "event_date": event.date.isoformat() if event.date else None,
                     "location": event.location,
                     "organizer_id": organizer_id,
                     "organizer_name": event.organizer.user.full_name if event.organizer and event.organizer.user else "N/A"
@@ -378,7 +378,7 @@ class AdminReportService:
 
             if report_data.get('total_tickets_sold', 0) > 0:
                 attendance_rate = (report_data.get('number_of_attendees', 0) /
-                                 report_data.get('total_tickets_sold', 1) * 100)
+                                report_data.get('total_tickets_sold', 1) * 100)
                 html_body += f"""
                         <div class="metric">
                             <div class="metric-value">{attendance_rate:.1f}%</div>
@@ -415,7 +415,7 @@ class AdminReportService:
 
             if report_data.get('total_tickets_sold', 0) > 0:
                 attendance_rate = (report_data.get('number_of_attendees', 0) /
-                                 report_data.get('total_tickets_sold', 1) * 100)
+                                report_data.get('total_tickets_sold', 1) * 100)
                 if attendance_rate > 90:
                     html_body += "<li>Excellent attendance rate! Most ticket holders attended the event.</li>"
                 elif attendance_rate > 70:
@@ -611,7 +611,7 @@ class AdminEventListResource(Resource):
             events = db.session.query(
                 Event.id,
                 Event.name,
-                Event.event_date,
+                Event.date,
                 Event.location,
                 Event.status,
                 func.count(Report.id).label('report_count')
@@ -619,8 +619,8 @@ class AdminEventListResource(Resource):
             .join(Organizer, Event.organizer_id == Organizer.id)\
             .outerjoin(Report, Event.id == Report.event_id)\
             .filter(Organizer.user_id == organizer_id)\
-            .group_by(Event.id, Event.name, Event.event_date, Event.location, Event.status)\
-            .order_by(Event.event_date.desc())\
+            .group_by(Event.id, Event.name, Event.date, Event.location, Event.status)\
+            .order_by(Event.date.desc())\
             .all()
 
             event_list = []
@@ -628,7 +628,7 @@ class AdminEventListResource(Resource):
                 event_list.append({
                     "event_id": event.id,
                     "name": event.name,
-                    "event_date": event.event_date.isoformat() if event.event_date else None,
+                    "event_date": event.date.isoformat() if event.date else None,
                     "location": event.location,
                     "status": event.status.value if event.status else None,
                     "report_count": event.report_count
