@@ -281,10 +281,48 @@ class AdminReportService:
                                 "currency": target_currency.code.value,
                                 "currency_symbol": target_currency.symbol
                             }
+                else:
+                    # Provide default structure when there are no reports
+                    fresh_report_data = {
+                        "event_summary": {
+                            "total_tickets_sold": 0,
+                            "total_revenue": 0.0,
+                            "total_attendees": 0,
+                            "event_count": 0,
+                            "report_count": 0,
+                            "currency": None,
+                            "events": []
+                        },
+                        "report_timestamp": datetime.utcnow().isoformat(),
+                        "currency_conversion": {
+                            "target_currency_id": config.target_currency_id,
+                            "use_latest_rates": config.use_latest_rates
+                        },
+                        "currency_info": {
+                            "currency": None,
+                            "currency_symbol": ""
+                        }
+                    }
 
             except Exception as e:
                 logger.warning(f"Could not generate fresh report data: {e}")
-                fresh_report_data = {"error": "Fresh report generation failed", "details": str(e)}
+                fresh_report_data = {
+                    "error": "Fresh report generation failed",
+                    "details": str(e),
+                    "event_summary": {
+                        "total_tickets_sold": 0,
+                        "total_revenue": 0.0,
+                        "total_attendees": 0,
+                        "event_count": 0,
+                        "report_count": 0,
+                        "currency": None,
+                        "events": []
+                    },
+                    "currency_info": {
+                        "currency": None,
+                        "currency_symbol": ""
+                    }
+                }
 
             # Prepare the admin report
             admin_report = {
@@ -377,8 +415,7 @@ class AdminReportService:
             """
 
             if report_data.get('total_tickets_sold', 0) > 0:
-                attendance_rate = (report_data.get('number_of_attendees', 0) /
-                                report_data.get('total_tickets_sold', 1) * 100)
+                attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
                 html_body += f"""
                         <div class="metric">
                             <div class="metric-value">{attendance_rate:.1f}%</div>
@@ -414,8 +451,7 @@ class AdminReportService:
             """
 
             if report_data.get('total_tickets_sold', 0) > 0:
-                attendance_rate = (report_data.get('number_of_attendees', 0) /
-                                report_data.get('total_tickets_sold', 1) * 100)
+                attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
                 if attendance_rate > 90:
                     html_body += "<li>Excellent attendance rate! Most ticket holders attended the event.</li>"
                 elif attendance_rate > 70:
