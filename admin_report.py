@@ -12,10 +12,46 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import json
+import time
+import hashlib
+from collections import defaultdict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class RequestDeduplicator:
+    def __init__(self):
+        self.recent_requests = defaultdict(list)
+        self.cleanup_interval = 300  # every 5 minutes
+        self.last_cleanup = time.time()
+
+    def cleanup_old_requests(self):
+        current_time = time.time()
+        if current_time - self.last_cleanup > self.cleanup_interval:
+            cutoff = current_time - 60  # keep only requests from last 60 seconds
+            for key in list(self.recent_requests):
+                self.recent_requests[key] = [t for t in self.recent_requests[key] if t > cutoff]
+                if not self.recent_requests[key]:
+                    del self.recent_requests[key]
+            self.last_cleanup = current_time
+
+    def generate_key(self, user_id, organizer_id, event_id, email, days):
+        key = f"{user_id}:{organizer_id}:{event_id}:{email}:{days}"
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def is_duplicate(self, key, window=30):
+        self.cleanup_old_requests()
+        now = time.time()
+        times = self.recent_requests.get(key, [])
+        for t in times:
+            if now - t < window:
+                return True
+        self.recent_requests[key].append(now)
+        return False
+
+# Create a global instance of the deduplicator
+request_deduplicator = RequestDeduplicator()
 
 @dataclass
 class AdminReportConfig:
@@ -111,7 +147,6 @@ class AdminReportService:
                 total_revenue += float(converted_revenue)
             else:
                 total_revenue += float(report.total_revenue)
-
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
@@ -126,7 +161,6 @@ class AdminReportService:
                     "currency": base_currency.code.value,
                     "currency_symbol": base_currency.symbol
                 }
-
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
         for event_id in unique_events:
@@ -149,15 +183,15 @@ class AdminReportService:
                     "attendees": event_attendees,
                     "report_count": len(event_reports)
                 })
-
         return {
             "total_tickets_sold": total_tickets,
             "total_revenue": total_revenue,
             "total_attendees": total_attendees,
             "event_count": len(unique_events),
             "report_count": len(reports),
-            "events": event_details,
-            **currency_info
+            "currency": currency_info.get("currency"),
+            "currency_symbol": currency_info.get("currency_symbol"),
+            "events": event_details
         }
 
     @staticmethod
@@ -167,22 +201,17 @@ class AdminReportService:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
-
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=config.date_range_days)
-
             reports = AdminReportService.get_reports_by_organizer(
                 organizer_id, start_date, end_date
             )
-
             events = AdminReportService.get_events_by_organizer(
                 organizer_id, start_date, end_date
             )
-
             aggregated_data = AdminReportService.aggregate_organizer_reports(
                 reports, config.target_currency_id, config.use_latest_rates
             )
-
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -220,14 +249,11 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
-
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=config.date_range_days)
-
             existing_reports = AdminReportService.get_reports_by_event(
                 event_id, start_date, end_date
             )
-
             fresh_report_data = None
             try:
                 if existing_reports:
@@ -258,6 +284,7 @@ class AdminReportService:
                             "event_count": 0,
                             "report_count": 0,
                             "currency": None,
+                            "currency_symbol": None,
                             "events": []
                         },
                         "report_timestamp": datetime.utcnow().isoformat(),
@@ -282,6 +309,7 @@ class AdminReportService:
                         "event_count": 0,
                         "report_count": 0,
                         "currency": None,
+                        "currency_symbol": None,
                         "events": []
                     },
                     "currency_info": {
@@ -289,7 +317,6 @@ class AdminReportService:
                         "currency_symbol": ""
                     }
                 }
-
             admin_report = {
                 "event_info": {
                     "event_id": event.id,
@@ -510,10 +537,24 @@ class AdminReportResource(Resource):
                 response = jsonify(report_data)
 
             if send_email:
+                request_key = request_deduplicator.generate_key(
+                    current_user_id, organizer_id, event_id, recipient_email, days
+                )
+
+                if request_deduplicator.is_duplicate(request_key, window=30):
+                    logger.warning(f"Duplicate email blocked for key {request_key} by user {current_user_id}")
+                    return {
+                        "message": "Duplicate request detected. Email already sent recently.",
+                        "duplicate_request": True,
+                        "wait_time": 30
+                    }, 429  # Too Many Requests
+
                 email_success = AdminReportService.send_report_email(report_data, recipient_email)
                 if not email_success:
                     logger.error("Failed to send email")
+
             return response
+
         except Exception as e:
             logger.error(f"Admin report generation failed: {e}")
             return {"message": "Report generation failed", "error": str(e)}, 500
@@ -555,6 +596,7 @@ class AdminOrganizerListResource(Resource):
                     "event_count": org.event_count,
                     "report_count": org.report_count
                 })
+
             return {
                 "organizers": organizer_list,
                 "total_count": len(organizer_list)
@@ -598,6 +640,7 @@ class AdminEventListResource(Resource):
                     "location": event.location,
                     "report_count": event.report_count
                 })
+
             return {
                 "organizer_id": organizer_id,
                 "events": event_list,
