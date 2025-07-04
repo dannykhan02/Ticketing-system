@@ -46,14 +46,12 @@ FALLBACK_COLOR_REPORTLAB = colors.HexColor('#808080')
 def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
     """
     Generate a donut chart image for Revenue by Ticket Type.
-
     Parameters
     ----------
     report : dict
         The event report dictionary containing revenue data.
     path : str, optional
         The path to save the generated image (default: "report_graph.png").
-
     Returns
     -------
     str
@@ -61,24 +59,18 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
     """
     try:
         revenue_data = report.get("revenue_by_ticket_type", {})
-
         # Filter out zero or negative values and prepare data
         filtered_data = {k: v for k, v in revenue_data.items() if v > 0}
-
         if not filtered_data:
             logger.warning("No positive revenue data found for chart generation")
-
         # Extract labels (ticket types) and values (revenue amounts)
         labels = [label.upper() for label in filtered_data.keys()] if filtered_data else ['No Data']
         values = list(filtered_data.values()) if filtered_data else [1]
-
         # Map colors based on ticket type labels
         chart_colors = [COLORS_BY_TICKET_MATPLOTLIB.get(label, FALLBACK_COLOR_MATPLOTLIB) for label in labels]
-
         # Create the Donut Chart with improved styling
         fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
         ax.set_facecolor('#1e1e1e')
-
         # Configure chart based on data availability
         if not filtered_data:
             logger.info("No revenue data > 0 to plot in donut chart. Generating placeholder.")
@@ -87,7 +79,6 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
             autopct = None
         else:
             autopct = lambda pct: f'{pct:.1f}%\n(${values[int(pct/100*len(values))]:.0f})' if pct > 5 else ''
-
         # Create the pie chart with enhanced styling
         wedges, texts, autotexts = ax.pie(
             values,
@@ -99,27 +90,22 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
             textprops={'color': '#cccccc', 'fontsize': 10, 'weight': 'bold'},
             wedgeprops={'linewidth': 2, 'edgecolor': '#2a2a2a'}
         )
-
         # Create donut hole with better styling
         centre_circle = plt.Circle((0, 0), 0.65, fc='#2a2a2a', linewidth=2, edgecolor='#1e1e1e')
         fig.gca().add_artist(centre_circle)
-
         # Add total revenue in center if data exists
         if filtered_data:
             total_revenue = sum(values)
             ax.text(0, 0, f'Total Revenue\n${total_revenue:.2f}', ha='center', va='center',
                     color='#ffffff', fontsize=12, weight='bold')
-
         # Enhanced styling
         ax.axis('equal')
         plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
         plt.tight_layout()
-
         # Save with higher quality
         plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
                     facecolor=fig.get_facecolor(), edgecolor='none')
         logger.info(f"Graph image successfully saved to {path}")
-
     except Exception as e:
         logger.error(f"Error generating graph image: {e}")
         # Create a fallback image with error message
@@ -143,14 +129,12 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
             return ""
     finally:
         plt.close('all')  # Ensure all figures are closed to prevent memory leaks
-
     return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
 
 def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket_report.pdf",
                             graph_path: str = "report_graph.png") -> str:
     """
     Build a comprehensive one-page PDF report with embedded sales graph and event details.
-
     Parameters
     ----------
     report : dict
@@ -162,7 +146,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         Where to write the PDF (default: "ticket_report.pdf").
     graph_path : str, optional
         Where the PNG graph is stored/should be saved (default: "report_graph.png").
-
     Returns
     -------
     str
@@ -172,7 +155,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
     if not isinstance(report, dict):
         logger.error("Report parameter must be a dictionary")
         return ""
-
     # Ensure graph image exists or generate it
     if not os.path.exists(graph_path) or os.path.getsize(graph_path) == 0:
         logger.info(f"Graph image not found at {graph_path}, generating new one")
@@ -182,7 +164,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         except Exception as e:
             logger.error(f"Failed to generate graph image for PDF: {e}")
             graph_path = None
-
     try:
         # Initialize PDF document with metadata
         doc = SimpleDocTemplate(
@@ -193,9 +174,7 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             topMargin=72,
             bottomMargin=72
         )
-
         styles = getSampleStyleSheet()
-
         # Enhanced custom styles
         styles.add(ParagraphStyle(
             name='ReportTitle',
@@ -207,7 +186,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             textColor=colors.HexColor('#2c3e50'),
             fontName='Helvetica-Bold'
         ))
-
         styles.add(ParagraphStyle(
             name='SubHeading',
             parent=styles['Heading2'],
@@ -217,7 +195,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             textColor=colors.HexColor('#34495e'),
             fontName='Helvetica-Bold'
         ))
-
         styles.add(ParagraphStyle(
             name='CustomBodyText',
             parent=styles['Normal'],
@@ -228,7 +205,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             textColor=colors.HexColor('#2c3e50'),
             fontName='Helvetica'
         ))
-
         styles.add(ParagraphStyle(
             name='FilterText',
             parent=styles['Normal'],
@@ -240,7 +216,6 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             fontName='Helvetica-Oblique',
             alignment=TA_CENTER
         ))
-
         styles.add(ParagraphStyle(
             name='HighlightText',
             parent=styles['CustomBodyText'],
@@ -248,27 +223,21 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             textColor=colors.HexColor('#e74c3c'),
             fontName='Helvetica-Bold'
         ))
-
         elements = []
-
         # Enhanced title with event information
         event_name = report.get('event_name', f'Event ID {event_id}')
         title = f"Event Analytics Report"
         subtitle = f"{event_name}"
-
         elements.append(Paragraph(title, styles['ReportTitle']))
         elements.append(Paragraph(subtitle, styles['SubHeading']))
         elements.append(Spacer(1, 12))
-
         # Filter information with better formatting
         filter_start_date = report.get('filter_start_date', 'N/A')
         filter_end_date = report.get('filter_end_date', 'N/A')
-
         if filter_start_date != "N/A" or filter_end_date != "N/A":
             filter_text = f"Report Period: {filter_start_date} to {filter_end_date}"
             elements.append(Paragraph(filter_text, styles['FilterText']))
             elements.append(Spacer(1, 16))
-
         # Revenue graph with improved error handling
         if graph_path and os.path.exists(graph_path) and os.path.getsize(graph_path) > 0:
             try:
@@ -286,34 +255,25 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         else:
             elements.append(Paragraph("📊 Chart visualization not available", styles['CustomBodyText']))
             elements.append(Spacer(1, 12))
-
         # Key metrics section with improved formatting
         elements.append(Paragraph("📈 Key Performance Metrics", styles['SubHeading']))
-
         total_tickets = report.get('total_tickets_sold', 0)
         total_revenue = report.get('total_revenue', 0)
         attendees = report.get('number_of_attendees', 0)
-
         elements.append(Paragraph(f"<b>Total Tickets Sold:</b> {total_tickets:,}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Total Revenue Generated:</b> ${total_revenue:,.2f}", styles['HighlightText']))
         elements.append(Paragraph(f"<b>Number of Attendees:</b> {attendees:,}", styles['CustomBodyText']))
-
         # Calculate average ticket price if possible
         if total_tickets > 0:
             avg_price = total_revenue / total_tickets
             elements.append(Paragraph(f"<b>Average Ticket Price:</b> ${avg_price:.2f}", styles['CustomBodyText']))
-
         elements.append(Spacer(1, 16))
-
         # Event details section
         elements.append(Paragraph("📅 Event Information", styles['SubHeading']))
-
         event_date = report.get('event_date', 'Not specified')
         event_location = report.get('event_location', 'Not specified')
-
         elements.append(Paragraph(f"<b>Event Date:</b> {event_date}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Event Location:</b> {event_location}", styles['CustomBodyText']))
-
         # Event description with text wrapping
         description = report.get('event_description', '').strip()
         if description:
@@ -323,14 +283,11 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             if len(description) > 500:
                 description = description[:497] + "..."
             elements.append(Paragraph(description, styles['CustomBodyText']))
-
         # Add footer spacer
         elements.append(Spacer(1, 20))
-
         # Generate PDF with error handling
         doc.build(elements)
         logger.info(f"PDF report successfully generated and saved to {pdf_path}")
-
     except Exception as e:
         logger.error(f"Error generating PDF report: {e}")
         # Clean up potentially corrupted file
@@ -340,12 +297,11 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             except OSError:
                 pass
         return ""
-
     return pdf_path if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0 else ""
 
 class PDFReportGenerator:
     @staticmethod
-    def generate_pdf_report(report_data: Dict) -> str:
+    def generate_pdf_report(report_data: Dict, config=None) -> str:
         event_id = report_data.get("event_id", 0)
         pdf_path = f"report_{event_id}.pdf"
         graph_path = f"report_graph_{event_id}.png"
@@ -356,9 +312,7 @@ class CSVExporter:
     def generate_csv_report(data: Dict) -> str:
         if not data:
             return ""
-
         # Example: Convert report data to CSV format
         output = "Field1,Field2\n"
         output += f"{data.get('field1', '')},{data.get('field2', '')}\n"
-
         return output
