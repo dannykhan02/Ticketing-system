@@ -94,6 +94,7 @@ class CurrencyConverter:
 
 class DatabaseQueryService:
     """Service for database queries related to reports"""
+
     @staticmethod
     def get_tickets_sold_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get tickets sold by type within date range"""
@@ -103,8 +104,8 @@ class DatabaseQueryService:
                 .filter(
                     Ticket.event_id == event_id,
                     Transaction.payment_status == 'COMPLETED',
-                    Transaction.created_at >= start_date,
-                    Transaction.created_at <= end_date
+                    Transaction.timestamp >= start_date,
+                    Transaction.timestamp <= end_date
                 )
                 .group_by(TicketType.type_name)
                 .all())
@@ -120,8 +121,8 @@ class DatabaseQueryService:
                 .filter(
                     Ticket.event_id == event_id,
                     Transaction.payment_status == 'COMPLETED',
-                    Transaction.created_at >= start_date,
-                    Transaction.created_at <= end_date
+                    Transaction.timestamp >= start_date,
+                    Transaction.timestamp <= end_date
                 )
                 .group_by(TicketType.type_name)
                 .all())
@@ -153,8 +154,8 @@ class DatabaseQueryService:
                 .filter(
                     Ticket.event_id == event_id,
                     Transaction.payment_status == 'COMPLETED',
-                    Transaction.created_at >= start_date,
-                    Transaction.created_at <= end_date
+                    Transaction.timestamp >= start_date,
+                    Transaction.timestamp <= end_date
                 )
                 .group_by(Transaction.payment_method)
                 .all())
@@ -169,8 +170,8 @@ class DatabaseQueryService:
                  .filter(
                      Ticket.event_id == event_id,
                      Transaction.payment_status == 'COMPLETED',
-                     Transaction.created_at >= start_date,
-                     Transaction.created_at <= end_date
+                     Transaction.timestamp >= start_date,
+                     Transaction.timestamp <= end_date
                  )
                  .scalar())
         return Decimal(str(result)) if result else Decimal('0')
@@ -183,8 +184,8 @@ class DatabaseQueryService:
                  .filter(
                      Ticket.event_id == event_id,
                      Transaction.payment_status == 'COMPLETED',
-                     Transaction.created_at >= start_date,
-                     Transaction.created_at <= end_date
+                     Transaction.timestamp >= start_date,
+                     Transaction.timestamp <= end_date
                  )
                  .scalar())
         return result if result else 0
@@ -213,6 +214,7 @@ class DatabaseQueryService:
 
 class ChartGenerator:
     """Handles chart generation for reports"""
+
     def __init__(self, config: ReportConfig):
         self.config = config
         self._setup_matplotlib()
@@ -364,6 +366,7 @@ class ChartGenerator:
 
 class PDFReportGenerator:
     """Handles PDF report generation"""
+
     def __init__(self, config: ReportConfig):
         self.config = config
         self.styles = getSampleStyleSheet()
@@ -566,6 +569,7 @@ class PDFReportGenerator:
 
 class FileManager:
     """Handles file operations for reports"""
+
     @staticmethod
     def generate_unique_paths(event_id: int) -> Tuple[str, str]:
         """Generate unique file paths for graph and PDF"""
@@ -586,6 +590,7 @@ class FileManager:
 
 class CSVReportGenerator:
     """Handles CSV report generation"""
+
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
         """Generate CSV report with detailed data"""
@@ -643,6 +648,7 @@ class CSVReportGenerator:
 
 class ReportService:
     """Main service for report generation and management"""
+
     def __init__(self, config: ReportConfig = None):
         self.config = config or ReportConfig()
         self.chart_generator = ChartGenerator(self.config) if self.config.include_charts else None
@@ -927,6 +933,7 @@ class ReportService:
 
 class AuthorizationMixin:
     """Mixin class for handling authorization checks"""
+
     @staticmethod
     def check_organizer_access(user: User) -> bool:
         """Check if user is an organizer"""
@@ -946,6 +953,7 @@ class AuthorizationMixin:
 
 class DateValidator:
     """Handles date validation for reports"""
+
     @staticmethod
     def validate_date_range(start_date_str: str, end_date_str: str) -> Tuple[Optional[datetime], Optional[datetime], Optional[Dict]]:
         """Validate date range parameters"""
@@ -996,7 +1004,7 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
 
             if not start_date:
-                start_date = event.created_at if hasattr(event, 'created_at') else datetime.now() - timedelta(days=30)
+                start_date = event.timestamp if hasattr(event, 'timestamp') else datetime.now() - timedelta(days=30)
 
             if not end_date:
                 end_date = datetime.now()
