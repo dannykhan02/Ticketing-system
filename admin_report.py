@@ -51,12 +51,10 @@ class AdminReportService:
         """Get all events for a specific organizer within date range"""
         try:
             query = Event.query.join(Organizer).filter(Organizer.user_id == organizer_id)
-
             if start_date:
                 query = query.filter(Event.date >= start_date)
             if end_date:
                 query = query.filter(Event.date <= end_date)
-
             return query.all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching events for organizer {organizer_id}: {e}")
@@ -67,12 +65,10 @@ class AdminReportService:
         """Get all reports for a specific organizer within date range"""
         try:
             query = Report.query.filter_by(organizer_id=organizer_id)
-
             if start_date:
                 query = query.filter(Report.timestamp >= start_date)
             if end_date:
                 query = query.filter(Report.timestamp <= end_date)
-
             return query.order_by(Report.timestamp.desc()).all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching reports for organizer {organizer_id}: {e}")
@@ -83,12 +79,10 @@ class AdminReportService:
         """Get all reports for a specific event within date range"""
         try:
             query = Report.query.filter_by(event_id=event_id)
-
             if start_date:
                 query = query.filter(Report.timestamp >= start_date)
             if end_date:
                 query = query.filter(Report.timestamp <= end_date)
-
             return query.order_by(Report.timestamp.desc()).all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching reports for event {event_id}: {e}")
@@ -107,14 +101,10 @@ class AdminReportService:
                 "currency": None,
                 "events": []
             }
-
         total_tickets = sum(report.total_tickets_sold for report in reports)
         total_attendees = sum(report.number_of_attendees or 0 for report in reports)
-
-        # Calculate total revenue with currency conversion if needed
         total_revenue = 0.0
         currency_info = {}
-
         for report in reports:
             if target_currency_id:
                 converted_revenue = report.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates)
@@ -122,7 +112,6 @@ class AdminReportService:
             else:
                 total_revenue += float(report.total_revenue)
 
-        # Get currency information
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
@@ -138,14 +127,11 @@ class AdminReportService:
                     "currency_symbol": base_currency.symbol
                 }
 
-        # Get unique events
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
-
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
-
             if event:
                 event_revenue = sum(
                     float(r.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates) if target_currency_id else r.total_revenue)
@@ -153,7 +139,6 @@ class AdminReportService:
                 )
                 event_tickets = sum(r.total_tickets_sold for r in event_reports)
                 event_attendees = sum(r.number_of_attendees or 0 for r in event_reports)
-
                 event_details.append({
                     "event_id": event.id,
                     "event_name": event.name,
@@ -179,31 +164,25 @@ class AdminReportService:
     def generate_organizer_summary_report(organizer_id: int, config: AdminReportConfig) -> Dict[str, Any]:
         """Generate a comprehensive summary report for an organizer"""
         try:
-            # Get organizer information
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
 
-            # Calculate date range
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=config.date_range_days)
 
-            # Get reports for the organizer
             reports = AdminReportService.get_reports_by_organizer(
                 organizer_id, start_date, end_date
             )
 
-            # Get events for additional context
             events = AdminReportService.get_events_by_organizer(
                 organizer_id, start_date, end_date
             )
 
-            # Aggregate the reports with currency conversion settings
             aggregated_data = AdminReportService.aggregate_organizer_reports(
                 reports, config.target_currency_id, config.use_latest_rates
             )
 
-            # Prepare the summary report
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -226,9 +205,7 @@ class AdminReportService:
                 ],
                 "generation_timestamp": datetime.utcnow().isoformat()
             }
-
             return summary_report
-
         except Exception as e:
             logger.error(f"Error generating organizer summary report: {e}")
             return {"error": "Failed to generate report", "status": 500}
@@ -237,33 +214,26 @@ class AdminReportService:
     def generate_event_admin_report(event_id: int, organizer_id: int, config: AdminReportConfig) -> Dict[str, Any]:
         """Generate an admin report for a specific event"""
         try:
-            # Validate event exists and belongs to organizer
             event = Event.query.join(Organizer).filter(
                 Event.id == event_id,
                 Organizer.user_id == organizer_id
             ).first()
-
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
 
-            # Calculate date range
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=config.date_range_days)
 
-            # Get existing reports for this event
             existing_reports = AdminReportService.get_reports_by_event(
                 event_id, start_date, end_date
             )
 
-            # Generate fresh report data with currency conversion
             fresh_report_data = None
             try:
-                # Calculate fresh aggregated data from existing reports
                 if existing_reports:
                     fresh_aggregated = AdminReportService.aggregate_organizer_reports(
                         existing_reports, config.target_currency_id, config.use_latest_rates
                     )
-
                     fresh_report_data = {
                         "event_summary": fresh_aggregated,
                         "report_timestamp": datetime.utcnow().isoformat(),
@@ -272,8 +242,6 @@ class AdminReportService:
                             "use_latest_rates": config.use_latest_rates
                         }
                     }
-
-                    # Get target currency info for display
                     if config.target_currency_id:
                         target_currency = Currency.query.get(config.target_currency_id)
                         if target_currency:
@@ -282,7 +250,6 @@ class AdminReportService:
                                 "currency_symbol": target_currency.symbol
                             }
                 else:
-                    # Provide default structure when there are no reports
                     fresh_report_data = {
                         "event_summary": {
                             "total_tickets_sold": 0,
@@ -303,7 +270,6 @@ class AdminReportService:
                             "currency_symbol": ""
                         }
                     }
-
             except Exception as e:
                 logger.warning(f"Could not generate fresh report data: {e}")
                 fresh_report_data = {
@@ -324,7 +290,6 @@ class AdminReportService:
                     }
                 }
 
-            # Prepare the admin report
             admin_report = {
                 "event_info": {
                     "event_id": event.id,
@@ -353,9 +318,7 @@ class AdminReportService:
                 },
                 "generation_timestamp": datetime.utcnow().isoformat()
             }
-
             return admin_report
-
         except Exception as e:
             logger.error(f"Error generating event admin report: {e}")
             return {"error": "Failed to generate event report", "status": 500}
@@ -366,9 +329,7 @@ class AdminReportService:
         try:
             event_name = report_data.get('event_name', 'Unknown Event')
             currency_symbol = report_data.get('currency_symbol', '$')
-
             subject = f"Event Analytics Report - {event_name}"
-
             html_body = f"""
             <!DOCTYPE html>
             <html>
@@ -396,7 +357,6 @@ class AdminReportService:
                     <h2>{event_name}</h2>
                     <p>Report Period: {report_data.get('filter_start_date', 'N/A')} to {report_data.get('filter_end_date', 'N/A')}</p>
                 </div>
-
                 <div class="content">
                     <div class="summary-box">
                         <h3>📈 Executive Summary</h3>
@@ -413,7 +373,6 @@ class AdminReportService:
                             <div class="metric-label">Attendees</div>
                         </div>
             """
-
             if report_data.get('total_tickets_sold', 0) > 0:
                 attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
                 html_body += f"""
@@ -422,11 +381,9 @@ class AdminReportService:
                             <div class="metric-label">Attendance Rate</div>
                         </div>
                 """
-
             html_body += """
                     </div>
             """
-
             if report_data.get('tickets_sold_by_type'):
                 html_body += """
                     <div class="summary-box">
@@ -438,18 +395,15 @@ class AdminReportService:
                     quantity = report_data['tickets_sold_by_type'].get(ticket_type, 0)
                     revenue = report_data.get('revenue_by_ticket_type', {}).get(ticket_type, 0)
                     html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
-
                 html_body += """
                         </table>
                     </div>
                 """
-
             html_body += f"""
                     <div class="insights">
                         <h3>💡 Key Insights</h3>
                         <ul>
             """
-
             if report_data.get('total_tickets_sold', 0) > 0:
                 attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
                 if attendance_rate > 90:
@@ -458,22 +412,18 @@ class AdminReportService:
                     html_body += "<li>Good attendance rate with room for improvement in no-show reduction.</li>"
                 else:
                     html_body += "<li>Low attendance rate suggests potential areas for improvement.</li>"
-
             if report_data.get('revenue_by_ticket_type'):
                 max_revenue_type = max(report_data['revenue_by_ticket_type'].items(), key=lambda x: x[1])[0]
                 html_body += f"<li>{max_revenue_type} tickets generated the highest revenue for this event.</li>"
-
             html_body += """
                         </ul>
                     </div>
-
                     <div class="attachment-note">
                         <h3>📎 Attachments</h3>
                         <p><strong>Detailed PDF Report:</strong> Complete analytics with charts and visualizations</p>
                         <p><strong>CSV Data Export:</strong> Raw data for further analysis and processing</p>
                     </div>
                 </div>
-
                 <div class="footer">
                     <p>This report was automatically generated by the Event Management System</p>
                     <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -481,12 +431,11 @@ class AdminReportService:
             </body>
             </html>
             """
-
             success = send_email_with_attachment(
-                to_email=recipient_email,
+                recipient=recipient_email,
                 subject=subject,
-                html_body=html_body,
-                attachments=[]  # Add attachments if needed
+                body=html_body,
+                is_html=True
             )
             return success
         except Exception as e:
@@ -501,11 +450,9 @@ class AdminReportResource(Resource):
         """Get admin reports with various filtering options"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
-        # Parse query parameters
         organizer_id = request.args.get('organizer_id', type=int)
         event_id = request.args.get('event_id', type=int)
         format_type = request.args.get('format', 'json')
@@ -516,7 +463,6 @@ class AdminReportResource(Resource):
         send_email = request.args.get('send_email', 'false').lower() == 'true'
         recipient_email = request.args.get('recipient_email', user.email)
 
-        # Create configuration
         config = AdminReportConfig(
             include_charts=include_charts,
             include_email=send_email,
@@ -528,23 +474,19 @@ class AdminReportResource(Resource):
 
         try:
             if organizer_id and event_id:
-                # Get specific event report for organizer
                 report_data = AdminReportService.generate_event_admin_report(
                     event_id, organizer_id, config
                 )
             elif organizer_id:
-                # Get organizer summary report
                 report_data = AdminReportService.generate_organizer_summary_report(
                     organizer_id, config
                 )
             else:
                 return {"message": "Please specify organizer_id or both organizer_id and event_id"}, 400
 
-            # Handle errors
             if "error" in report_data:
                 return {"message": report_data["error"]}, report_data.get("status", 500)
 
-            # Handle different format types
             if format_type.lower() == 'csv':
                 csv_content = CSVExporter.generate_csv_report(report_data)
                 response = Response(
@@ -553,7 +495,6 @@ class AdminReportResource(Resource):
                     headers={'Content-Disposition': f'attachment; filename=admin_report_{organizer_id}_{datetime.now().strftime("%Y%m%d")}.csv'}
                 )
             elif format_type.lower() == 'pdf':
-                # Generate PDF using existing PDF generator
                 try:
                     pdf_buffer = PDFReportGenerator.generate_pdf_report(report_data, config)
                     response = send_file(
@@ -566,17 +507,13 @@ class AdminReportResource(Resource):
                     logger.error(f"PDF generation failed: {e}")
                     return {"message": "PDF generation failed", "error": str(e)}, 500
             else:
-                # Return JSON by default
                 response = jsonify(report_data)
 
-            # Send email if requested
             if send_email:
                 email_success = AdminReportService.send_report_email(report_data, recipient_email)
                 if not email_success:
                     logger.error("Failed to send email")
-
             return response
-
         except Exception as e:
             logger.error(f"Admin report generation failed: {e}")
             return {"message": "Report generation failed", "error": str(e)}, 500
@@ -589,12 +526,10 @@ class AdminOrganizerListResource(Resource):
         """Get list of all organizers with basic info"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
         try:
-            # Get all organizers with their basic info and event counts
             organizers = db.session.query(
                 User.id,
                 User.full_name,
@@ -620,12 +555,10 @@ class AdminOrganizerListResource(Resource):
                     "event_count": org.event_count,
                     "report_count": org.report_count
                 })
-
             return {
                 "organizers": organizer_list,
                 "total_count": len(organizer_list)
             }
-
         except Exception as e:
             logger.error(f"Error fetching organizer list: {e}")
             return {"message": "Failed to fetch organizer list", "error": str(e)}, 500
@@ -638,12 +571,10 @@ class AdminEventListResource(Resource):
         """Get list of events for a specific organizer"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
         try:
-            # Get events for the organizer with report counts
             events = db.session.query(
                 Event.id,
                 Event.name,
@@ -667,13 +598,11 @@ class AdminEventListResource(Resource):
                     "location": event.location,
                     "report_count": event.report_count
                 })
-
             return {
                 "organizer_id": organizer_id,
                 "events": event_list,
                 "total_count": len(event_list)
             }
-
         except Exception as e:
             logger.error(f"Error fetching event list for organizer {organizer_id}: {e}")
             return {"message": "Failed to fetch event list", "error": str(e)}, 500
