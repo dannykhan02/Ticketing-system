@@ -58,31 +58,38 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
         The path to the saved image file, or empty string if generation failed.
     """
     try:
+        # Retrieve and log the revenue data for debugging
         revenue_data = report.get("revenue_by_ticket_type", {})
+        logger.info(f"Raw revenue_by_ticket_type: {revenue_data} ({type(revenue_data)})")
+
+        # Validate the revenue data format
+        if not isinstance(revenue_data, dict):
+            logger.warning("Expected 'revenue_by_ticket_type' to be a dictionary")
+            raise ValueError("Invalid revenue data format")
+
         # Filter out zero or negative values and prepare data
-        filtered_data = {k: v for k, v in revenue_data.items() if v > 0}
+        filtered_data = {k: v for k, v in revenue_data.items() if isinstance(v, (int, float)) and v > 0}
+
         if not filtered_data:
             logger.warning("No positive revenue data found for chart generation")
+            raise ValueError("No valid revenue data to plot")
+
         # Extract labels (ticket types) and values (revenue amounts)
-        labels = [label.upper() for label in filtered_data.keys()] if filtered_data else ['No Data']
-        values = list(filtered_data.values()) if filtered_data else [1]
+        labels = [label.upper() for label in filtered_data.keys()]
+        values = list(filtered_data.values())
+
         # Map colors based on ticket type labels
         chart_colors = [COLORS_BY_TICKET_MATPLOTLIB.get(label, FALLBACK_COLOR_MATPLOTLIB) for label in labels]
+
         # Create the Donut Chart with improved styling
         fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
         ax.set_facecolor('#1e1e1e')
-        # Configure chart based on data availability
-        if not filtered_data:
-            logger.info("No revenue data > 0 to plot in donut chart. Generating placeholder.")
-            ax.text(0, 0, "No Revenue Data Available", ha='center', va='center',
-                    color='#cccccc', fontsize=16, weight='bold')
-            autopct = None
-        else:
-            autopct = lambda pct: f'{pct:.1f}%\n(${values[int(pct/100*len(values))]:.0f})' if pct > 5 else ''
+
         # Create the pie chart with enhanced styling
+        autopct = lambda pct: f'{pct:.1f}%\n(${values[int(pct/100*len(values))]:.0f})' if pct > 5 else ''
         wedges, texts, autotexts = ax.pie(
             values,
-            labels=labels if filtered_data else None,
+            labels=labels,
             colors=chart_colors,
             autopct=autopct,
             startangle=90,
@@ -90,22 +97,26 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
             textprops={'color': '#cccccc', 'fontsize': 10, 'weight': 'bold'},
             wedgeprops={'linewidth': 2, 'edgecolor': '#2a2a2a'}
         )
+
         # Create donut hole with better styling
         centre_circle = plt.Circle((0, 0), 0.65, fc='#2a2a2a', linewidth=2, edgecolor='#1e1e1e')
         fig.gca().add_artist(centre_circle)
+
         # Add total revenue in center if data exists
-        if filtered_data:
-            total_revenue = sum(values)
-            ax.text(0, 0, f'Total Revenue\n${total_revenue:.2f}', ha='center', va='center',
-                    color='#ffffff', fontsize=12, weight='bold')
+        total_revenue = sum(values)
+        ax.text(0, 0, f'Total Revenue\n${total_revenue:.2f}', ha='center', va='center',
+                color='#ffffff', fontsize=12, weight='bold')
+
         # Enhanced styling
         ax.axis('equal')
         plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
         plt.tight_layout()
+
         # Save with higher quality
         plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
                     facecolor=fig.get_facecolor(), edgecolor='none')
         logger.info(f"Graph image successfully saved to {path}")
+
     except Exception as e:
         logger.error(f"Error generating graph image: {e}")
         # Create a fallback image with error message
@@ -127,8 +138,10 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
                 except OSError:
                     pass
             return ""
+
     finally:
         plt.close('all')  # Ensure all figures are closed to prevent memory leaks
+
     return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
 
 def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket_report.pdf",
