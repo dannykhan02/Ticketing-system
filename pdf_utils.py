@@ -72,7 +72,8 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
 
         if not filtered_data:
             logger.warning("No positive revenue data found for chart generation")
-            raise ValueError("No valid revenue data to plot")
+            # Instead of raising an error, create a "No Data" chart
+            return create_no_data_chart(report, path)
 
         # Extract labels (ticket types) and values (revenue amounts)
         labels = [label.upper() for label in filtered_data.keys()]
@@ -126,29 +127,97 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
     except Exception as e:
         logger.error(f"Error generating graph image: {e}")
         # Create a fallback image with error message
-        try:
-            fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
-            ax.set_facecolor('#1e1e1e')
-            ax.text(0, 0, "Error Generating Chart\nPlease check data format",
-                    ha='center', va='center', color='#ff6b6b', fontsize=14, weight='bold')
-            ax.axis('equal')
-            plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
-            plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
-                        facecolor=fig.get_facecolor())
-            logger.info(f"Fallback error chart saved to {path}")
-        except Exception as fallback_error:
-            logger.error(f"Error creating fallback graph: {fallback_error}")
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-            return ""
+        return create_error_chart(path, str(e))
 
     finally:
         plt.close('all')  # Ensure all figures are closed to prevent memory leaks
 
     return path if os.path.exists(path) and os.path.getsize(path) > 0 else ""
+
+def create_no_data_chart(report: Dict, path: str) -> str:
+    """
+    Create a chart indicating no data is available.
+    """
+    try:
+        fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
+        ax.set_facecolor('#1e1e1e')
+        
+        # Create a simple circle to represent "no data"
+        circle = plt.Circle((0, 0), 0.8, fc='#404040', linewidth=3, edgecolor='#606060')
+        ax.add_patch(circle)
+        
+        # Add text indicating no data
+        ax.text(0, 0.1, "No Revenue Data", ha='center', va='center', 
+                color='#ffffff', fontsize=16, weight='bold')
+        ax.text(0, -0.1, "Available", ha='center', va='center', 
+                color='#cccccc', fontsize=12)
+        
+        # Check if there's any other data to display
+        total_tickets = report.get('total_tickets_sold', 0)
+        if total_tickets > 0:
+            ax.text(0, -0.3, f"Tickets Sold: {total_tickets}", ha='center', va='center',
+                    color='#99ccff', fontsize=10)
+        
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_ylim(-1.2, 1.2)
+        ax.axis('equal')
+        ax.axis('off')
+        
+        plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
+        plt.tight_layout()
+        
+        plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
+                    facecolor=fig.get_facecolor(), edgecolor='none')
+        logger.info(f"No data chart saved to {path}")
+        
+        return path
+        
+    except Exception as e:
+        logger.error(f"Error creating no data chart: {e}")
+        return create_error_chart(path, "No data available")
+    finally:
+        plt.close('all')
+
+def create_error_chart(path: str, error_message: str = "Error generating chart") -> str:
+    """
+    Create a fallback error chart.
+    """
+    try:
+        fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1e1e1e')
+        ax.set_facecolor('#1e1e1e')
+        
+        # Create error visualization
+        ax.text(0, 0.1, "Chart Generation Error", ha='center', va='center', 
+                color='#ff6b6b', fontsize=14, weight='bold')
+        ax.text(0, -0.1, "Please check data format", ha='center', va='center',
+                color='#ff9999', fontsize=10)
+        
+        # Add a simple error icon (triangle with exclamation)
+        triangle = plt.Polygon([[-0.1, -0.4], [0.1, -0.4], [0, -0.6]], 
+                              closed=True, fill=True, color='#ff6b6b')
+        ax.add_patch(triangle)
+        ax.text(0, -0.5, '!', ha='center', va='center', 
+                color='#1e1e1e', fontsize=12, weight='bold')
+        
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(-1, 1)
+        ax.axis('equal')
+        ax.axis('off')
+        
+        plt.title('Revenue by Ticket Type', color='#ffffff', fontsize=18, weight='bold', pad=20)
+        plt.tight_layout()
+        
+        plt.savefig(path, transparent=False, dpi=300, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+        logger.info(f"Error chart saved to {path}")
+        
+        return path
+        
+    except Exception as fallback_error:
+        logger.error(f"Error creating fallback chart: {fallback_error}")
+        return ""
+    finally:
+        plt.close('all')
 
 def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket_report.pdf",
                             graph_path: str = "report_graph.png") -> str:
@@ -174,6 +243,9 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
     if not isinstance(report, dict):
         logger.error("Report parameter must be a dictionary")
         return ""
+    
+    # Log the report data for debugging
+    logger.info(f"Generating PDF for report: {report}")
     
     # Ensure graph image exists or generate it
     if not os.path.exists(graph_path) or os.path.getsize(graph_path) == 0:
@@ -250,6 +322,14 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             fontName='Helvetica-Bold'
         ))
         
+        styles.add(ParagraphStyle(
+            name='WarningText',
+            parent=styles['CustomBodyText'],
+            fontSize=11,
+            textColor=colors.HexColor('#f39c12'),
+            fontName='Helvetica-Bold'
+        ))
+        
         elements = []
         
         # Enhanced title with event information
@@ -268,6 +348,10 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
             elements.append(Paragraph(filter_text, styles['FilterText']))
             elements.append(Spacer(1, 16))
         
+        # Check if we have revenue data
+        revenue_data = report.get("revenue_by_ticket_type", {})
+        has_revenue_data = bool(revenue_data and any(isinstance(v, (int, float)) and v > 0 for v in revenue_data.values()))
+        
         # Revenue graph with improved error handling
         if graph_path and os.path.exists(graph_path) and os.path.getsize(graph_path) > 0:
             try:
@@ -278,6 +362,12 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
                 img.hAlign = 'CENTER'
                 elements.append(img)
                 elements.append(Spacer(1, 20))
+                
+                # Add note if no revenue data
+                if not has_revenue_data:
+                    elements.append(Paragraph("⚠️ No revenue data available for this event", styles['WarningText']))
+                    elements.append(Spacer(1, 12))
+                    
             except Exception as e:
                 logger.error(f"Failed to embed graph from {graph_path}: {e}")
                 elements.append(Paragraph("📊 Chart visualization unavailable", styles['CustomBodyText']))
@@ -300,6 +390,14 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         if total_tickets > 0:
             avg_price = total_revenue / total_tickets
             elements.append(Paragraph(f"<b>Average Ticket Price:</b> ${avg_price:.2f}", styles['CustomBodyText']))
+        
+        # Add data status information
+        if not has_revenue_data and total_tickets == 0:
+            elements.append(Spacer(1, 8))
+            elements.append(Paragraph("⚠️ <b>Note:</b> This event appears to have no ticket sales or revenue data. This could indicate:", styles['WarningText']))
+            elements.append(Paragraph("• Event has not started selling tickets yet", styles['CustomBodyText']))
+            elements.append(Paragraph("• All tickets were complimentary/free", styles['CustomBodyText']))
+            elements.append(Paragraph("• Data sync issues with the ticketing system", styles['CustomBodyText']))
         
         elements.append(Spacer(1, 16))
         
