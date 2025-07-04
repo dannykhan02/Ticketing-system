@@ -921,7 +921,7 @@ class ReportService:
                     'content_type': 'text/csv'
                 })
             success = send_email_with_attachment(
-                to_email=recipient_email,
+                recipient=recipient_email,
                 subject=subject,
                 html_body=html_body,
                 attachments=attachments
