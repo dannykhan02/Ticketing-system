@@ -71,7 +71,6 @@ class CurrencyConverter:
         """Convert amount from one currency to another"""
         if from_currency_id == to_currency_id:
             return amount
-        # Get the latest exchange rate
         rate = ExchangeRate.query.filter_by(
             from_currency_id=from_currency_id,
             to_currency_id=to_currency_id,
@@ -209,7 +208,6 @@ class DatabaseQueryService:
         event = Event.query.get(event_id)
         if event and hasattr(event, 'base_currency_id') and event.base_currency_id:
             return event.base_currency_id
-        # Default to USD if no base currency is set
         default_currency = Currency.query.filter_by(code='USD').first()
         return default_currency.id if default_currency else 1
 
@@ -963,6 +961,7 @@ class DateValidator:
 
 class GenerateReportResource(Resource, AuthorizationMixin):
     """API endpoint for generating comprehensive reports"""
+
     @jwt_required()
     def post(self):
         try:
@@ -970,6 +969,7 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             current_user = User.query.get(current_user_id)
             if not current_user:
                 return {'error': 'User not found'}, 404
+
             data = request.get_json()
             event_id = data.get('event_id')
             start_date_str = data.get('start_date')
@@ -978,27 +978,38 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             target_currency_id = data.get('target_currency_id')
             send_email = data.get('send_email', False)
             recipient_email = data.get('recipient_email', current_user.email)
+
             if not event_id:
                 return {'error': 'Event ID is required'}, 400
+
             event = Event.query.get(event_id)
             if not event:
                 return {'error': 'Event not found'}, 404
-            organizer = Organizer.query.filter_by(user_id=current_user_id, event_id=event_id).first()
-            if not organizer and not current_user.is_admin:
-                return {'error': 'Unauthorized to generate report for this event'}, 403
+
+            # Check if the user is authorized to generate the report for this event
+            organizer = Organizer.query.filter_by(user_id=current_user_id).first()
+            if not organizer or organizer.id != event.organizer_id:
+                if not current_user.is_admin:
+                    return {'error': 'Unauthorized to generate report for this event'}, 403
+
             start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
             end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
+
             if not start_date:
                 start_date = event.created_at if hasattr(event, 'created_at') else datetime.now() - timedelta(days=30)
+
             if not end_date:
                 end_date = datetime.now()
+
             end_date = DateUtils.adjust_end_date(end_date)
+
             config = ReportConfig(
                 include_charts=True,
                 include_email=send_email,
                 chart_dpi=300,
                 chart_style='seaborn-v0_8'
             )
+
             report_service = ReportService(config)
             result = report_service.generate_complete_report(
                 event_id=event_id,
@@ -1010,6 +1021,7 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 send_email=send_email,
                 recipient_email=recipient_email
             )
+
             if result['success']:
                 response_data = {
                     'message': 'Report generated successfully',
@@ -1024,12 +1036,14 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 return response_data, 200
             else:
                 return {'error': result.get('error', 'Failed to generate report')}, 500
+
         except Exception as e:
             logger.error(f"Error in GenerateReportResource: {e}")
             return {'error': 'Internal server error'}, 500
 
 class GetReportsResource(Resource, AuthorizationMixin):
     """API endpoint for retrieving saved reports"""
+
     @jwt_required()
     def get(self):
         try:
@@ -1066,6 +1080,7 @@ class GetReportsResource(Resource, AuthorizationMixin):
 
 class GetReportResource(Resource, AuthorizationMixin):
     """API endpoint for retrieving a specific report"""
+
     @jwt_required()
     def get(self, report_id):
         try:
@@ -1088,6 +1103,7 @@ class GetReportResource(Resource, AuthorizationMixin):
 
 class DeleteReportResource(Resource, AuthorizationMixin):
     """API endpoint for deleting a report"""
+
     @jwt_required()
     def delete(self, report_id):
         try:
@@ -1110,6 +1126,7 @@ class DeleteReportResource(Resource, AuthorizationMixin):
 
 class ExportReportResource(Resource, AuthorizationMixin):
     """API endpoint for exporting reports as PDF or CSV"""
+
     @jwt_required()
     def get(self, report_id):
         try:
@@ -1133,6 +1150,7 @@ class ExportReportResource(Resource, AuthorizationMixin):
 
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """Resource for organizer summary reports"""
+
     @jwt_required()
     def get(self):
         user = self.get_current_user()
@@ -1190,7 +1208,6 @@ class EventReportsResource(Resource):
             if not current_user:
                 logger.warning(f"User {current_user_id} not found")
                 return {'error': 'User not found'}, 404
-
             # Get and validate date params
             start_date_str = request.args.get('start_date')
             end_date_str = request.args.get('end_date')
@@ -1198,26 +1215,21 @@ class EventReportsResource(Resource):
             if error:
                 logger.warning(f"Invalid date range: {error}")
                 return error, error.get('status', 400)
-
             # Ensure event exists
             event = Event.query.get(event_id)
             if not event:
                 logger.warning(f"Event {event_id} not found")
                 return {'error': 'Event not found'}, 404
-
             # Verify access rights
             if not AuthorizationMixin.check_event_ownership(event, current_user):
                 logger.warning(f"User {current_user_id} not authorized for event {event_id}")
                 return {'error': 'Unauthorized to access reports for this event'}, 403
-
             # Fetch reports for event and date range
             query = Report.query.filter_by(event_id=event_id)
             if start_date and end_date:
                 query = query.filter(Report.report_date.between(start_date, end_date))
-
             reports = query.all()
             logger.info(f"Found {len(reports)} reports for event {event_id} from {start_date} to {end_date}")
-
             # Return empty list instead of error if no reports
             reports_data = [
                 {
@@ -1230,12 +1242,10 @@ class EventReportsResource(Resource):
                 }
                 for r in reports
             ]
-
             return {
                 'event_id': event_id,
                 'reports': reports_data
             }, 200
-
         except Exception as e:
             logger.exception(f"Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error'}, 500
