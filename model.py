@@ -523,7 +523,7 @@ class Transaction(db.Model):
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     amount_paid = db.Column(db.Numeric(10, 2), nullable=False)  # Changed to Numeric
-    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=False)  # New currency field
+    currency_id = db.Column(db.Integer, db.ForeignKey('currencies.id'), nullable=True)  # New currency field
     payment_status = db.Column(db.Enum(PaymentStatus), nullable=False)
     payment_reference = db.Column(db.Text, nullable=False)
     payment_method = db.Column(db.Enum(PaymentMethod), nullable=False)
