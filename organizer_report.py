@@ -138,8 +138,8 @@ class DatabaseQueryService:
                 .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                 .filter(
                     Ticket.event_id == event_id,
-                    Scan.scan_time >= start_date,
-                    Scan.scan_time <= end_date
+                    Scan.scanned_at >= start_date,
+                    Scan.scanned_at <= end_date
                 )
                 .group_by(TicketType.type_name)
                 .all())
@@ -197,8 +197,8 @@ class DatabaseQueryService:
                  .join(Ticket, Scan.ticket_id == Ticket.id)
                  .filter(
                      Ticket.event_id == event_id,
-                     Scan.scan_time >= start_date,
-                     Scan.scan_time <= end_date
+                     Scan.scanned_at >= start_date,
+                     Scan.scanned_at <= end_date
                  )
                  .scalar())
         return result if result else 0
