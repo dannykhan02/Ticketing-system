@@ -804,7 +804,7 @@ class ReportService:
             event_name = report_data.get('event_name', 'Unknown Event')
             currency_symbol = report_data.get('currency_symbol', '$')
             subject = f"Event Analytics Report - {event_name}"
-            html_body = f"""
+            body = f"""
             <!DOCTYPE html>
             <html>
             <head>
@@ -850,17 +850,17 @@ class ReportService:
             if report_data.get('total_tickets_sold', 0) > 0:
                 attendance_rate = (report_data.get('number_of_attendees', 0) /
                                  report_data.get('total_tickets_sold', 1) * 100)
-                html_body += f"""
+                body += f"""
                         <div class="metric">
                             <div class="metric-value">{attendance_rate:.1f}%</div>
                             <div class="metric-label">Attendance Rate</div>
                         </div>
                 """
-            html_body += """
+            body += """
                     </div>
             """
             if report_data.get('tickets_sold_by_type'):
-                html_body += """
+                body += """
                     <div class="summary-box">
                         <h3>🎫 Ticket Sales Breakdown</h3>
                         <table>
@@ -869,12 +869,12 @@ class ReportService:
                 for ticket_type in report_data['tickets_sold_by_type'].keys():
                     quantity = report_data['tickets_sold_by_type'].get(ticket_type, 0)
                     revenue = report_data.get('revenue_by_ticket_type', {}).get(ticket_type, 0)
-                    html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
-                html_body += """
+                    body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
+                body += """
                         </table>
                     </div>
                 """
-            html_body += f"""
+            body += f"""
                     <div class="insights">
                         <h3>💡 Key Insights</h3>
                         <ul>
@@ -883,15 +883,15 @@ class ReportService:
                 attendance_rate = (report_data.get('number_of_attendees', 0) /
                                  report_data.get('total_tickets_sold', 1) * 100)
                 if attendance_rate > 90:
-                    html_body += "<li>Excellent attendance rate! Most ticket holders attended the event.</li>"
+                    body += "<li>Excellent attendance rate! Most ticket holders attended the event.</li>"
                 elif attendance_rate > 70:
-                    html_body += "<li>Good attendance rate with room for improvement in no-show reduction.</li>"
+                    body += "<li>Good attendance rate with room for improvement in no-show reduction.</li>"
                 else:
-                    html_body += "<li>Low attendance rate suggests potential areas for improvement.</li>"
+                    body += "<li>Low attendance rate suggests potential areas for improvement.</li>"
             if report_data.get('revenue_by_ticket_type'):
                 max_revenue_type = max(report_data['revenue_by_ticket_type'].items(), key=lambda x: x[1])[0]
-                html_body += f"<li>{max_revenue_type} tickets generated the highest revenue for this event.</li>"
-            html_body += """
+                body += f"<li>{max_revenue_type} tickets generated the highest revenue for this event.</li>"
+            body += """
                         </ul>
                     </div>
                     <div class="attachment-note">
@@ -923,8 +923,9 @@ class ReportService:
             success = send_email_with_attachment(
                 recipient=recipient_email,
                 subject=subject,
-                html_body=html_body,
-                attachments=attachments
+                body=body,
+                attachments=attachments,
+                is_html=True
             )
             return success
         except Exception as e:
