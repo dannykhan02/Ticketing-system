@@ -1119,29 +1119,6 @@ class GetReportResource(Resource, AuthorizationMixin):
             logger.error(f"Error in GetReportResource: {e}")
             return {'error': 'Internal server error'}, 500
 
-class DeleteReportResource(Resource, AuthorizationMixin):
-    """API endpoint for deleting a report"""
-
-    @jwt_required()
-    def delete(self, report_id):
-        try:
-            current_user_id = get_jwt_identity()
-            current_user = User.query.get(current_user_id)
-            if not current_user:
-                return {'error': 'User not found'}, 404
-            report = Report.query.get(report_id)
-            if not report:
-                return {'error': 'Report not found'}, 404
-            if not (report.organizer_id == current_user_id or current_user.role == UserRole.ADMIN):
-                return {'error': 'Unauthorized to delete this report'}, 403
-            db.session.delete(report)
-            db.session.commit()
-            return {'message': 'Report deleted successfully'}, 200
-        except Exception as e:
-            logger.error(f"Error in DeleteReportResource: {e}")
-            db.session.rollback()
-            return {'error': 'Internal server error'}, 500
-
 class ExportReportResource(Resource):
     """API endpoint for exporting reports as PDF or CSV"""
 
@@ -1361,7 +1338,6 @@ class ReportResourceRegistry:
         api.add_resource(GenerateReportResource, '/reports/generate')
         api.add_resource(GetReportsResource, '/reports')
         api.add_resource(GetReportResource, '/reports/<int:report_id>')
-        api.add_resource(DeleteReportResource, '/reports/<int:report_id>/delete')
         api.add_resource(ExportReportResource, '/reports/<int:report_id>/export')
         api.add_resource(OrganizerSummaryReportResource, '/reports/organizer/summary')
         api.add_resource(EventReportsResource, '/reports/events/<int:event_id>')
