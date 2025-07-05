@@ -103,7 +103,6 @@ class CurrencyConverter:
 
 class DatabaseQueryService:
     """Service for database queries related to reports"""
-
     @staticmethod
     def get_tickets_sold_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get tickets sold by type within date range"""
@@ -223,7 +222,6 @@ class DatabaseQueryService:
 
 class ChartGenerator:
     """Handles chart generation for reports"""
-
     def __init__(self, config: ReportConfig):
         self.config = config
         self._setup_matplotlib()
@@ -375,7 +373,6 @@ class ChartGenerator:
 
 class PDFReportGenerator:
     """Handles PDF report generation"""
-
     def __init__(self, config: ReportConfig):
         self.config = config
         self.styles = getSampleStyleSheet()
@@ -578,7 +575,6 @@ class PDFReportGenerator:
 
 class FileManager:
     """Handles file operations for reports"""
-
     @staticmethod
     def generate_unique_paths(event_id: int) -> Tuple[str, str]:
         """Generate unique file paths for graph and PDF"""
@@ -599,7 +595,6 @@ class FileManager:
 
 class CSVReportGenerator:
     """Handles CSV report generation"""
-
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
         """Generate CSV report with detailed data"""
@@ -657,7 +652,6 @@ class CSVReportGenerator:
 
 class ReportService:
     """Main service for report generation and management"""
-
     def __init__(self, config: ReportConfig = None):
         self.config = config or ReportConfig()
         self.chart_generator = ChartGenerator(self.config) if self.config.include_charts else None
@@ -943,7 +937,6 @@ class ReportService:
 
 class AuthorizationMixin:
     """Mixin class for handling authorization checks"""
-
     @staticmethod
     def check_organizer_access(user: User) -> bool:
         """Check if user is an organizer"""
@@ -963,7 +956,6 @@ class AuthorizationMixin:
 
 class DateValidator:
     """Handles date validation for reports"""
-
     @staticmethod
     def validate_date_range(start_date_str: str, end_date_str: str) -> Tuple[Optional[datetime], Optional[datetime], Optional[Dict]]:
         """Validate date range parameters"""
@@ -979,7 +971,6 @@ class DateValidator:
 
 class GenerateReportResource(Resource, AuthorizationMixin):
     """API endpoint for generating comprehensive reports"""
-
     @jwt_required()
     def post(self):
         try:
@@ -987,7 +978,6 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             current_user = User.query.get(current_user_id)
             if not current_user:
                 return {'error': 'User not found'}, 404
-
             data = request.get_json()
             event_id = data.get('event_id')
             start_date_str = data.get('start_date')
@@ -996,38 +986,29 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             target_currency_id = data.get('target_currency_id')
             send_email = data.get('send_email', False)
             recipient_email = data.get('recipient_email', current_user.email)
-
             if not event_id:
                 return {'error': 'Event ID is required'}, 400
-
             event = Event.query.get(event_id)
             if not event:
                 return {'error': 'Event not found'}, 404
-
             # Check if the user is authorized to generate the report for this event
             organizer = Organizer.query.filter_by(user_id=current_user_id).first()
             if not organizer or organizer.id != event.organizer_id:
                 if not current_user.role == UserRole.ADMIN:
                     return {'error': 'Unauthorized to generate report for this event'}, 403
-
             start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
             end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
-
             if not start_date:
                 start_date = event.timestamp if hasattr(event, 'timestamp') else datetime.now() - timedelta(days=30)
-
             if not end_date:
                 end_date = datetime.now()
-
             end_date = DateUtils.adjust_end_date(end_date)
-
             config = ReportConfig(
                 include_charts=True,
                 include_email=send_email,
                 chart_dpi=300,
                 chart_style='seaborn-v0_8'
             )
-
             report_service = ReportService(config)
             result = report_service.generate_complete_report(
                 event_id=event_id,
@@ -1039,7 +1020,6 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 send_email=send_email,
                 recipient_email=recipient_email
             )
-
             if result['success']:
                 response_data = {
                     'message': 'Report generated successfully',
@@ -1054,14 +1034,12 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 return response_data, 200
             else:
                 return {'error': result.get('error', 'Failed to generate report')}, 500
-
         except Exception as e:
             logger.error(f"Error in GenerateReportResource: {e}")
             return {'error': 'Internal server error'}, 500
 
 class GetReportsResource(Resource, AuthorizationMixin):
     """API endpoint for retrieving saved reports"""
-
     @jwt_required()
     def get(self):
         try:
@@ -1098,7 +1076,6 @@ class GetReportsResource(Resource, AuthorizationMixin):
 
 class GetReportResource(Resource, AuthorizationMixin):
     """API endpoint for retrieving a specific report"""
-
     @jwt_required()
     def get(self, report_id):
         try:
@@ -1121,7 +1098,6 @@ class GetReportResource(Resource, AuthorizationMixin):
 
 class ExportReportResource(Resource):
     """API endpoint for exporting reports as PDF or CSV"""
-
     @jwt_required()
     def get(self, report_id):
         try:
@@ -1140,17 +1116,14 @@ class ExportReportResource(Resource):
             # Check if user is the organizer of the report OR is an admin
             # Also check if user is an organizer through the Organizer table
             is_authorized = False
-
             # Direct check: user is the organizer
             if report.organizer_id == current_user_id:
                 is_authorized = True
                 logger.info(f"User {current_user_id} is the direct organizer of report {report_id}")
-
             # Check if user is admin
             elif hasattr(current_user, 'role') and current_user.role and current_user.role.value.upper() == 'ADMIN':
                 is_authorized = True
                 logger.info(f"User {current_user_id} is admin, allowing access to report {report_id}")
-
             # Check if user is an organizer and owns the event associated with the report
             elif hasattr(current_user, 'organizer_profile') and current_user.organizer_profile:
                 # If the report is associated with an event, check if the user's organizer profile owns that event
@@ -1195,15 +1168,12 @@ class ExportReportResource(Resource):
             # Create a temporary file for the PDF
             temp_dir = tempfile.gettempdir()
             pdf_path = os.path.join(temp_dir, f"report_{report.id}.pdf")
-
             # TODO: Implement your PDF generation logic here
             # For now, create a simple placeholder file
             with open(pdf_path, 'w') as f:
                 f.write("PDF Report Content - Replace with actual PDF generation")
-
             logger.info(f"PDF report generated at: {pdf_path}")
             return pdf_path
-
         except Exception as e:
             logger.error(f"Error generating PDF report: {str(e)}", exc_info=True)
             return None
@@ -1214,22 +1184,18 @@ class ExportReportResource(Resource):
             # Create a temporary file for the CSV
             temp_dir = tempfile.gettempdir()
             csv_path = os.path.join(temp_dir, f"report_{report.id}.csv")
-
             # TODO: Implement your CSV generation logic here
             # For now, create a simple placeholder file
             with open(csv_path, 'w') as f:
                 f.write("CSV Report Content - Replace with actual CSV generation")
-
             logger.info(f"CSV report generated at: {csv_path}")
             return csv_path
-
         except Exception as e:
             logger.error(f"Error generating CSV report: {str(e)}", exc_info=True)
             return None
 
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """Resource for organizer summary reports"""
-
     @jwt_required()
     def get(self):
         user = self.get_current_user()
@@ -1278,7 +1244,6 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
 
 class EventReportsResource(Resource):
     """API endpoint for retrieving reports for a specific event"""
-
     @jwt_required()
     def get(self, event_id):
         try:
@@ -1331,7 +1296,6 @@ class EventReportsResource(Resource):
 
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
-
     @staticmethod
     def register_organizer_report_resources(api):
         """Register all report resources with the API"""
