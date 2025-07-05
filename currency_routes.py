@@ -6,14 +6,42 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required
 from model import db, Currency, ExchangeRate, CurrencyConverter, CurrencyCode, Report
 from config import Config
-import currencyapicom
+import requests # Import the requests library
 
 # Logger setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global currencyapi client
-currency_client = currencyapicom.Client(Config.CURRENCY_API_KEY)
+# Global currencyapi client (no longer directly used for convert, latest, historical, range)
+# currency_client = currencyapicom.Client(Config.CURRENCY_API_KEY) # This line can be removed if currencyapicom is only used for convert
+
+# ------------------------
+# Utility function for currency conversion
+# ------------------------
+def convert_currency(amount, from_currency, to_currency):
+    """
+    Converts an amount from one currency to another using CurrencyAPI's /v3/convert endpoint.
+    """
+    url = "https://api.currencyapi.com/v3/convert"
+    params = {
+        "value": float(amount),
+        "base_currency": from_currency,
+        "currencies": to_currency
+    }
+    headers = {
+        "apikey": Config.CURRENCY_API_KEY
+    }
+    response = requests.get(url, params=params, headers=headers)
+    response.raise_for_status()  # Raise an exception for HTTP errors (4xx or 5xx)
+    data = response.json()
+
+    # Check if the target currency exists in the response data
+    if to_currency not in data["data"]:
+        raise ValueError(f"Conversion data for {to_currency} not found in API response.")
+
+    converted_value = Decimal(str(data["data"][to_currency]["value"]))
+    conversion_rate = converted_value / Decimal(str(amount))
+    return converted_value, conversion_rate
 
 # ------------------------
 # Define all Currency Resources in this file
@@ -31,15 +59,17 @@ class CurrencyStatusResource(Resource):
         except Exception as e:
             db_status = f"error ({e})"
 
-        # Check external API (mock for now, or actual call if Config.CURRENCY_API_KEY is valid)
+        # Check external API
         external_api_status = "unknown"
         try:
-            # Attempt a simple call to the currency API if a key is present
             if Config.CURRENCY_API_KEY:
-                # This is a placeholder; actual API might have a 'status' or 'ping' endpoint
-                # or a simple 'latest' call to check connectivity.
-                # For currencyapi.com, a simple 'latest' call might work.
-                currency_client.latest("USD") # Try fetching latest rates for a common currency
+                # Attempt a simple call to the currency API's latest endpoint to check connectivity
+                # using requests directly as per new specification.
+                url = "https://api.currencyapi.com/v3/latest"
+                params = {"base_currency": "USD"}
+                headers = {"apikey": Config.CURRENCY_API_KEY}
+                response = requests.get(url, params=params, headers=headers)
+                response.raise_for_status()
                 external_api_status = "reachable"
             else:
                 external_api_status = "API Key missing"
@@ -76,8 +106,14 @@ class CurrencyLatestRatesResource(Resource):
     def get(self):
         try:
             base_currency = request.args.get('base', 'USD') # Default to USD
-            # Fetch latest rates from external API
-            result = currency_client.latest(base_currency)
+            
+            url = "https://api.currencyapi.com/v3/latest"
+            params = {"base_currency": base_currency}
+            headers = {"apikey": Config.CURRENCY_API_KEY}
+            response = requests.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+
             if 'data' not in result or not result['data']:
                 return {"message": f"No latest rates found for {base_currency}"}, 404
             rates = {code: data['value'] for code, data in result['data'].items()}
@@ -106,8 +142,14 @@ class CurrencyHistoricalRatesResource(Resource):
             return {"message": "Invalid date format. Please use YYYY-MM-DD."}, 400
         try:
             base_currency = request.args.get('base', 'USD') # Default to USD
-            # Fetch historical rates from external API
-            result = currency_client.historical(date, base_currency)
+            
+            url = "https://api.currencyapi.com/v3/historical"
+            params = {"date": date, "base_currency": base_currency}
+            headers = {"apikey": Config.CURRENCY_API_KEY}
+            response = requests.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+
             if 'data' not in result or not result['data']:
                 return {"message": f"No historical rates found for {base_currency} on {date}"}, 404
             rates = {code: data['value'] for code, data in result['data'].items()}
@@ -138,8 +180,14 @@ class CurrencyRangeRatesResource(Resource):
             return {"message": "Invalid date format. Please use YYYY-MM-DD for both start_date and end_date."}, 400
         try:
             base_currency = request.args.get('base', 'USD') # Default to USD
-            # Fetch range rates from external API
-            result = currency_client.range(start_date, end_date, base_currency)
+            
+            url = "https://api.currencyapi.com/v3/range"
+            params = {"datetime_start": start_date, "datetime_end": end_date, "base_currency": base_currency}
+            headers = {"apikey": Config.CURRENCY_API_KEY}
+            response = requests.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            result = response.json()
+
             if 'data' not in result or not result['data']:
                 return {"message": f"No range rates found for {base_currency} from {start_date} to {end_date}"}, 404
             # The structure for range might be different, typically {date: {rates}}
@@ -169,17 +217,19 @@ class CurrencyConvertResource(Resource):
         if not from_currency or not to_currency:
             return {"message": "'from' and 'to' query parameters are required."}, 400
         try:
-            # Ensure clean conversion call without any date parameters
             logger.info(f"Converting {amount} from {from_currency} to {to_currency}")
-            converted_amount = currency_client.convert(float(amount), from_currency, to_currency)
+            
+            # Using the new utility function
+            converted_value, conversion_rate = convert_currency(amount, from_currency, to_currency)
+            
             return {
                 "message": "Conversion successful",
                 "data": {
-                    "original_amount": amount,
+                    "original_amount": float(amount),
                     "from_currency": from_currency,
                     "to_currency": to_currency,
-                    "converted_amount": converted_amount['value'],
-                    "conversion_rate": converted_amount.get('rate')
+                    "converted_amount": float(converted_value),
+                    "conversion_rate": float(conversion_rate)
                 }
             }, 200
         except Exception as e:
@@ -254,18 +304,11 @@ class RevenueConvertResource(Resource):
                         converted_amount = amount
                         conversion_rate = Decimal('1')
                     elif use_latest_rates:
-                        # Use external API for latest rates — no 'date' param at all
+                        # Use the utility function for external API conversion
                         try:
-                            logger.info(f"Calling currencyapi: convert {amount} {from_currency} -> {to_currency}")
-                            # Ensure clean API call with explicit parameters only
-                            result = currency_client.convert(
-                                amount=float(amount),
-                                from_currency=from_currency,
-                                to_currency=to_currency
-                            )
-                            logger.info(f"currencyapi.com result: {result}")
-                            converted_amount = Decimal(str(result['value']))
-                            conversion_rate = Decimal(str(result.get('rate', 1)))
+                            logger.info(f"Calling convert_currency utility: convert {amount} {from_currency} -> {to_currency}")
+                            converted_amount, conversion_rate = convert_currency(amount, from_currency, to_currency)
+                            logger.info(f"Conversion result: {converted_amount} at rate {conversion_rate}")
                         except Exception as api_error:
                             logger.error(f"API error from currencyapi.com during conversion: {api_error}")
                             return {
@@ -407,17 +450,11 @@ class RevenueConvertBatchResource(Resource):
                 try:
                     if from_currency == to_currency:
                         converted_amount = revenue
-                        rate = 1
+                        rate = Decimal('1')
                     else:
-                        # Clean API call without date parameters
+                        # Use the utility function for external API conversion
                         logger.info(f"Batch converting report {report_id}: {revenue} {from_currency} -> {to_currency}")
-                        result = currency_client.convert(
-                            amount=float(revenue),
-                            from_currency=from_currency,
-                            to_currency=to_currency
-                        )
-                        converted_amount = Decimal(str(result['value']))
-                        rate = result.get('rate', 1)
+                        converted_amount, rate = convert_currency(revenue, from_currency, to_currency)
 
                     # Persist conversion if requested
                     if persist_conversion:
@@ -626,6 +663,4 @@ def register_currency_resources(api):
 
     # Converted reports management
     api.add_resource(ConvertedReportsResource, "/api/currency/reports/converted", endpoint="converted_reports")
-    api.add_resource(ClearConvertedDataResource, "/api/currency/reports/converted/clear", endpoint="clear_converted_data")
-    
-    logger.info("Currency API resources registered successfully with enhanced persistence features and fixed date handling")
+    api.add_resource(ClearConvertedDataResource, "/api/currency/reports/clear_converted")
