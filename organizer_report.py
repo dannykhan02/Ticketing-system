@@ -1100,7 +1100,7 @@ class GetReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
+            if not (report.organizer_id == current_user_id or current_user.role == UserRole.ADMIN):
                 return {'error': 'Unauthorized to access this report'}, 403
             target_currency_id = request.args.get('target_currency_id', type=int)
             return {
@@ -1123,7 +1123,7 @@ class DeleteReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
+            if not (report.organizer_id == current_user_id or current_user.role == UserRole.ADMIN):
                 return {'error': 'Unauthorized to delete this report'}, 403
             db.session.delete(report)
             db.session.commit()
@@ -1146,7 +1146,7 @@ class ExportReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
+            if not (report.organizer_id == current_user_id or current_user.role == UserRole.ADMIN):
                 return {'error': 'Unauthorized to export this report'}, 403
             format_type = request.args.get('format', 'pdf').lower()
             target_currency_id = request.args.get('target_currency_id', type=int)
