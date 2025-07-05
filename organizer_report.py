@@ -3,7 +3,7 @@ matplotlib.use('Agg')  # Set the backend to 'Agg' to avoid GUI issues
 from flask import jsonify, request, Response, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
+from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate, UserRole
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func, and_, or_
@@ -998,7 +998,7 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             # Check if the user is authorized to generate the report for this event
             organizer = Organizer.query.filter_by(user_id=current_user_id).first()
             if not organizer or organizer.id != event.organizer_id:
-                if not current_user.is_admin:
+                if not current_user.role == UserRole.ADMIN:
                     return {'error': 'Unauthorized to generate report for this event'}, 403
 
             start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
@@ -1100,7 +1100,7 @@ class GetReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and not current_user.is_admin:
+            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
                 return {'error': 'Unauthorized to access this report'}, 403
             target_currency_id = request.args.get('target_currency_id', type=int)
             return {
@@ -1123,7 +1123,7 @@ class DeleteReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and not current_user.is_admin:
+            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
                 return {'error': 'Unauthorized to delete this report'}, 403
             db.session.delete(report)
             db.session.commit()
@@ -1146,7 +1146,7 @@ class ExportReportResource(Resource, AuthorizationMixin):
             report = Report.query.get(report_id)
             if not report:
                 return {'error': 'Report not found'}, 404
-            if report.organizer_id != current_user_id and not current_user.is_admin:
+            if report.organizer_id != current_user_id and current_user.role != UserRole.ADMIN:
                 return {'error': 'Unauthorized to export this report'}, 403
             format_type = request.args.get('format', 'pdf').lower()
             target_currency_id = request.args.get('target_currency_id', type=int)
