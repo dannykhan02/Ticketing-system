@@ -978,127 +978,62 @@ class GenerateReportResource(Resource, AuthorizationMixin):
             current_user = User.query.get(current_user_id)
             if not current_user:
                 return {'error': 'User not found'}, 404
-            
             data = request.get_json()
-            event_id = data.get('event_id')  # Optional now
+            event_id = data.get('event_id')
             start_date_str = data.get('start_date')
             end_date_str = data.get('end_date')
-            title = data.get('title', f'Report {datetime.now().strftime("%Y-%m-%d")}')
             ticket_type_id = data.get('ticket_type_id')
             target_currency_id = data.get('target_currency_id')
             send_email = data.get('send_email', False)
             recipient_email = data.get('recipient_email', current_user.email)
-            
-            # Validate required fields
-            if not start_date_str or not end_date_str:
-                return {'error': 'Start date and end date are required'}, 400
-            
-            # Get organizer
+            if not event_id:
+                return {'error': 'Event ID is required'}, 400
+            event = Event.query.get(event_id)
+            if not event:
+                return {'error': 'Event not found'}, 404
+            # Check if the user is authorized to generate the report for this event
             organizer = Organizer.query.filter_by(user_id=current_user_id).first()
-            if not organizer and current_user.role != UserRole.ADMIN:
-                return {'error': 'Only organizers can generate reports'}, 403
-            
-            # If event_id is provided, validate it
-            if event_id:
-                event = Event.query.get(event_id)
-                if not event:
-                    return {'error': 'Event not found'}, 404
-                
-                # Check authorization for specific event
-                if organizer and organizer.id != event.organizer_id:
-                    if not current_user.role == UserRole.ADMIN:
-                        return {'error': 'Unauthorized to generate report for this event'}, 403
-            
-            # Parse dates
-            start_date = DateUtils.parse_date_param(start_date_str, 'start_date')
-            end_date = DateUtils.parse_date_param(end_date_str, 'end_date')
-            
-            if not start_date or not end_date:
-                return {'error': 'Invalid date format'}, 400
-            
+            if not organizer or organizer.id != event.organizer_id:
+                if not current_user.role == UserRole.ADMIN:
+                    return {'error': 'Unauthorized to generate report for this event'}, 403
+            start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
+            end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
+            if not start_date:
+                start_date = event.timestamp if hasattr(event, 'timestamp') else datetime.now() - timedelta(days=30)
+            if not end_date:
+                end_date = datetime.now()
             end_date = DateUtils.adjust_end_date(end_date)
-            
-            # Generate report configuration
             config = ReportConfig(
                 include_charts=True,
                 include_email=send_email,
                 chart_dpi=300,
                 chart_style='seaborn-v0_8'
             )
-            
             report_service = ReportService(config)
-            
-            # Generate report (with or without specific event_id)
-            if event_id:
-                # Generate report for specific event
-                result = report_service.generate_complete_report(
-                    event_id=event_id,
-                    organizer_id=organizer.id if organizer else None,
-                    start_date=start_date,
-                    end_date=end_date,
-                    ticket_type_id=ticket_type_id,
-                    target_currency_id=target_currency_id,
-                    send_email=send_email,
-                    recipient_email=recipient_email
-                )
-            else:
-                # Generate report for all organizer's events in date range
-                result = report_service.generate_organizer_summary_report(
-                    organizer_id=organizer.id if organizer else None,
-                    start_date=start_date,
-                    end_date=end_date,
-                    title=title,
-                    send_email=send_email,
-                    recipient_email=recipient_email
-                )
-            
+            result = report_service.generate_complete_report(
+                event_id=event_id,
+                organizer_id=current_user_id,
+                start_date=start_date,
+                end_date=end_date,
+                ticket_type_id=ticket_type_id,
+                target_currency_id=target_currency_id,
+                send_email=send_email,
+                recipient_email=recipient_email
+            )
             if result['success']:
-                # Create database record for the report
-                report_record = OrganizerReport(
-                    organizer_id=organizer.id if organizer else None,
-                    title=title,
-                    start_date=start_date,
-                    end_date=end_date,
-                    total_revenue=result['report_data'].get('total_revenue', 0),
-                    total_tickets=result['report_data'].get('total_tickets', 0),
-                    total_events=result['report_data'].get('total_events', 0),
-                    total_attendees=result['report_data'].get('total_attendees', 0),
-                    currency=result['report_data'].get('currency', 'USD'),
-                    data_breakdown=result['report_data'].get('breakdown', {}),
-                    report_date=datetime.now(),
-                    created_at=datetime.now(),
-                    updated_at=datetime.now()
-                )
-                
-                db.session.add(report_record)
-                db.session.commit()
-                
                 response_data = {
                     'message': 'Report generated successfully',
-                    'report_id': report_record.id,
-                    'report': {
-                        'id': report_record.id,
-                        'title': report_record.title,
-                        'total_revenue': report_record.total_revenue,
-                        'total_tickets': report_record.total_tickets,
-                        'total_events': report_record.total_events,
-                        'total_attendees': report_record.total_attendees,
-                        'currency': report_record.currency,
-                        'report_date': report_record.report_date.isoformat(),
-                        'data_breakdown': report_record.data_breakdown
-                    },
-                    'email_sent': result.get('email_sent', False)
+                    'report_id': result.get('database_id'),
+                    'report_data': result['report_data'],
+                    'email_sent': result['email_sent']
                 }
-                
                 if result.get('pdf_path'):
                     response_data['pdf_available'] = True
                 if result.get('csv_path'):
                     response_data['csv_available'] = True
-                
                 return response_data, 200
             else:
                 return {'error': result.get('error', 'Failed to generate report')}, 500
-                
         except Exception as e:
             logger.error(f"Error in GenerateReportResource: {e}")
             return {'error': 'Internal server error'}, 500
