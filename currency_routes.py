@@ -169,6 +169,8 @@ class CurrencyConvertResource(Resource):
         if not from_currency or not to_currency:
             return {"message": "'from' and 'to' query parameters are required."}, 400
         try:
+            # Ensure clean conversion call without any date parameters
+            logger.info(f"Converting {amount} from {from_currency} to {to_currency}")
             converted_amount = currency_client.convert(float(amount), from_currency, to_currency)
             return {
                 "message": "Conversion successful",
@@ -185,7 +187,7 @@ class CurrencyConvertResource(Resource):
             return {"message": f"Conversion error: {str(e)}"}, 500
 
 # ------------------------
-# Revenue Conversion Route - UPDATED WITH PERSISTENCE
+# Revenue Conversion Route - UPDATED WITH PERSISTENCE AND FIXED DATE HANDLING
 # ------------------------
 class RevenueConvertResource(Resource):
     @jwt_required()
@@ -197,12 +199,15 @@ class RevenueConvertResource(Resource):
             date_to = request.args.get('date_to')
             use_latest_rates = request.args.get('use_latest_rates', 'true').lower() == 'true'
             persist_conversion = request.args.get('persist_conversion', 'false').lower() == 'true'
+            
             if not to_currency:
                 return {"message": "'to_currency' query parameter is required"}, 400
+            
             # Get target currency object for persistence
             target_currency = Currency.query.filter_by(code=CurrencyCode(to_currency), is_active=True).first()
             if not target_currency:
                 return {"message": f"Currency '{to_currency}' not found in system"}, 400
+            
             # Build query with filters
             query = Report.query
             if report_id:
@@ -217,9 +222,11 @@ class RevenueConvertResource(Resource):
                     query = query.filter(Report.timestamp <= datetime.strptime(date_to, '%Y-%m-%d').date())
                 except ValueError:
                     return {"message": "Invalid date_to format. Use YYYY-MM-DD"}, 400
+            
             reports = query.all()
             if not reports:
                 return {"message": "No reports found matching the criteria"}, 404
+            
             # Group reports by currency for batch processing
             revenue_by_currency = {}
             reports_by_currency = {}
@@ -235,9 +242,11 @@ class RevenueConvertResource(Resource):
                 if currency_code not in reports_by_currency:
                     reports_by_currency[currency_code] = []
                 reports_by_currency[currency_code].append(report)
+
             total_converted = Decimal('0')
             converted_amounts = []
             updated_reports = 0
+            
             # Process each currency group
             for from_currency, amount in revenue_by_currency.items():
                 try:
@@ -245,26 +254,43 @@ class RevenueConvertResource(Resource):
                         converted_amount = amount
                         conversion_rate = Decimal('1')
                     elif use_latest_rates:
-                        # Use external API for latest rates
-                        result = currency_client.convert(float(amount), from_currency, to_currency)
-                        converted_amount = Decimal(str(result['value']))
-                        conversion_rate = Decimal(str(result.get('rate', 1)))
+                        # Use external API for latest rates — no 'date' param at all
+                        try:
+                            logger.info(f"Calling currencyapi: convert {amount} {from_currency} -> {to_currency}")
+                            # Ensure clean API call with explicit parameters only
+                            result = currency_client.convert(
+                                amount=float(amount),
+                                from_currency=from_currency,
+                                to_currency=to_currency
+                            )
+                            logger.info(f"currencyapi.com result: {result}")
+                            converted_amount = Decimal(str(result['value']))
+                            conversion_rate = Decimal(str(result.get('rate', 1)))
+                        except Exception as api_error:
+                            logger.error(f"API error from currencyapi.com during conversion: {api_error}")
+                            return {
+                                "message": f"Currency API error while converting {from_currency} to {to_currency}: {str(api_error)}"
+                            }, 502
                     else:
                         # Use local database rates
                         base = Currency.query.filter_by(code=CurrencyCode(from_currency), is_active=True).first()
 
                         if not base:
                             return {"message": f"Currency '{from_currency}' not found in local DB"}, 400
+                        
                         # Look for exchange rate using the same field names as your Report model
                         rate = ExchangeRate.query.filter_by(
                             from_currency_id=base.id,
                             to_currency_id=target_currency.id,
                             is_active=True
                         ).order_by(ExchangeRate.effective_date.desc()).first()
+                        
                         if not rate:
                             return {"message": f"No exchange rate found for {from_currency} to {to_currency}"}, 400
+                        
                         conversion_rate = Decimal(str(rate.rate))
                         converted_amount = amount * conversion_rate
+
                     # Persist conversion to individual reports if requested
                     if persist_conversion and from_currency in reports_by_currency:
                         for report in reports_by_currency[from_currency]:
@@ -278,6 +304,7 @@ class RevenueConvertResource(Resource):
                             updated_reports += 1
 
                             logger.info(f"Updated report {report.id}: {report.total_revenue} {from_currency} -> {individual_converted} {to_currency}")
+
                     converted_amounts.append({
                         "original_currency": from_currency,
                         "original_amount": float(amount),
@@ -286,10 +313,13 @@ class RevenueConvertResource(Resource):
                         "conversion_rate": float(conversion_rate),
                         "reports_count": len(reports_by_currency.get(from_currency, []))
                     })
+                    
                     total_converted += converted_amount
+                    
                 except Exception as e:
                     logger.error(f"Error converting {from_currency} to {to_currency}: {str(e)}")
                     return {"message": f"Conversion error for {from_currency}: {str(e)}"}, 500
+
             # Commit all changes if persistence was requested
             if persist_conversion and updated_reports > 0:
                 try:
@@ -299,6 +329,7 @@ class RevenueConvertResource(Resource):
                     db.session.rollback()
                     logger.error(f"Error persisting converted values: {str(e)}")
                     return {"message": f"Error persisting converted values: {str(e)}"}, 500
+
             response_data = {
                 "total_reports": len(reports),
                 "target_currency": to_currency,
@@ -316,13 +347,16 @@ class RevenueConvertResource(Resource):
                     "reports_updated": updated_reports if persist_conversion else 0
                 }
             }
+
             success_message = f"Revenue successfully converted to {to_currency}"
             if persist_conversion and updated_reports > 0:
                 success_message += f" and persisted to {updated_reports} reports"
+
             return {
                 "message": success_message,
                 "data": response_data
             }, 200
+
         except Exception as e:
             logger.error(f"Revenue conversion error: {str(e)}")
             if persist_conversion:
@@ -330,7 +364,7 @@ class RevenueConvertResource(Resource):
             return {"message": f"Unexpected error: {str(e)}"}, 500
 
 # ------------------------------
-# Batch Revenue Conversion Route - UPDATED WITH PERSISTENCE
+# Batch Revenue Conversion Route - UPDATED WITH PERSISTENCE AND FIXED DATE HANDLING
 # ------------------------------
 class RevenueConvertBatchResource(Resource):
     @jwt_required()
@@ -339,13 +373,16 @@ class RevenueConvertBatchResource(Resource):
             data = request.get_json()
             if not data or 'conversions' not in data:
                 return {"message": "Request must contain 'conversions' array"}, 400
+
             conversions = data['conversions']
             persist_conversion = data.get('persist_conversion', False)
             results = []
             updated_reports = 0
+
             for conv in conversions:
                 report_id = conv.get('report_id')
                 to_currency = conv.get('to_currency')
+                
                 if not report_id or not to_currency:
                     results.append({
                         "report_id": report_id,
@@ -353,6 +390,7 @@ class RevenueConvertBatchResource(Resource):
                         "success": False
                     })
                     continue
+
                 report = Report.query.get(report_id)
                 if not report:
                     results.append({
@@ -361,17 +399,26 @@ class RevenueConvertBatchResource(Resource):
                         "success": False
                     })
                     continue
+
                 # Use base_currency from the relationship
                 from_currency = report.base_currency.code.value if report.base_currency else 'USD'
                 revenue = report.total_revenue or Decimal('0')
+
                 try:
                     if from_currency == to_currency:
                         converted_amount = revenue
                         rate = 1
                     else:
-                        result = currency_client.convert(float(revenue), from_currency, to_currency)
+                        # Clean API call without date parameters
+                        logger.info(f"Batch converting report {report_id}: {revenue} {from_currency} -> {to_currency}")
+                        result = currency_client.convert(
+                            amount=float(revenue),
+                            from_currency=from_currency,
+                            to_currency=to_currency
+                        )
                         converted_amount = Decimal(str(result['value']))
                         rate = result.get('rate', 1)
+
                     # Persist conversion if requested
                     if persist_conversion:
                         target_currency = Currency.query.filter_by(code=CurrencyCode(to_currency), is_active=True).first()
@@ -379,6 +426,7 @@ class RevenueConvertBatchResource(Resource):
                             report.converted_currency_id = target_currency.id
                             report.converted_revenue = converted_amount
                             updated_reports += 1
+
                     results.append({
                         "report_id": report_id,
                         "original_currency": from_currency,
@@ -389,6 +437,7 @@ class RevenueConvertBatchResource(Resource):
                         "success": True,
                         "persisted": persist_conversion
                     })
+
                 except Exception as e:
                     logger.error(f"Error converting for report {report_id}: {str(e)}")
                     results.append({
@@ -396,6 +445,7 @@ class RevenueConvertBatchResource(Resource):
                         "error": f"Conversion failed: {str(e)}",
                         "success": False
                     })
+
             # Commit all changes if persistence was requested
             if persist_conversion and updated_reports > 0:
                 try:
@@ -405,6 +455,7 @@ class RevenueConvertBatchResource(Resource):
                     db.session.rollback()
                     logger.error(f"Batch conversion: Error persisting conversions: {str(e)}")
                     return {"message": f"Error persisting batch conversions: {str(e)}"}, 500
+
             return {
                 "message": "Batch revenue conversion completed",
                 "data": {
@@ -415,6 +466,7 @@ class RevenueConvertBatchResource(Resource):
                     "results": results
                 }
             }, 200
+
         except Exception as e:
             logger.error(f"Batch conversion error: {str(e)}")
             if 'persist_conversion' in locals() and persist_conversion:
@@ -462,11 +514,11 @@ class ConvertedReportsResource(Resource):
                 converted_reports.append({
                     "id": report.id,
                     "event_id": report.event_id,
-                    "original_revenue": float(report.total_revenue),
+                    "original_revenue": float(report.total_revenue) if report.total_revenue else 0,
                     "original_currency": report.base_currency.code.value if report.base_currency else None,
-                    "converted_revenue": float(report.converted_revenue),
+                    "converted_revenue": float(report.converted_revenue) if report.converted_revenue else 0,
                     "converted_currency": report.converted_currency.code.value if report.converted_currency else None,
-                    "conversion_date": report.timestamp.isoformat(),
+                    "conversion_date": report.timestamp.isoformat() if report.timestamp else None,
                     "report_scope": report.report_scope
                 })
 
@@ -488,6 +540,72 @@ class ConvertedReportsResource(Resource):
             return {"message": f"Error retrieving converted reports: {str(e)}"}, 500
 
 # ------------------------
+# NEW: Clear Converted Data Resource
+# ------------------------
+class ClearConvertedDataResource(Resource):
+    """
+    API resource to clear converted currency data from reports.
+    """
+    @jwt_required()
+    def delete(self):
+        try:
+            currency_code = request.args.get('currency')
+            date_from = request.args.get('date_from')
+            date_to = request.args.get('date_to')
+            confirm = request.args.get('confirm', 'false').lower() == 'true'
+
+            if not confirm:
+                return {"message": "Please add confirm=true to proceed with clearing converted data"}, 400
+
+            # Build query for reports with converted values
+            query = Report.query.filter(Report.converted_currency_id.isnot(None))
+
+            if currency_code:
+                currency = Currency.query.filter_by(code=CurrencyCode(currency_code), is_active=True).first()
+                if currency:
+                    query = query.filter(Report.converted_currency_id == currency.id)
+
+            if date_from:
+                try:
+                    query = query.filter(Report.timestamp >= datetime.strptime(date_from, '%Y-%m-%d').date())
+                except ValueError:
+                    return {"message": "Invalid date_from format. Use YYYY-MM-DD"}, 400
+
+            if date_to:
+                try:
+                    query = query.filter(Report.timestamp <= datetime.strptime(date_to, '%Y-%m-%d').date())
+                except ValueError:
+                    return {"message": "Invalid date_to format. Use YYYY-MM-DD"}, 400
+
+            reports = query.all()
+            cleared_count = 0
+
+            for report in reports:
+                report.converted_currency_id = None
+                report.converted_revenue = None
+                cleared_count += 1
+
+            db.session.commit()
+            logger.info(f"Cleared converted data from {cleared_count} reports")
+
+            return {
+                "message": f"Successfully cleared converted data from {cleared_count} reports",
+                "data": {
+                    "reports_cleared": cleared_count,
+                    "filters_applied": {
+                        "currency": currency_code,
+                        "date_from": date_from,
+                        "date_to": date_to
+                    }
+                }
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error clearing converted data: {str(e)}")
+            return {"message": f"Error clearing converted data: {str(e)}"}, 500
+
+# ------------------------
 # API Export Registration
 # ------------------------
 def register_currency_resources(api):
@@ -502,10 +620,12 @@ def register_currency_resources(api):
     api.add_resource(CurrencyRangeRatesResource, "/api/currency/range/<string:start_date>/<string:end_date>", endpoint="currency_range")
     api.add_resource(CurrencyConvertResource, "/api/currency/convert/<float:amount>", endpoint="currency_convert")
 
-    # Revenue conversion resources (updated with persistence)
+    # Revenue conversion resources (updated with persistence and fixed date handling)
     api.add_resource(RevenueConvertResource, "/api/currency/revenue/convert", endpoint="revenue_convert")
     api.add_resource(RevenueConvertBatchResource, "/api/currency/revenue/convert/batch", endpoint="revenue_convert_batch")
 
-    # New: Converted reports retrieval
+    # Converted reports management
     api.add_resource(ConvertedReportsResource, "/api/currency/reports/converted", endpoint="converted_reports")
-    logger.info("Currency API resources registered successfully with persistence features")
+    api.add_resource(ClearConvertedDataResource, "/api/currency/reports/converted/clear", endpoint="clear_converted_data")
+    
+    logger.info("Currency API resources registered successfully with enhanced persistence features and fixed date handling")
