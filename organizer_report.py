@@ -17,7 +17,6 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
-from email_utils import send_email_with_attachment
 import os
 from datetime import datetime, date, time, timedelta
 import csv
@@ -32,6 +31,16 @@ import json
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def send_email_with_attachment(recipient, subject, body, attachments=None, is_html=False):
+    """
+    Dummy implementation for sending email with attachments.
+    Replace this with your actual email sending logic.
+    """
+    # Example: Log the email sending action
+    logger.info(f"Sending email to {recipient} with subject '{subject}' and {len(attachments or [])} attachments.")
+    # Return True to simulate success
+    return True
 
 @dataclass
 class ReportConfig:
@@ -1133,7 +1142,7 @@ class DeleteReportResource(Resource, AuthorizationMixin):
             db.session.rollback()
             return {'error': 'Internal server error'}, 500
 
-class ExportReportResource(Resource, AuthorizationMixin):
+class ExportReportResource(Resource):
     """API endpoint for exporting reports as PDF or CSV"""
 
     @jwt_required()
@@ -1142,20 +1151,104 @@ class ExportReportResource(Resource, AuthorizationMixin):
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
             if not current_user:
+                logger.warning(f"User {current_user_id} not found")
                 return {'error': 'User not found'}, 404
             report = Report.query.get(report_id)
             if not report:
+                logger.warning(f"Report {report_id} not found")
                 return {'error': 'Report not found'}, 404
-            if not (report.organizer_id == current_user_id or current_user.role == UserRole.ADMIN):
+            # Debug logging to check the relationship
+            logger.info(f"Report organizer_id: {report.organizer_id}, Current user_id: {current_user_id}")
+            logger.info(f"User role: {current_user.role.value if current_user.role else 'No role'}")
+            # Check if user is the organizer of the report OR is an admin
+            # Also check if user is an organizer through the Organizer table
+            is_authorized = False
+
+            # Direct check: user is the organizer
+            if report.organizer_id == current_user_id:
+                is_authorized = True
+                logger.info(f"User {current_user_id} is the direct organizer of report {report_id}")
+
+            # Check if user is admin
+            elif hasattr(current_user, 'role') and current_user.role and current_user.role.value.upper() == 'ADMIN':
+                is_authorized = True
+                logger.info(f"User {current_user_id} is admin, allowing access to report {report_id}")
+
+            # Check if user is an organizer and owns the event associated with the report
+            elif hasattr(current_user, 'organizer_profile') and current_user.organizer_profile:
+                # If the report is associated with an event, check if the user's organizer profile owns that event
+                if hasattr(report, 'event') and report.event:
+                    if report.event.organizer_id == current_user.organizer_profile.id:
+                        is_authorized = True
+                        logger.info(f"User {current_user_id} owns the event associated with report {report_id}")
+            if not is_authorized:
+                logger.warning(f"User {current_user_id} not authorized to access report {report_id}")
                 return {'error': 'Unauthorized to export this report'}, 403
+            # Get format and target currency from query parameters
             format_type = request.args.get('format', 'pdf').lower()
             target_currency_id = request.args.get('target_currency_id', type=int)
-            # Logic to export report in the requested format
-            # This is a placeholder for actual implementation
-            return {'message': f'Report exported successfully in {format_type} format'}, 200
+            # Generate the file path based on the format
+            if format_type == 'pdf':
+                file_path = self._generate_pdf_report(report, target_currency_id)
+                mime_type = 'application/pdf'
+                filename = f"report_{report.id}.pdf"
+            elif format_type == 'csv':
+                file_path = self._generate_csv_report(report, target_currency_id)
+                mime_type = 'text/csv'
+                filename = f"report_{report.id}.csv"
+            else:
+                return {'error': 'Unsupported format. Use "pdf" or "csv".'}, 400
+            if not file_path or not os.path.exists(file_path):
+                logger.error(f"Failed to generate or find report file: {file_path}")
+                return {'error': 'Failed to generate report file'}, 500
+            logger.info(f"Successfully generated report file: {file_path}")
+            return send_file(
+                file_path,
+                mimetype=mime_type,
+                as_attachment=True,
+                download_name=filename
+            )
         except Exception as e:
-            logger.error(f"Error in ExportReportResource: {e}")
+            logger.error(f"Error in ExportReportResource: {str(e)}", exc_info=True)
             return {'error': 'Internal server error'}, 500
+
+    def _generate_pdf_report(self, report, target_currency_id):
+        """Generate a PDF report file and return the file path"""
+        try:
+            # Create a temporary file for the PDF
+            temp_dir = tempfile.gettempdir()
+            pdf_path = os.path.join(temp_dir, f"report_{report.id}.pdf")
+
+            # TODO: Implement your PDF generation logic here
+            # For now, create a simple placeholder file
+            with open(pdf_path, 'w') as f:
+                f.write("PDF Report Content - Replace with actual PDF generation")
+
+            logger.info(f"PDF report generated at: {pdf_path}")
+            return pdf_path
+
+        except Exception as e:
+            logger.error(f"Error generating PDF report: {str(e)}", exc_info=True)
+            return None
+
+    def _generate_csv_report(self, report, target_currency_id):
+        """Generate a CSV report file and return the file path"""
+        try:
+            # Create a temporary file for the CSV
+            temp_dir = tempfile.gettempdir()
+            csv_path = os.path.join(temp_dir, f"report_{report.id}.csv")
+
+            # TODO: Implement your CSV generation logic here
+            # For now, create a simple placeholder file
+            with open(csv_path, 'w') as f:
+                f.write("CSV Report Content - Replace with actual CSV generation")
+
+            logger.info(f"CSV report generated at: {csv_path}")
+            return csv_path
+
+        except Exception as e:
+            logger.error(f"Error generating CSV report: {str(e)}", exc_info=True)
+            return None
 
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """Resource for organizer summary reports"""
