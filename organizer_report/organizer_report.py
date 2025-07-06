@@ -2,12 +2,11 @@ from flask import request, jsonify, send_file, current_app
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction
-
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
-# Import the ReportConfig and the generators
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator
 from currency_routes import convert_currency
+from reportlab.lib.pagesizes import A4
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -27,15 +26,12 @@ class GenerateReportResource(Resource):
     def post(self):
         try:
             start_time = datetime.now()
-
-            # Get current user
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
             if not current_user:
                 logger.warning(f"GenerateReportResource: User with ID {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
 
-            # Get request data
             data = request.get_json()
             event_id = data.get('event_id')
             start_date_str = data.get('start_date')
@@ -50,7 +46,6 @@ class GenerateReportResource(Resource):
                 logger.warning("GenerateReportResource: Event ID is required but missing.")
                 return {'error': 'Event ID is required'}, 400
 
-            # Event & organizer authorization
             event = Event.query.get(event_id)
             if not event:
                 logger.warning(f"GenerateReportResource: Event with ID {event_id} not found.")
@@ -62,7 +57,6 @@ class GenerateReportResource(Resource):
                     logger.warning(f"GenerateReportResource: User {current_user_id} unauthorized to generate report for event {event_id}.")
                     return {'error': 'Unauthorized to generate report for this event'}, 403
 
-            # Handle date logic for report period
             if specific_date_str:
                 try:
                     specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
@@ -75,30 +69,25 @@ class GenerateReportResource(Resource):
                 start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
                 end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
                 if not start_date:
-                    # Default start date to event timestamp or 30 days ago
                     start_date = event.timestamp if hasattr(event, 'timestamp') and event.timestamp else datetime.now() - timedelta(days=30)
                 if not end_date:
-                    # Default end date to now
                     end_date = datetime.now()
-                end_date = DateUtils.adjust_end_date(end_date) # Adjust end date to end of day if only date is provided
+                end_date = DateUtils.adjust_end_date(end_date)
 
-            # Currency validation
             target_currency = Currency.query.get(target_currency_id) if target_currency_id else None
             if not target_currency:
                 logger.warning(f"GenerateReportResource: Target currency with ID {target_currency_id} not found or invalid.")
                 return {'error': 'Target currency not found or invalid'}, 400
             target_currency_code = target_currency.code.value
 
-            # Build report configuration
             config = ReportConfig(
                 include_charts=True,
-                include_email=send_email, # This flag is still relevant for the service to know email intent
+                include_email=send_email,
                 chart_dpi=300,
                 chart_style='seaborn-v0_8',
-                pdf_pagesize='A4' # Assuming A4 as default or from config
+                pdf_pagesize='A4'
             )
 
-            # Generate the report data and save it to the database
             report_service = ReportService(config)
             result = report_service.generate_complete_report(
                 event_id=event_id,
@@ -106,9 +95,7 @@ class GenerateReportResource(Resource):
                 start_date=start_date,
                 end_date=end_date,
                 ticket_type_id=ticket_type_id,
-                # Do NOT generate actual files here, only data and save to DB
-                # The email will be sent without attachments, and files downloaded on demand
-                send_email=False, # Explicitly set to False here, email content is handled below
+                send_email=False,
                 recipient_email=recipient_email
             )
 
@@ -121,7 +108,6 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            # Currency conversion for response summary
             total_revenue = result['report_data'].get('total_revenue')
             base_currency = result['report_data'].get('currency', 'USD')
             converted_value, conversion_rate = convert_currency(
@@ -130,16 +116,14 @@ class GenerateReportResource(Resource):
                 to_currency=target_currency_code
             )
 
-            # Construct the download URLs for the generated report
             base_url = request.url_root.rstrip('/')
             pdf_download_url = f"{base_url}api/v1/reports/{report_id}/export?format=pdf"
             csv_download_url = f"{base_url}api/v1/reports/{report_id}/export?format=csv"
 
-            # Build response data
             response_data = {
                 'message': 'Report generation initiated. You can download the report using the provided links.',
                 'report_id': report_id,
-                'report_data_summary': { # Provide a summary, not the full raw data
+                'report_data_summary': {
                     'total_tickets_sold': result['report_data'].get('total_tickets_sold'),
                     'total_revenue': float(result['report_data'].get('total_revenue')),
                     'number_of_attendees': result['report_data'].get('number_of_attendees'),
@@ -160,26 +144,24 @@ class GenerateReportResource(Resource):
                 },
                 'pdf_download_url': pdf_download_url,
                 'csv_download_url': csv_download_url,
-                'email_sent': False # Will be updated if email is sent in background
+                'email_sent': False
             }
 
-            # Send email in background without attachments
             if send_email:
                 def async_send_email():
                     try:
-                        # The ReportService.send_report_email needs to be updated to
-                        # construct the email body with download instructions and links.
-                        # It should NOT expect pdf_path or csv_path as arguments for attachments.
-                        report_service.send_report_email(
-                            recipient_email=recipient_email,
-                            report_id=report_id,
-                            event_name=event.name,
-                            report_period_start=start_date.strftime('%Y-%m-%d'),
-                            report_period_end=end_date.strftime('%Y-%m-%d'),
-                            pdf_download_url=pdf_download_url, # Pass URLs for email content
-                            csv_download_url=csv_download_url
-                        )
-                        logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
+                        from app import app
+                        with app.app_context():
+                            report_service.send_report_email(
+                                recipient_email=recipient_email,
+                                report_id=report_id,
+                                event_name=event.name,
+                                report_period_start=start_date.strftime('%Y-%m-%d'),
+                                report_period_end=end_date.strftime('%Y-%m-%d'),
+                                pdf_download_url=pdf_download_url,
+                                csv_download_url=csv_download_url
+                            )
+                            logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
                     except Exception as e:
                         logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
 
@@ -188,9 +170,7 @@ class GenerateReportResource(Resource):
 
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
-
             return response_data, 200
-
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
@@ -215,7 +195,6 @@ class GetReportsResource(Resource, AuthorizationMixin):
             offset = request.args.get('offset', 0, type=int)
             target_currency_id = request.args.get('target_currency_id', type=int)
 
-            # Filter reports based on user role and ownership
             if current_user.role == UserRole.ADMIN:
                 query = Report.query
             else:
@@ -226,7 +205,6 @@ class GetReportsResource(Resource, AuthorizationMixin):
                 query = Report.query.filter_by(organizer_id=organizer.id)
 
             if event_id:
-                # Further restrict if event_id is provided, ensuring user owns the event or is admin
                 event = Event.query.get(event_id)
                 if not event:
                     logger.warning(f"GetReportsResource: Event with ID {event_id} not found for filtering reports.")
@@ -247,7 +225,6 @@ class GetReportsResource(Resource, AuthorizationMixin):
             base_url = request.url_root.rstrip('/')
             for report in reports:
                 report_dict = report.as_dict(target_currency_id=target_currency_id)
-                # Add download URLs to each report in the list
                 report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=pdf"
                 report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=csv"
                 reports_data.append(report_dict)
@@ -282,7 +259,6 @@ class GetReportResource(Resource, AuthorizationMixin):
                 logger.warning(f"GetReportResource: Report with ID {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
-            # Authorization check
             is_authorized = False
             if current_user.role == UserRole.ADMIN:
                 is_authorized = True
@@ -297,8 +273,6 @@ class GetReportResource(Resource, AuthorizationMixin):
 
             target_currency_id = request.args.get('target_currency_id', type=int)
             report_dict = report.as_dict(target_currency_id=target_currency_id)
-
-            # Add download URLs to the single report details
             base_url = request.url_root.rstrip('/')
             report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=pdf"
             report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=csv"
@@ -330,7 +304,6 @@ class ExportReportResource(Resource):
                 logger.warning(f"ExportReportResource: Report {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
-            # Authorization check
             is_authorized = False
             if report.organizer_id == current_user_id:
                 is_authorized = True
@@ -349,11 +322,7 @@ class ExportReportResource(Resource):
                 return {'error': 'Unauthorized to export this report'}, 403
 
             format_type = request.args.get('format', 'pdf').lower()
-
-            # Retrieve the report data from the Report object
-            # Assuming report.report_data stores the dictionary needed by generators
-            report_data = report.report_data # This needs to be a dictionary
-
+            report_data = report.report_data
             if not report_data:
                 logger.error(f"ExportReportResource: No report_data found for report ID {report_id}.")
                 return {'error': 'Report data is missing, cannot generate file.'}, 500
@@ -362,49 +331,48 @@ class ExportReportResource(Resource):
             mime_type = None
             filename = None
 
-            # Instantiate ReportConfig for the generators
             config = ReportConfig(
-                include_charts=True, # Assume charts are always included for PDF generation
-                chart_dpi=300,
-                chart_style='seaborn-v0_8',
-                pdf_pagesize='A4'
+                include_charts=True,
+                chart_dpi=72,
+                chart_style='default',
+                pdf_pagesize=A4,
+                limit_charts=False
             )
 
             if format_type == 'pdf':
+                chart_paths = []
                 try:
-                    chart_generator = ChartGenerator(config)
-                    # Generate charts first, as their paths are needed for the PDF
-                    chart_paths = chart_generator.create_all_charts(report_data)
-                    
+                    if config.include_charts and not config.limit_charts:
+                        chart_generator = ChartGenerator(config)
+                        chart_paths = chart_generator.create_all_charts(report_data)
+
                     pdf_generator = PDFReportGenerator(config)
-                    # Generate PDF into a temporary file
                     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_pdf_file:
                         file_path = pdf_generator.generate_pdf(report_data, chart_paths, tmp_pdf_file.name)
-                    
+
                     mime_type = 'application/pdf'
                     filename = f"event_report_{report.id}.pdf"
                     logger.info(f"ExportReportResource: Generated PDF for report {report.id} at {file_path}")
-
                 except Exception as e:
                     logger.error(f"ExportReportResource: Error generating PDF for report {report.id}: {e}", exc_info=True)
                     return {'error': 'Failed to generate PDF report'}, 500
                 finally:
-                    # Ensure temporary chart files are cleaned up even if PDF generation fails
                     for c_path in chart_paths:
                         if os.path.exists(c_path):
-                            os.remove(c_path)
-
+                            try:
+                                os.remove(c_path)
+                                logger.debug(f"ExportReportResource: Cleaned up chart file: {c_path}")
+                            except Exception as cleanup_error:
+                                logger.warning(f"ExportReportResource: Failed to cleanup chart file {c_path}: {cleanup_error}")
             elif format_type == 'csv':
                 try:
                     csv_generator = CSVReportGenerator()
-                    # Generate CSV into a temporary file
                     with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp_csv_file:
                         file_path = csv_generator.generate_csv(report_data, tmp_csv_file.name)
-                    
+
                     mime_type = 'text/csv'
                     filename = f"event_report_{report.id}.csv"
                     logger.info(f"ExportReportResource: Generated CSV for report {report.id} at {file_path}")
-
                 except Exception as e:
                     logger.error(f"ExportReportResource: Error generating CSV for report {report.id}: {e}", exc_info=True)
                     return {'error': 'Failed to generate CSV report'}, 500
@@ -416,10 +384,6 @@ class ExportReportResource(Resource):
                 logger.error(f"ExportReportResource: Generated file path is invalid or file does not exist: {file_path}")
                 return {'error': 'Failed to generate report file. Please try again.'}, 500
 
-            # Use after_request or a custom mechanism to delete the temporary file after it's sent
-            # Flask's send_file can handle deletion if passed a file-like object or a path with cleanup
-            # For NamedTemporaryFile, delete=False is set, so we need to manually delete.
-            # A common pattern is to register a function to run after the request context.
             @current_app.after_request
             def delete_temp_file(response):
                 try:
@@ -441,10 +405,6 @@ class ExportReportResource(Resource):
             logger.error(f"ExportReportResource: Unhandled error: {str(e)}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
-# The _generate_pdf_report and _generate_csv_report methods are removed from ExportReportResource
-# as the actual generation logic is now handled by PDFReportGenerator and CSVReportGenerator classes.
-
-
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a summary report for an organizer.
@@ -455,12 +415,12 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
         if not self.check_organizer_access(user):
             logger.warning(f"OrganizerSummaryReportResource: User {user.id} attempted to access summary without organizer access.")
             return {"message": "Only organizers can access summary reports"}, 403
-        
+
         organizer = Organizer.query.filter_by(user_id=user.id).first()
         if not organizer:
             logger.warning(f"OrganizerSummaryReportResource: Organizer profile not found for user {user.id}.")
             return {"message": "Organizer profile not found for this user"}, 404
-        
+
         summary_data = self._calculate_organizer_summary(organizer)
         logger.info(f"OrganizerSummaryReportResource: Generated summary for organizer {organizer.id}.")
         return summary_data, 200
@@ -474,7 +434,7 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
         total_revenue = 0.0
         events_summary = []
         organizer_events = Event.query.filter_by(organizer_id=organizer.id).all()
-        
+
         for event in organizer_events:
             event_tickets = Ticket.query.filter_by(event_id=event.id).count()
             event_revenue_query = (db.session.query(db.func.sum(Transaction.amount_paid))
@@ -483,10 +443,10 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
                                           Transaction.payment_status == 'COMPLETED')
                                   .scalar())
             event_revenue = float(event_revenue_query) if event_revenue_query else 0.0
-            
+
             total_tickets_sold += event_tickets
             total_revenue += event_revenue
-            
+
             events_summary.append({
                 "event_id": event.id,
                 "event_name": event.name,
@@ -495,11 +455,11 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
                 "tickets_sold": event_tickets,
                 "revenue": event_revenue
             })
-        
+
         organizer_name = (organizer.user.full_name
                           if hasattr(organizer.user, 'full_name') and organizer.user.full_name
                           else organizer.user.email)
-        
+
         return {
             "organizer_id": organizer.id,
             "organizer_name": organizer_name,
@@ -540,8 +500,8 @@ class EventReportsResource(Resource):
             query = Report.query.filter_by(event_id=event_id)
             if start_date and end_date:
                 query = query.filter(Report.report_date.between(start_date, end_date))
-            reports = query.all()
 
+            reports = query.all()
             logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} from {start_date} to {end_date}.")
 
             reports_data = []
@@ -555,7 +515,6 @@ class EventReportsResource(Resource):
                     'number_of_attendees': r.number_of_attendees,
                     'report_date': r.report_date.isoformat() if r.report_date else None
                 }
-                # Add download URLs to each report in the list
                 report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{r.id}/export?format=pdf"
                 report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{r.id}/export?format=csv"
                 reports_data.append(report_dict)
@@ -567,7 +526,6 @@ class EventReportsResource(Resource):
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error'}, 500
-
 
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
