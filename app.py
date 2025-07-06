@@ -13,7 +13,9 @@ import cloudinary
 
 # Load configuration
 from config import Config
-from model import db, Currency, CurrencyCode  # ✅ include Currency model + enum
+from model import db, Currency, CurrencyCode  # Include Currency model + enum
+
+# Import blueprints and resources
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
 from Event import register_event_resources
@@ -22,13 +24,13 @@ from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
-from organizer_report import ReportResourceRegistry
 from admin_report import register_admin_report_resources
 from email_utils import mail
 from admin import register_admin_resources
-
-# ✅ Import currency-related resources
 from currency_routes import register_currency_resources
+
+# Import the ReportResourceRegistry from organizer_report
+from organizer_report.organizer_report import ReportResourceRegistry
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -42,7 +44,7 @@ if not DATABASE_URL:
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config.from_object(Config)
 
-# ✅ Add CurrencyAPI Key to config
+# Add CurrencyAPI Key to config
 app.config['CURRENCY_API_KEY'] = os.getenv('CURRENCY_API_KEY')
 
 # JWT and Session Config
@@ -89,20 +91,19 @@ register_ticket_validation_resources(api)
 register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
 register_ticket_type_resources(api)
-ReportResourceRegistry.register_organizer_report_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
-register_currency_resources(api)  # ✅ Register currency routes
+register_currency_resources(api)
 
-# ✅ Currency seeding logic (runs once)
+# Register organizer_report resources using the ReportResourceRegistry
+ReportResourceRegistry.register_organizer_report_resources(api)
+
+# Currency seeding logic (runs once)
 from sqlalchemy.exc import IntegrityError
-
 with app.app_context():
     db.create_all()  # Ensure all tables exist
-
     if Currency.query.count() == 0:
         print("🔁 Seeding currencies...")
-
         currency_info = {
             "USD": {"name": "US Dollar", "symbol": "$"},
             "EUR": {"name": "Euro", "symbol": "€"},
@@ -117,7 +118,6 @@ with app.app_context():
             "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
             "AUD": {"name": "Australian Dollar", "symbol": "A$"},
         }
-
         currency_objects = []
         for code in CurrencyCode:
             info = currency_info.get(code.value)
@@ -128,7 +128,6 @@ with app.app_context():
                 is_base_currency=(code.value == "USD")  # set base
             )
             currency_objects.append(currency)
-
         db.session.bulk_save_objects(currency_objects)
         try:
             db.session.commit()
