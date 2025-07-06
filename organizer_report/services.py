@@ -317,7 +317,7 @@ class ReportService:
             
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
-                email_sent = self._send_report_email(  # Corrected line
+                email_sent = self.send_report_email(  # Changed from _send_report_email to send_report_email
                     report_data, pdf_path, csv_path, recipient_email
                 )
             
@@ -346,8 +346,14 @@ class ReportService:
             if chart_paths:
                 FileManager.cleanup_files(chart_paths)
 
+    def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
+                         csv_path: str, recipient_email: str) -> bool:
+        """Public method to send report emails - delegates to private method"""
+        return self._send_report_email(report_data, pdf_path, csv_path, recipient_email)
+
     def _send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
                           csv_path: str, recipient_email: str) -> bool:
+        """Private method that handles the actual email sending logic"""
         event_name = report_data.get('event_name', 'Unknown Event')
         currency_symbol = report_data.get('currency_symbol', '$')
         
