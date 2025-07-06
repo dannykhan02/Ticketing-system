@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
@@ -20,6 +20,14 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from contextlib import contextmanager
 from .config import ReportConfig
 import logging
+
+# Optional: Import psutil for memory logging
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logging.warning("psutil not found. Memory usage logging will be skipped.")
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +89,14 @@ class ChartGenerator:
         self._setup_matplotlib()
 
     def _setup_matplotlib(self):
-        plt.style.use(self.config.chart_style)
-        sns.set_palette("husl")
+        try:
+            plt.style.use(self.config.chart_style or 'default')
+            if self.config.chart_style.startswith("seaborn"):
+                logger.warning("Seaborn style may use more memory. Consider using 'default' instead.")
+            if not getattr(self.config, "limit_charts", False):
+                sns.set_palette("husl")  # Optional: still use if memory isn't limited
+        except Exception as e:
+            logger.warning(f"Failed to apply matplotlib style: {e}")
 
     @contextmanager
     def _chart_context(self, figsize: Tuple[int, int] = (10, 8)):
@@ -189,9 +203,9 @@ class ChartGenerator:
                 width = 0.35
 
                 bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
-                              label='Tickets Sold', color='skyblue', alpha=0.8)
+                                 label='Tickets Sold', color='skyblue', alpha=0.8)
                 bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
-                              label='Attendees', color='lightcoral', alpha=0.8)
+                                 label='Attendees', color='lightcoral', alpha=0.8)
 
                 for bars in [bars1, bars2]:
                     for bar in bars:
@@ -219,6 +233,13 @@ class ChartGenerator:
         """
         Create all charts with proper data preprocessing
         """
+        if getattr(self.config, "limit_charts", False):
+            logger.warning("Chart generation skipped due to memory constraints (limit_charts=True).")
+            return []
+
+        if PSUTIL_AVAILABLE:
+            logger.info(f"Memory usage before chart generation: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
+
         # Process report data to ensure all Enum keys are converted
         processed_data = ReportDataProcessor.process_report_data(report_data)
         
@@ -301,7 +322,7 @@ class PDFReportGenerator:
         attendance_rate = 0
         if report_data.get('total_tickets_sold', 0) > 0:
             attendance_rate = (report_data.get('number_of_attendees', 0) /
-                             report_data.get('total_tickets_sold', 1) * 100)
+                               report_data.get('total_tickets_sold', 1) * 100)
 
         currency_symbol = report_data.get('currency_symbol', '$')
 
@@ -315,7 +336,7 @@ class PDFReportGenerator:
 
         if report_data.get('total_tickets_sold', 0) > 0:
             avg_revenue = (float(report_data.get('total_revenue', 0)) /
-                          report_data.get('total_tickets_sold', 1))
+                           report_data.get('total_tickets_sold', 1))
             summary_data.append(['Average Revenue per Ticket', f"{currency_symbol}{avg_revenue:.2f}"])
 
         if report_data.get('original_currency') and report_data.get('currency') != report_data.get('original_currency'):
@@ -343,7 +364,7 @@ class PDFReportGenerator:
 
         if report_data.get('total_tickets_sold', 0) > 0:
             attendance_rate = (report_data.get('number_of_attendees', 0) /
-                             report_data.get('total_tickets_sold', 1) * 100)
+                               report_data.get('total_tickets_sold', 1) * 100)
 
             if attendance_rate > 90:
                 insights.append("• Excellent attendance rate! Most ticket holders attended the event.")
@@ -356,16 +377,22 @@ class PDFReportGenerator:
         revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
 
         if tickets_sold_by_type and revenue_by_ticket_type:
-            max_revenue_type = max(revenue_by_ticket_type.items(), key=lambda x: float(x[1]))[0]
+            # Ensure keys are strings for max() comparison if they originated as Enums
+            processed_revenue_by_ticket_type = ReportDataProcessor.convert_enum_keys_to_strings(revenue_by_ticket_type)
+            processed_tickets_sold_by_type = ReportDataProcessor.convert_enum_keys_to_strings(tickets_sold_by_type)
+
+            max_revenue_type = max(processed_revenue_by_ticket_type.items(), key=lambda x: float(x[1]))[0]
             insights.append(f"• {max_revenue_type} tickets generated the highest revenue for this event.")
 
-            max_sold_type = max(tickets_sold_by_type.items(), key=lambda x: x[1])[0]
+            max_sold_type = max(processed_tickets_sold_by_type.items(), key=lambda x: x[1])[0]
             if max_sold_type != max_revenue_type:
                 insights.append(f"• {max_sold_type} was the most popular ticket type by volume.")
 
         payment_methods = report_data.get('payment_method_usage', {})
         if payment_methods:
-            preferred_method = max(payment_methods.items(), key=lambda x: x[1])[0]
+            # Ensure keys are strings for max() comparison if they originated as Enums
+            processed_payment_methods = ReportDataProcessor.convert_enum_keys_to_strings(payment_methods)
+            preferred_method = max(processed_payment_methods.items(), key=lambda x: x[1])[0]
             insights.append(f"• {preferred_method} was the preferred payment method for this event.")
 
         return insights
@@ -375,10 +402,13 @@ class PDFReportGenerator:
         currency_symbol = report_data.get('currency_symbol', '$')
 
         if report_data.get('tickets_sold_by_type'):
+            # Ensure data has string keys
+            tickets_sold_by_type = ReportDataProcessor.convert_enum_keys_to_strings(report_data['tickets_sold_by_type'])
+            
             data = [['Ticket Type', 'Tickets Sold', 'Percentage']]
-            total_tickets = sum(report_data['tickets_sold_by_type'].values())
+            total_tickets = sum(tickets_sold_by_type.values())
 
-            for ticket_type, count in report_data['tickets_sold_by_type'].items():
+            for ticket_type, count in tickets_sold_by_type.items():
                 percentage = (count / total_tickets * 100) if total_tickets > 0 else 0
                 data.append([str(ticket_type), str(count), f"{percentage:.1f}%"])
 
@@ -396,10 +426,13 @@ class PDFReportGenerator:
             tables.append(("Ticket Sales Breakdown", table))
 
         if report_data.get('revenue_by_ticket_type'):
-            data = [['Ticket Type', 'Revenue', 'Percentage']]
-            total_revenue = sum(float(v) for v in report_data['revenue_by_ticket_type'].values())
+            # Ensure data has string keys
+            revenue_by_ticket_type = ReportDataProcessor.convert_enum_keys_to_strings(report_data['revenue_by_ticket_type'])
 
-            for ticket_type, revenue in report_data['revenue_by_ticket_type'].items():
+            data = [['Ticket Type', 'Revenue', 'Percentage']]
+            total_revenue = sum(float(v) for v in revenue_by_ticket_type.values())
+
+            for ticket_type, revenue in revenue_by_ticket_type.items():
                 revenue_float = float(revenue)
                 percentage = (revenue_float / total_revenue * 100) if total_revenue > 0 else 0
                 data.append([str(ticket_type), f"{currency_symbol}{revenue_float:.2f}", f"{percentage:.1f}%"])
@@ -476,9 +509,9 @@ class PDFReportGenerator:
                             story.append(Spacer(1, 20))
                             if (i + 1) % 2 == 0:
                                 story.append(PageBreak())
-                        except Exception as e:
-                            logger.error(f"Error adding chart to PDF: {e}")
-
+                        finally:
+                            os.remove(chart_path)  # Clear after adding to PDF
+            
             # Detailed Breakdown
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
             tables = self._create_breakdown_tables(processed_data)
@@ -531,7 +564,7 @@ class CSVReportGenerator:
                 attendance_rate = 0
                 if processed_data.get('total_tickets_sold', 0) > 0:
                     attendance_rate = (processed_data.get('number_of_attendees', 0) /
-                                     processed_data.get('total_tickets_sold', 1) * 100)
+                                       processed_data.get('total_tickets_sold', 1) * 100)
                 writer.writerow(['Attendance Rate (%)', f"{attendance_rate:.1f}"])
                 writer.writerow([])
 

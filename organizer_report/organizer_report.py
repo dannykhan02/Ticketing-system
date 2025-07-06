@@ -6,89 +6,85 @@ from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig
+from currency_routes import convert_currency
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import os
 import tempfile
+import threading
 
 logger = logging.getLogger(__name__)
 
-class GenerateReportResource(Resource, AuthorizationMixin):
+class GenerateReportResource(Resource):
     @jwt_required()
     def post(self):
         try:
+            start_time = datetime.now()
+
+            # Get current user
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
             if not current_user:
                 return {'error': 'User not found'}, 404
-            
+
+            # Get request data
             data = request.get_json()
             event_id = data.get('event_id')
             start_date_str = data.get('start_date')
             end_date_str = data.get('end_date')
-            specific_date_str = data.get('specific_date')  # New parameter for specific day
+            specific_date_str = data.get('specific_date')
             ticket_type_id = data.get('ticket_type_id')
             target_currency_id = data.get('target_currency_id')
             send_email = data.get('send_email', False)
             recipient_email = data.get('recipient_email', current_user.email)
-            
+
             if not event_id:
                 return {'error': 'Event ID is required'}, 400
-            
+
+            # Event & organizer auth
             event = Event.query.get(event_id)
             if not event:
                 return {'error': 'Event not found'}, 404
-            
+
             organizer = Organizer.query.filter_by(user_id=current_user_id).first()
             if not organizer or organizer.id != event.organizer_id:
-                if not current_user.role == UserRole.ADMIN:
+                if current_user.role != UserRole.ADMIN:
                     return {'error': 'Unauthorized to generate report for this event'}, 403
-            
-            # Handle specific date logic
+
+            # Handle date logic
             if specific_date_str:
                 try:
                     specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
-                    if not specific_date:
-                        return {'error': 'Invalid specific date format'}, 400
-                    
-                    # Set start_date to beginning of the specific day
                     start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                    # Set end_date to end of the specific day
                     end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                    
-                    # Override any provided start_date and end_date when specific_date is provided
-                    if start_date_str or end_date_str:
-                        logger.warning("start_date and end_date parameters ignored when specific_date is provided")
-                    
                 except Exception as e:
                     logger.error(f"Error parsing specific_date: {e}")
                     return {'error': 'Invalid specific date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS'}, 400
             else:
-                # Original date range logic
                 start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
                 end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
-                
                 if not start_date:
                     start_date = event.timestamp if hasattr(event, 'timestamp') else datetime.now() - timedelta(days=30)
                 if not end_date:
                     end_date = datetime.now()
-                
                 end_date = DateUtils.adjust_end_date(end_date)
-            
+
+            # Currency validation
             target_currency = Currency.query.get(target_currency_id) if target_currency_id else None
             if not target_currency:
                 return {'error': 'Target currency not found or invalid'}, 400
-            
             target_currency_code = target_currency.code.value
-            
+
+            # Build report config
             config = ReportConfig(
                 include_charts=True,
                 include_email=send_email,
                 chart_dpi=300,
                 chart_style='seaborn-v0_8'
             )
-            
+
+            # Generate the report
             report_service = ReportService(config)
             result = report_service.generate_complete_report(
                 event_id=event_id,
@@ -96,54 +92,69 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 start_date=start_date,
                 end_date=end_date,
                 ticket_type_id=ticket_type_id,
-                send_email=send_email,
+                send_email=False,  # Email will be sent separately in background
                 recipient_email=recipient_email
             )
-            
-            if result['success']:
-                response_data = {
-                    'message': 'Report generated successfully',
-                    'report_id': result.get('database_id'),
-                    'report_data': result['report_data'],
-                    'email_sent': result['email_sent'],
-                    'report_period': {
-                        'start_date': start_date.isoformat(),
-                        'end_date': end_date.isoformat(),
-                        'is_single_day': bool(specific_date_str)  # Indicate if this is a single day report
-                    }
-                }
-                
-                total_revenue = result['report_data'].get('total_revenue')
-                base_currency = result['report_data'].get('currency', 'USD')
-                
-                from currency_routes import convert_currency
-                converted_value, conversion_rate = convert_currency(
-                    amount=total_revenue,
-                    from_currency=base_currency,
-                    to_currency=target_currency_code
-                )
-                
-                response_data['currency_conversion'] = {
+
+            if not result['success']:
+                return {'error': result.get('error', 'Failed to generate report')}, 500
+
+            # Currency conversion
+            total_revenue = result['report_data'].get('total_revenue')
+            base_currency = result['report_data'].get('currency', 'USD')
+            converted_value, conversion_rate = convert_currency(
+                amount=total_revenue,
+                from_currency=base_currency,
+                to_currency=target_currency_code
+            )
+
+            # Build response
+            response_data = {
+                'message': 'Report generated successfully',
+                'report_id': result.get('database_id'),
+                'report_data': result['report_data'],
+                'report_period': {
+                    'start_date': start_date.isoformat(),
+                    'end_date': end_date.isoformat(),
+                    'is_single_day': bool(specific_date_str)
+                },
+                'currency_conversion': {
                     'original_amount': float(total_revenue),
                     'original_currency': base_currency,
                     'converted_amount': float(converted_value),
                     'converted_currency': target_currency_code,
                     'conversion_rate': float(conversion_rate)
-                }
-                
-                if result.get('pdf_path'):
-                    response_data['pdf_available'] = True
-                if result.get('csv_path'):
-                    response_data['csv_available'] = True
-                
-                return response_data, 200
-            else:
-                return {'error': result.get('error', 'Failed to generate report')}, 500
-                
+                },
+                'pdf_available': bool(result.get('pdf_path')),
+                'csv_available': bool(result.get('csv_path')),
+                'email_sent': False
+            }
+
+            # Send email in background
+            if send_email:
+                def async_send_email():
+                    try:
+                        report_service.send_report_email(
+                            recipient_email=recipient_email,
+                            pdf_path=result.get('pdf_path'),
+                            csv_path=result.get('csv_path')
+                        )
+                        logger.info(f"Background email sent to {recipient_email}")
+                    except Exception as e:
+                        logger.error(f"Email sending failed: {e}")
+
+                threading.Thread(target=async_send_email).start()
+                response_data['email_sent'] = True
+
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Report generated in {duration:.2f} seconds")
+
+            return response_data, 200
+
         except Exception as e:
-            logger.error(f"Error in GenerateReportResource: {e}")
+            logger.error(f"Unhandled error in GenerateReportResource: {e}")
             return {'error': 'Internal server error'}, 500
-        
+
 class GetReportsResource(Resource, AuthorizationMixin):
     @jwt_required()
     def get(self):
