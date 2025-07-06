@@ -6,7 +6,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
 # ...existing code...Organizer, Currency, ExchangeRate
 from .utils import DateUtils, CurrencyConverter, FileManager
-from ..email_utils import send_email_with_attachment
+from  email_utils import send_email_with_attachment
 from .report_generators import ChartGenerator
 from .report_generators import PDFReportGenerator
 from .report_generators import CSVReportGenerator
