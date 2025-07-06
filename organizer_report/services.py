@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
 from .utils import DateUtils, CurrencyConverter, FileManager
-from  email_utils import send_email_with_attachment
+from email_utils import send_email_with_attachment
 from .report_generators import ChartGenerator
 from .report_generators import PDFReportGenerator
 from .report_generators import CSVReportGenerator
@@ -184,6 +184,66 @@ class ReportService:
         
         return sanitized
 
+    def _generate_charts(self, report_data: Dict[str, Any]) -> List[str]:
+        """Generate charts based on report data and return list of chart file paths"""
+        if not self.chart_generator:
+            return []
+        
+        chart_paths = []
+        
+        try:
+            # Generate different types of charts based on available data
+            if report_data.get('tickets_sold_by_type'):
+                # Tickets sold by type pie chart
+                tickets_chart = self.chart_generator.create_pie_chart(
+                    data=report_data['tickets_sold_by_type'],
+                    title="Tickets Sold by Type",
+                    filename=f"tickets_by_type_{report_data['event_id']}.png"
+                )
+                if tickets_chart:
+                    chart_paths.append(tickets_chart)
+            
+            if report_data.get('revenue_by_ticket_type'):
+                # Revenue by ticket type bar chart
+                revenue_chart = self.chart_generator.create_bar_chart(
+                    data=report_data['revenue_by_ticket_type'],
+                    title="Revenue by Ticket Type",
+                    xlabel="Ticket Type",
+                    ylabel=f"Revenue ({report_data.get('currency_symbol', '$')})",
+                    filename=f"revenue_by_type_{report_data['event_id']}.png"
+                )
+                if revenue_chart:
+                    chart_paths.append(revenue_chart)
+            
+            if report_data.get('payment_method_usage'):
+                # Payment method usage pie chart
+                payment_chart = self.chart_generator.create_pie_chart(
+                    data=report_data['payment_method_usage'],
+                    title="Payment Method Usage",
+                    filename=f"payment_methods_{report_data['event_id']}.png"
+                )
+                if payment_chart:
+                    chart_paths.append(payment_chart)
+            
+            if report_data.get('attendees_by_ticket_type'):
+                # Attendees by ticket type bar chart
+                attendees_chart = self.chart_generator.create_bar_chart(
+                    data=report_data['attendees_by_ticket_type'],
+                    title="Attendees by Ticket Type",
+                    xlabel="Ticket Type",
+                    ylabel="Number of Attendees",
+                    filename=f"attendees_by_type_{report_data['event_id']}.png"
+                )
+                if attendees_chart:
+                    chart_paths.append(attendees_chart)
+            
+            logger.info(f"Generated {len(chart_paths)} charts for event {report_data['event_id']}")
+            return chart_paths
+            
+        except Exception as e:
+            logger.error(f"Error generating charts: {e}")
+            return []
+
     def create_report_data(self, event_id: int, start_date: datetime, end_date: datetime,
                           ticket_type_id: Optional[int] = None,
                           target_currency_id: Optional[int] = None) -> Dict[str, Any]:
@@ -309,8 +369,9 @@ class ReportService:
             
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
             
+            # Use the custom chart generation method instead of create_all_charts
             if self.config.include_charts and self.chart_generator:
-                chart_paths = self.chart_generator.create_all_charts(report_data)
+                chart_paths = self._generate_charts(report_data)
             
             pdf_path = self.pdf_generator.generate_pdf(report_data, chart_paths, pdf_path)
             csv_path = CSVReportGenerator.generate_csv(report_data, csv_path)
