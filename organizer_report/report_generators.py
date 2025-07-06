@@ -18,7 +18,7 @@ from io import StringIO, BytesIO
 import tempfile
 from typing import Dict, List, Optional, Tuple, Any, Union
 from contextlib import contextmanager
-from .config import ReportConfig
+from .config import ReportConfig # Assuming .config refers to a local config file
 import logging
 
 # Optional: Import psutil for memory logging
@@ -52,9 +52,14 @@ class ReportDataProcessor:
             else:
                 string_key = str(key)
             
-            # Recursively convert nested dictionaries
+            # Recursively convert nested dictionaries or lists of dictionaries
             if isinstance(value, dict):
                 converted[string_key] = ReportDataProcessor.convert_enum_keys_to_strings(value)
+            elif isinstance(value, list):
+                converted[string_key] = [
+                    ReportDataProcessor.convert_enum_keys_to_strings(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
             else:
                 converted[string_key] = value
                 
@@ -67,7 +72,7 @@ class ReportDataProcessor:
         """
         processed_data = report_data.copy()
         
-        # List of keys that might contain Enum keys
+        # List of keys that might contain Enum keys or nested structures with Enum keys
         enum_key_fields = [
             'tickets_sold_by_type',
             'revenue_by_ticket_type', 
@@ -76,7 +81,8 @@ class ReportDataProcessor:
         ]
         
         for field in enum_key_fields:
-            if field in processed_data and isinstance(processed_data[field], dict):
+            if field in processed_data:
+                # Apply conversion regardless of whether it's a dict or potentially a list of dicts
                 processed_data[field] = ReportDataProcessor.convert_enum_keys_to_strings(
                     processed_data[field]
                 )
@@ -84,14 +90,21 @@ class ReportDataProcessor:
         return processed_data
 
 class ChartGenerator:
+    """
+    Generates various types of charts (pie, bar, comparison) using Matplotlib and Seaborn,
+    saving them as temporary image files.
+    """
     def __init__(self, config: ReportConfig):
         self.config = config
         self._setup_matplotlib()
 
     def _setup_matplotlib(self):
+        """
+        Sets up Matplotlib style and Seaborn palette based on configuration.
+        """
         try:
             plt.style.use(self.config.chart_style or 'default')
-            if self.config.chart_style.startswith("seaborn"):
+            if self.config.chart_style and self.config.chart_style.startswith("seaborn"):
                 logger.warning("Seaborn style may use more memory. Consider using 'default' instead.")
             if not getattr(self.config, "limit_charts", False):
                 sns.set_palette("husl")  # Optional: still use if memory isn't limited
@@ -100,6 +113,10 @@ class ChartGenerator:
 
     @contextmanager
     def _chart_context(self, figsize: Tuple[int, int] = (10, 8)):
+        """
+        Provides a context manager for creating Matplotlib figures and axes,
+        ensuring proper cleanup.
+        """
         fig, ax = plt.subplots(figsize=figsize)
         try:
             yield fig, ax
@@ -108,16 +125,26 @@ class ChartGenerator:
 
     def _safe_convert_data(self, data: Dict[Any, Any]) -> Dict[str, Any]:
         """
-        Safely convert data with potential Enum keys to string keys
+        Safely converts data with potential Enum keys to string keys using ReportDataProcessor.
         """
         return ReportDataProcessor.convert_enum_keys_to_strings(data)
 
     def create_pie_chart(self, data: Dict[str, int], title: str) -> Optional[str]:
+        """
+        Creates a pie chart from the given data and saves it to a temporary file.
+
+        Args:
+            data (Dict[str, int]): A dictionary where keys are categories and values are counts.
+            title (str): The title of the pie chart.
+
+        Returns:
+            Optional[str]: The path to the saved image file, or None if an error occurred or data is empty.
+        """
         if not data:
+            logger.info(f"No data provided for pie chart '{title}'. Skipping chart generation.")
             return None
 
         try:
-            # Ensure data has string keys
             data = self._safe_convert_data(data)
             
             with self._chart_context() as (fig, ax):
@@ -128,7 +155,7 @@ class ChartGenerator:
                 wedges, texts, autotexts = ax.pie(
                     sizes, labels=labels, autopct='%1.1f%%',
                     colors=colors, startangle=90,
-                    explode=[0.05] * len(labels)
+                    explode=[0.05] * len(labels) if labels else None # Added conditional explode
                 )
 
                 for autotext in autotexts:
@@ -138,20 +165,33 @@ class ChartGenerator:
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 plt.tight_layout()
 
-                chart_path = tempfile.mktemp(suffix='.png')
-                plt.savefig(chart_path, dpi=self.config.chart_dpi, bbox_inches='tight')
-                return chart_path
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    plt.savefig(tmp.name, dpi=self.config.chart_dpi, bbox_inches='tight')
+                    return tmp.name
 
         except Exception as e:
-            logger.error(f"Error creating pie chart: {e}")
+            logger.error(f"Error creating pie chart '{title}': {e}")
             return None
 
     def create_bar_chart(self, data: Dict[str, Union[float, Decimal]], title: str, xlabel: str, ylabel: str, currency_symbol: str = '$') -> Optional[str]:
+        """
+        Creates a bar chart from the given data and saves it to a temporary file.
+
+        Args:
+            data (Dict[str, Union[float, Decimal]]): A dictionary where keys are categories and values are numerical.
+            title (str): The title of the bar chart.
+            xlabel (str): The label for the x-axis.
+            ylabel (str): The label for the y-axis.
+            currency_symbol (str): The currency symbol to use for y-axis labels if 'Revenue' is in ylabel.
+
+        Returns:
+            Optional[str]: The path to the saved image file, or None if an error occurred or data is empty.
+        """
         if not data:
+            logger.info(f"No data provided for bar chart '{title}'. Skipping chart generation.")
             return None
 
         try:
-            # Ensure data has string keys
             data = self._safe_convert_data(data)
             
             with self._chart_context((12, 8)) as (fig, ax):
@@ -177,25 +217,40 @@ class ChartGenerator:
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
 
-                chart_path = tempfile.mktemp(suffix='.png')
-                plt.savefig(chart_path, dpi=self.config.chart_dpi, bbox_inches='tight')
-                return chart_path
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    plt.savefig(tmp.name, dpi=self.config.chart_dpi, bbox_inches='tight')
+                    return tmp.name
 
         except Exception as e:
-            logger.error(f"Error creating bar chart: {e}")
+            logger.error(f"Error creating bar chart '{title}': {e}")
             return None
 
     def create_comparison_chart(self, sold_data: Dict[str, int], attended_data: Dict[str, int], title: str) -> Optional[str]:
-        if not sold_data or not attended_data:
+        """
+        Creates a comparison bar chart showing tickets sold vs. actual attendance and saves it to a temporary file.
+
+        Args:
+            sold_data (Dict[str, int]): Dictionary of tickets sold by type.
+            attended_data (Dict[str, int]): Dictionary of attendees by ticket type.
+            title (str): The title of the comparison chart.
+
+        Returns:
+            Optional[str]: The path to the saved image file, or None if an error occurred or data is empty.
+        """
+        if not sold_data and not attended_data:
+            logger.info(f"No data provided for comparison chart '{title}'. Skipping chart generation.")
             return None
 
         try:
-            # Ensure data has string keys
             sold_data = self._safe_convert_data(sold_data)
             attended_data = self._safe_convert_data(attended_data)
             
             with self._chart_context((12, 8)) as (fig, ax):
-                categories = list(sold_data.keys())
+                # Combine all unique ticket types from both datasets
+                all_ticket_types = sorted(list(set(sold_data.keys()) | set(attended_data.keys())))
+                
+                # Ensure categories are ordered consistently
+                categories = all_ticket_types
                 sold_counts = [sold_data.get(t, 0) for t in categories]
                 attended_counts = [attended_data.get(t, 0) for t in categories]
 
@@ -203,9 +258,9 @@ class ChartGenerator:
                 width = 0.35
 
                 bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
-                                 label='Tickets Sold', color='skyblue', alpha=0.8)
+                                label='Tickets Sold', color='skyblue', alpha=0.8)
                 bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
-                                 label='Attendees', color='lightcoral', alpha=0.8)
+                                label='Attendees', color='lightcoral', alpha=0.8)
 
                 for bars in [bars1, bars2]:
                     for bar in bars:
@@ -221,17 +276,24 @@ class ChartGenerator:
                 ax.legend()
                 plt.tight_layout()
 
-                chart_path = tempfile.mktemp(suffix='.png')
-                plt.savefig(chart_path, dpi=self.config.chart_dpi, bbox_inches='tight')
-                return chart_path
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    plt.savefig(tmp.name, dpi=self.config.chart_dpi, bbox_inches='tight')
+                    return tmp.name
 
         except Exception as e:
-            logger.error(f"Error creating comparison chart: {e}")
+            logger.error(f"Error creating comparison chart '{title}': {e}")
             return None
 
     def create_all_charts(self, report_data: Dict[str, Any]) -> List[str]:
         """
-        Create all charts with proper data preprocessing
+        Generates all configured charts based on the provided report data.
+        Applies data preprocessing to handle Enum keys.
+
+        Args:
+            report_data (Dict[str, Any]): The raw report data.
+
+        Returns:
+            List[str]: A list of paths to the generated chart image files.
         """
         if getattr(self.config, "limit_charts", False):
             logger.warning("Chart generation skipped due to memory constraints (limit_charts=True).")
@@ -240,59 +302,62 @@ class ChartGenerator:
         if PSUTIL_AVAILABLE:
             logger.info(f"Memory usage before chart generation: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
 
-        # Process report data to ensure all Enum keys are converted
         processed_data = ReportDataProcessor.process_report_data(report_data)
         
         chart_paths = []
         currency_symbol = processed_data.get('currency_symbol', '$')
 
-        if processed_data.get('tickets_sold_by_type'):
-            chart_path = self.create_pie_chart(
-                processed_data['tickets_sold_by_type'],
-                'Ticket Sales Distribution by Type'
-            )
-            if chart_path:
-                chart_paths.append(chart_path)
+        chart_configs = [
+            {'type': 'pie', 'data_key': 'tickets_sold_by_type', 'title': 'Ticket Sales Distribution by Type'},
+            {'type': 'bar', 'data_key': 'revenue_by_ticket_type', 'title': 'Revenue by Ticket Type', 'xlabel': 'Ticket Type', 'ylabel': f'Revenue ({currency_symbol})', 'currency_symbol': currency_symbol},
+            {'type': 'comparison', 'data_key_sold': 'tickets_sold_by_type', 'data_key_attended': 'attendees_by_ticket_type', 'title': 'Tickets Sold vs Actual Attendance'},
+            {'type': 'bar', 'data_key': 'payment_method_usage', 'title': 'Payment Method Usage', 'xlabel': 'Payment Method', 'ylabel': 'Number of Transactions'}
+        ]
 
-        if processed_data.get('revenue_by_ticket_type'):
-            chart_path = self.create_bar_chart(
-                processed_data['revenue_by_ticket_type'],
-                'Revenue by Ticket Type',
-                'Ticket Type',
-                f'Revenue ({currency_symbol})',
-                currency_symbol
-            )
+        for chart_conf in chart_configs:
+            chart_path = None
+            if chart_conf['type'] == 'pie' and processed_data.get(chart_conf['data_key']):
+                chart_path = self.create_pie_chart(
+                    processed_data[chart_conf['data_key']],
+                    chart_conf['title']
+                )
+            elif chart_conf['type'] == 'bar' and processed_data.get(chart_conf['data_key']):
+                chart_path = self.create_bar_chart(
+                    processed_data[chart_conf['data_key']],
+                    chart_conf['title'],
+                    chart_conf['xlabel'],
+                    chart_conf['ylabel'],
+                    chart_conf.get('currency_symbol', '$')
+                )
+            elif chart_conf['type'] == 'comparison' and processed_data.get(chart_conf['data_key_sold']) and processed_data.get(chart_conf['data_key_attended']):
+                chart_path = self.create_comparison_chart(
+                    processed_data[chart_conf['data_key_sold']],
+                    processed_data[chart_conf['data_key_attended']],
+                    chart_conf['title']
+                )
+            
             if chart_path:
                 chart_paths.append(chart_path)
-
-        if processed_data.get('tickets_sold_by_type') and processed_data.get('attendees_by_ticket_type'):
-            chart_path = self.create_comparison_chart(
-                processed_data['tickets_sold_by_type'],
-                processed_data['attendees_by_ticket_type'],
-                'Tickets Sold vs Actual Attendance'
-            )
-            if chart_path:
-                chart_paths.append(chart_path)
-
-        if processed_data.get('payment_method_usage'):
-            chart_path = self.create_bar_chart(
-                processed_data['payment_method_usage'],
-                'Payment Method Usage',
-                'Payment Method',
-                'Number of Transactions'
-            )
-            if chart_path:
-                chart_paths.append(chart_path)
+        
+        if PSUTIL_AVAILABLE:
+            logger.info(f"Memory usage after chart generation: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
 
         return chart_paths
 
 class PDFReportGenerator:
+    """
+    Generates a PDF report from event data, including summaries, insights,
+    tables, and charts.
+    """
     def __init__(self, config: ReportConfig):
         self.config = config
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
 
     def _setup_custom_styles(self):
+        """
+        Configures custom paragraph styles for the PDF report.
+        """
         self.title_style = ParagraphStyle(
             'CustomTitle',
             parent=self.styles['Heading1'],
@@ -317,26 +382,45 @@ class PDFReportGenerator:
             spaceAfter=12,
             textColor=colors.HexColor('#F18F01')
         )
+        
+        self.normal_style = ParagraphStyle(
+            'CustomNormal',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            leading=14,
+            spaceAfter=6,
+        )
 
     def _create_summary_table(self, report_data: Dict[str, Any]) -> Table:
+        """
+        Creates a summary table for the PDF report.
+
+        Args:
+            report_data (Dict[str, Any]): The processed report data.
+
+        Returns:
+            Table: A ReportLab Table object containing the summary.
+        """
+        total_tickets_sold = report_data.get('total_tickets_sold', 0)
+        number_of_attendees = report_data.get('number_of_attendees', 0)
+        total_revenue = report_data.get('total_revenue', Decimal('0.00')) # Use Decimal for revenue
+        
         attendance_rate = 0
-        if report_data.get('total_tickets_sold', 0) > 0:
-            attendance_rate = (report_data.get('number_of_attendees', 0) /
-                               report_data.get('total_tickets_sold', 1) * 100)
+        if total_tickets_sold > 0:
+            attendance_rate = (number_of_attendees / total_tickets_sold) * 100
 
         currency_symbol = report_data.get('currency_symbol', '$')
 
         summary_data = [
             ['Metric', 'Value'],
-            ['Total Tickets Sold', str(report_data.get('total_tickets_sold', 0))],
-            ['Total Revenue', f"{currency_symbol}{report_data.get('total_revenue', 0):.2f}"],
-            ['Total Attendees', str(report_data.get('number_of_attendees', 0))],
+            ['Total Tickets Sold', str(total_tickets_sold)],
+            ['Total Revenue', f"{currency_symbol}{total_revenue:.2f}"],
+            ['Total Attendees', str(number_of_attendees)],
             ['Attendance Rate', f"{attendance_rate:.1f}%"],
         ]
 
-        if report_data.get('total_tickets_sold', 0) > 0:
-            avg_revenue = (float(report_data.get('total_revenue', 0)) /
-                           report_data.get('total_tickets_sold', 1))
+        if total_tickets_sold > 0:
+            avg_revenue = (total_revenue / Decimal(total_tickets_sold))
             summary_data.append(['Average Revenue per Ticket', f"{currency_symbol}{avg_revenue:.2f}"])
 
         if report_data.get('original_currency') and report_data.get('currency') != report_data.get('original_currency'):
@@ -360,49 +444,78 @@ class PDFReportGenerator:
         return table
 
     def _generate_insights(self, report_data: Dict[str, Any]) -> List[str]:
+        """
+        Generates key insights based on the report data.
+
+        Args:
+            report_data (Dict[str, Any]): The processed report data.
+
+        Returns:
+            List[str]: A list of insight strings.
+        """
         insights = []
 
-        if report_data.get('total_tickets_sold', 0) > 0:
-            attendance_rate = (report_data.get('number_of_attendees', 0) /
-                               report_data.get('total_tickets_sold', 1) * 100)
+        total_tickets_sold = report_data.get('total_tickets_sold', 0)
+        number_of_attendees = report_data.get('number_of_attendees', 0)
+
+        if total_tickets_sold > 0:
+            attendance_rate = (number_of_attendees / total_tickets_sold) * 100
 
             if attendance_rate > 90:
-                insights.append("• Excellent attendance rate! Most ticket holders attended the event.")
+                insights.append("• Excellent attendance rate! Most ticket holders attended the event, indicating high engagement.")
             elif attendance_rate > 70:
-                insights.append("• Good attendance rate with room for improvement in no-show reduction.")
+                insights.append("• Good attendance rate. Consider strategies to reduce no-shows and further boost attendance for future events.")
             else:
-                insights.append("• Low attendance rate suggests potential areas for improvement.")
+                insights.append("• A lower attendance rate suggests potential areas for improvement. Analyze attendee feedback for insights.")
 
         tickets_sold_by_type = report_data.get('tickets_sold_by_type', {})
         revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
 
-        if tickets_sold_by_type and revenue_by_ticket_type:
+        if tickets_sold_by_type:
             # Ensure keys are strings for max() comparison if they originated as Enums
-            processed_revenue_by_ticket_type = ReportDataProcessor.convert_enum_keys_to_strings(revenue_by_ticket_type)
             processed_tickets_sold_by_type = ReportDataProcessor.convert_enum_keys_to_strings(tickets_sold_by_type)
+            if processed_tickets_sold_by_type:
+                max_sold_type = max(processed_tickets_sold_by_type.items(), key=lambda x: x[1])[0]
+                insights.append(f"• The **{max_sold_type}** ticket type was the most popular by volume, indicating strong demand for this option.")
 
-            max_revenue_type = max(processed_revenue_by_ticket_type.items(), key=lambda x: float(x[1]))[0]
-            insights.append(f"• {max_revenue_type} tickets generated the highest revenue for this event.")
-
-            max_sold_type = max(processed_tickets_sold_by_type.items(), key=lambda x: x[1])[0]
-            if max_sold_type != max_revenue_type:
-                insights.append(f"• {max_sold_type} was the most popular ticket type by volume.")
+        if revenue_by_ticket_type:
+            processed_revenue_by_ticket_type = ReportDataProcessor.convert_enum_keys_to_strings(revenue_by_ticket_type)
+            if processed_revenue_by_ticket_type:
+                # Convert Decimal values to float for comparison if they are Decimals
+                max_revenue_type = max(processed_revenue_by_ticket_type.items(), key=lambda x: float(x[1]))[0]
+                insights.append(f"• **{max_revenue_type}** tickets generated the highest revenue, highlighting its significant contribution to overall earnings.")
+                
+                # Check if most popular by volume is different from highest revenue
+                if tickets_sold_by_type and (max_sold_type != max_revenue_type):
+                    insights.append(f"• While **{max_sold_type}** sold the most tickets, **{max_revenue_type}** was the top revenue generator, suggesting different pricing or value propositions.")
 
         payment_methods = report_data.get('payment_method_usage', {})
         if payment_methods:
-            # Ensure keys are strings for max() comparison if they originated as Enums
             processed_payment_methods = ReportDataProcessor.convert_enum_keys_to_strings(payment_methods)
-            preferred_method = max(processed_payment_methods.items(), key=lambda x: x[1])[0]
-            insights.append(f"• {preferred_method} was the preferred payment method for this event.")
+            if processed_payment_methods:
+                preferred_method = max(processed_payment_methods.items(), key=lambda x: x[1])[0]
+                insights.append(f"• **{preferred_method}** was the most frequently used payment method for this event, suggesting its convenience for attendees.")
 
+        if not insights:
+            insights.append("• No specific insights could be generated due to insufficient or incomplete data. Ensure all relevant data points are provided.")
+            
         return insights
 
     def _create_breakdown_tables(self, report_data: Dict[str, Any]) -> List[Tuple[str, Table]]:
+        """
+        Creates detailed breakdown tables for the PDF report.
+
+        Args:
+            report_data (Dict[str, Any]): The processed report data.
+
+        Returns:
+            List[Tuple[str, Table]]: A list of tuples, each containing a table title and a ReportLab Table object.
+        """
         tables = []
         currency_symbol = report_data.get('currency_symbol', '$')
 
+        # Ticket Sales Breakdown
         if report_data.get('tickets_sold_by_type'):
-            # Ensure data has string keys
             tickets_sold_by_type = ReportDataProcessor.convert_enum_keys_to_strings(report_data['tickets_sold_by_type'])
             
             data = [['Ticket Type', 'Tickets Sold', 'Percentage']]
@@ -414,19 +527,21 @@ class PDFReportGenerator:
 
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
             table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 12),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (0, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
             ]))
             tables.append(("Ticket Sales Breakdown", table))
 
+        # Revenue Breakdown
         if report_data.get('revenue_by_ticket_type'):
-            # Ensure data has string keys
             revenue_by_ticket_type = ReportDataProcessor.convert_enum_keys_to_strings(report_data['revenue_by_ticket_type'])
 
             data = [['Ticket Type', 'Revenue', 'Percentage']]
@@ -439,22 +554,59 @@ class PDFReportGenerator:
 
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
             table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 12),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (0, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
             ]))
             tables.append(("Revenue Breakdown", table))
+            
+        # Payment Method Usage Breakdown
+        if report_data.get('payment_method_usage'):
+            payment_method_usage = ReportDataProcessor.convert_enum_keys_to_strings(report_data['payment_method_usage'])
+            data = [['Payment Method', 'Transactions', 'Percentage']]
+            total_transactions = sum(payment_method_usage.values())
+
+            for method, count in payment_method_usage.items():
+                percentage = (count / total_transactions * 100) if total_transactions > 0 else 0
+                data.append([str(method), str(count), f"{percentage:.1f}%"])
+            
+            table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.lightgrey),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (0, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ]))
+            tables.append(("Payment Method Usage", table))
 
         return tables
 
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
+        """
+        Generates the complete PDF report.
+
+        Args:
+            report_data (Dict[str, Any]): The raw report data.
+            chart_paths (List[str]): A list of paths to temporary chart image files.
+            output_path (str): The desired path for the output PDF file.
+
+        Returns:
+            Optional[str]: The path to the generated PDF file, or None if an error occurred.
+        """
         try:
-            # Process report data to ensure all Enum keys are converted
             processed_data = ReportDataProcessor.process_report_data(report_data)
             
             doc = SimpleDocTemplate(
@@ -480,7 +632,7 @@ class PDFReportGenerator:
             <b>Generated:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             </para>
             """
-            story.append(Paragraph(event_info, self.styles['Normal']))
+            story.append(Paragraph(event_info, self.normal_style))
             story.append(Spacer(1, 30))
 
             # Executive Summary
@@ -493,10 +645,12 @@ class PDFReportGenerator:
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
                 for insight in insights:
-                    story.append(Paragraph(insight, self.styles['Normal']))
+                    story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
 
-            story.append(PageBreak())
+            # Page Break before charts/detailed breakdown if content is substantial
+            if len(story) > 5: # Arbitrary threshold to decide if a page break is needed
+                story.append(PageBreak())
 
             # Charts
             if chart_paths and self.config.include_charts:
@@ -504,15 +658,21 @@ class PDFReportGenerator:
                 for i, chart_path in enumerate(chart_paths):
                     if os.path.exists(chart_path):
                         try:
-                            img = Image(chart_path, width=6*inch, height=4*inch)
+                            # Adjust image width/height if needed based on PDF page size or desired layout
+                            img = Image(chart_path, width=6*inch, height=4.5*inch) 
                             story.append(img)
                             story.append(Spacer(1, 20))
-                            if (i + 1) % 2 == 0:
+                            # Add a page break after every two charts to keep layout clean
+                            if (i + 1) % 2 == 0 and i < len(chart_paths) - 1:
                                 story.append(PageBreak())
+                        except Exception as img_e:
+                            logger.error(f"Error adding image {chart_path} to PDF: {img_e}")
                         finally:
-                            os.remove(chart_path)  # Clear after adding to PDF
+                            # Ensure the temporary chart file is deleted after being used in the PDF
+                            os.remove(chart_path) 
             
             # Detailed Breakdown
+            story.append(PageBreak()) # Start detailed breakdown on a new page
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
             tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
@@ -528,20 +688,36 @@ class PDFReportGenerator:
             </para>
             """
             story.append(Spacer(1, 50))
-            story.append(Paragraph(footer_text, self.styles['Normal']))
+            story.append(Paragraph(footer_text, self.normal_style))
 
             doc.build(story)
             return output_path
 
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}")
+            # Ensure any remaining temporary chart files are cleaned up if an error occurs
+            for chart_path in chart_paths:
+                if os.path.exists(chart_path):
+                    os.remove(chart_path)
             return None
 
 class CSVReportGenerator:
+    """
+    Generates a CSV report from event data.
+    """
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
+        """
+        Generates a CSV report containing summary and breakdown data.
+
+        Args:
+            report_data (Dict[str, Any]): The raw report data.
+            output_path (str): The desired path for the output CSV file.
+
+        Returns:
+            Optional[str]: The path to the generated CSV file, or None if an error occurred.
+        """
         try:
-            # Process report data to ensure all Enum keys are converted
             processed_data = ReportDataProcessor.process_report_data(report_data)
             
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -603,6 +779,7 @@ class CSVReportGenerator:
                     writer.writerow(['Ticket Type', 'Attendees'])
                     for ticket_type, attendees in processed_data['attendees_by_ticket_type'].items():
                         writer.writerow([str(ticket_type), attendees])
+                    writer.writerow([])
 
             return output_path
 
