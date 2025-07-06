@@ -1,16 +1,13 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, List, Any, Optional, Tuple
-# ...existing code...
+
 from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
-# ...existing code...Organizer, Currency, ExchangeRate
 from .utils import DateUtils, CurrencyConverter, FileManager
 from  email_utils import send_email_with_attachment
 from .report_generators import ChartGenerator
 from .report_generators import PDFReportGenerator
 from .report_generators import CSVReportGenerator
-# ...existing code... 
 from sqlalchemy import func, and_, or_
 
 import logging
@@ -320,7 +317,7 @@ class ReportService:
             
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
-                email_sent = self._send_report_email(
+                email_sent = self._send_report_email(  # Corrected line
                     report_data, pdf_path, csv_path, recipient_email
                 )
             
