@@ -1,7 +1,8 @@
 from flask import request, jsonify, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from ..model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction
+
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig
@@ -74,7 +75,7 @@ class GenerateReportResource(Resource, AuthorizationMixin):
                 }
                 total_revenue = result['report_data'].get('total_revenue')
                 base_currency = result['report_data'].get('currency', 'USD')
-                from ..currency_routes import convert_currency
+                from currency_routes import convert_currency
                 converted_value, conversion_rate = convert_currency(
                     amount=total_revenue,
                     from_currency=base_currency,

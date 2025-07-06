@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Any, Optional, Tuple
 # ...existing code...
-from ..model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
+from model import db, Ticket, TicketType, Transaction, Scan, Event, User, Report, Organizer, Currency, ExchangeRate
 # ...existing code...Organizer, Currency, ExchangeRate
 from .utils import DateUtils, CurrencyConverter, FileManager
 from ..email_utils import send_email_with_attachment

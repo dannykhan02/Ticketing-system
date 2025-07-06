@@ -5,6 +5,9 @@ from decimal import Decimal
 import tempfile
 import os
 
+# FIXED: Add the missing imports
+from model import Currency, ExchangeRate
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -72,3 +75,76 @@ class FileManager:
                     os.remove(file_path)
             except Exception as e:
                 logger.warning(f"Failed to remove file {file_path}: {e}")
+
+# FIXED: Add missing AuthorizationMixin class that was referenced in organizer_report.py
+class AuthorizationMixin:
+    @staticmethod
+    def get_current_user():
+        from flask_jwt_extended import get_jwt_identity
+        from model import User
+        
+        current_user_id = get_jwt_identity()
+        return User.query.get(current_user_id)
+    
+    @staticmethod
+    def check_organizer_access(user):
+        from model import Organizer
+        
+        if not user:
+            return False
+        
+        # Check if user is an organizer
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        return organizer is not None
+    
+    @staticmethod
+    def check_event_ownership(event, user):
+        from model import Organizer, UserRole
+        
+        if not user or not event:
+            return False
+        
+        # Check if user is admin
+        if hasattr(user, 'role') and user.role == UserRole.ADMIN:
+            return True
+        
+        # Check if user owns the event through organizer profile
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if organizer and event.organizer_id == organizer.id:
+            return True
+        
+        return False
+
+class DateValidator:
+    @staticmethod
+    def validate_date_range(start_date_str: str, end_date_str: str) -> Tuple[Optional[datetime], Optional[datetime], Optional[dict]]:
+        """
+        Validate and parse date range parameters
+        
+        Returns:
+            Tuple of (start_date, end_date, error_dict)
+            If error_dict is not None, there was a validation error
+        """
+        start_date = None
+        end_date = None
+        
+        if start_date_str:
+            start_date = DateUtils.parse_date_param(start_date_str, 'start_date')
+            if not start_date:
+                return None, None, {'error': 'Invalid start_date format. Use YYYY-MM-DD.', 'status': 400}
+        
+        if end_date_str:
+            end_date = DateUtils.parse_date_param(end_date_str, 'end_date')
+            if not end_date:
+                return None, None, {'error': 'Invalid end_date format. Use YYYY-MM-DD.', 'status': 400}
+        
+        # If both dates provided, validate range
+        if start_date and end_date:
+            if start_date > end_date:
+                return None, None, {'error': 'start_date cannot be after end_date', 'status': 400}
+        
+        # Adjust end date to end of day if provided
+        if end_date:
+            end_date = DateUtils.adjust_end_date(end_date)
+        
+        return start_date, end_date, None
