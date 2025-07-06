@@ -83,7 +83,6 @@ class ReportDataProcessor:
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Could not convert field '{field}' to numeric type. Value: '{processed_data[field]}', Error: {e}")
                     processed_data[field] = 0.0 if field in ['total_revenue', 'converted_revenue'] else 0
-
         nested_numeric_fields = [
             'tickets_sold_by_type',
             'revenue_by_ticket_type',
@@ -164,13 +163,10 @@ class ChartGenerator:
             )
             tmp_filename = tmp_file.name
             tmp_file.close()  # Close the file handle but keep the file
-
             # Save the figure
             fig.savefig(tmp_filename, dpi=self.config.chart_dpi, bbox_inches='tight')
-
             # Force matplotlib to finish writing
             plt.close(fig)
-
             # Verify the file was created and has content
             if os.path.exists(tmp_filename) and os.path.getsize(tmp_filename) > 0:
                 logger.info(f"Successfully created chart: {tmp_filename}")
@@ -183,7 +179,6 @@ class ChartGenerator:
                 except:
                     pass
                 return None
-
         except Exception as e:
             logger.error(f"Error saving chart '{title}': {e}", exc_info=True)
             return None
@@ -195,18 +190,14 @@ class ChartGenerator:
         if not data:
             logger.info(f"No data provided for pie chart '{title}'. Skipping chart generation.")
             return None
-
         try:
             labels = list(data.keys())
             sizes = [float(v) for v in data.values()]
             filtered_labels_sizes = [(lbl, sz) for lbl, sz in zip(labels, sizes) if sz > 0]
-
             if not filtered_labels_sizes:
                 logger.info(f"All data values are zero for pie chart '{title}'. Skipping chart generation.")
                 return None
-
             labels, sizes = zip(*filtered_labels_sizes)
-
             with self._chart_context() as (fig, ax):
                 colors_list = plt.cm.Set3(range(len(labels)))
                 wedges, texts, autotexts = ax.pie(
@@ -214,16 +205,12 @@ class ChartGenerator:
                     colors=colors_list, startangle=90,
                     explode=[0.05] * len(labels) if labels else None
                 )
-
                 for autotext in autotexts:
                     autotext.set_color('white')
                     autotext.set_fontweight('bold')
-
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 plt.tight_layout()
-
                 return self._save_chart_safely(fig, title)
-
         except Exception as e:
             logger.error(f"Error creating pie chart '{title}': {e}", exc_info=True)
             return None
@@ -235,14 +222,11 @@ class ChartGenerator:
         if not data:
             logger.info(f"No data provided for bar chart '{title}'. Skipping chart generation.")
             return None
-
         try:
             categories = list(data.keys())
             values = [float(v) for v in data.values()]
-
             with self._chart_context((12, 8)) as (fig, ax):
                 bars = ax.bar(categories, values, color=plt.cm.viridis(range(len(categories))))
-
                 for bar in bars:
                     height = bar.get_height()
                     if 'Revenue' in ylabel:
@@ -253,15 +237,12 @@ class ChartGenerator:
                         ax.text(bar.get_x() + bar.get_width()/2., height,
                                 f'{height:.0f}',
                                 ha='center', va='bottom', fontweight='bold')
-
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
                 ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
-
                 return self._save_chart_safely(fig, title)
-
         except Exception as e:
             logger.error(f"Error creating bar chart '{title}': {e}", exc_info=True)
             return None
@@ -273,33 +254,27 @@ class ChartGenerator:
         if not sold_data and not attended_data:
             logger.info(f"No data provided for comparison chart '{title}'. Skipping chart generation.")
             return None
-
         try:
             all_ticket_types = sorted(list(set(sold_data.keys()) | set(attended_data.keys())))
             categories = all_ticket_types
             sold_counts = [int(sold_data.get(t, 0)) for t in categories]
             attended_counts = [int(attended_data.get(t, 0)) for t in categories]
-
             if not categories or (sum(sold_counts) == 0 and sum(attended_counts) == 0):
                 logger.info(f"No valid data to plot for comparison chart '{title}'. Skipping.")
                 return None
-
             with self._chart_context((12, 8)) as (fig, ax):
                 x = range(len(categories))
                 width = 0.35
-
                 bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
                              label='Tickets Sold', color='skyblue', alpha=0.8)
                 bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
                              label='Attendees', color='lightcoral', alpha=0.8)
-
                 for bars in [bars1, bars2]:
                     for bar in bars:
                         height = bar.get_height()
                         if height > 0:
                             ax.text(bar.get_x() + bar.get_width()/2., height,
                                     f'{int(height)}', ha='center', va='bottom', fontweight='bold')
-
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel('Ticket Type', fontsize=12, fontweight='bold')
                 ax.set_ylabel('Count', fontsize=12, fontweight='bold')
@@ -307,12 +282,39 @@ class ChartGenerator:
                 ax.set_xticklabels(categories, rotation=45, ha='right')
                 ax.legend()
                 plt.tight_layout()
-
                 return self._save_chart_safely(fig, title)
-
         except Exception as e:
             logger.error(f"Error creating comparison chart '{title}': {e}", exc_info=True)
             return None
+
+    def create_all_charts(self, report_data: dict) -> List[str]:
+        """
+        Generates all applicable charts for the report and returns their file paths.
+        """
+        chart_paths = []
+        if 'tickets_by_type' in report_data:
+            path = self.create_pie_chart(report_data['tickets_by_type'], title="Tickets Sold by Type")
+            if path: chart_paths.append(path)
+        if 'revenue_by_ticket_type' in report_data:
+            path = self.create_bar_chart(
+                report_data['revenue_by_ticket_type'],
+                title="Revenue by Ticket Type",
+                xlabel="Ticket Type",
+                ylabel="Revenue",
+                currency_symbol=self.config.currency_symbol if hasattr(self.config, 'currency_symbol') else '$'
+            )
+            if path: chart_paths.append(path)
+        if 'payment_methods' in report_data:
+            path = self.create_pie_chart(report_data['payment_methods'], title="Payment Method Usage")
+            if path: chart_paths.append(path)
+        if 'attendees_by_ticket_type' in report_data and 'tickets_by_type' in report_data:
+            path = self.create_comparison_chart(
+                sold_data=report_data['tickets_by_type'],
+                attended_data=report_data['attendees_by_ticket_type'],
+                title="Tickets Sold vs Attendees"
+            )
+            if path: chart_paths.append(path)
+        return chart_paths
 
 class PDFReportGenerator:
     """
@@ -536,17 +538,13 @@ class PDFReportGenerator:
         """
         if not chart_paths or not self.config.include_charts:
             return
-
         story.append(Paragraph("VISUAL ANALYTICS", self.subtitle_style))
-
         for i, chart_path in enumerate(chart_paths):
             if not chart_path:
                 continue
-
             # Wait a bit to ensure file is fully written
             max_retries = 3
             retry_count = 0
-
             while retry_count < max_retries:
                 if os.path.exists(chart_path) and os.path.getsize(chart_path) > 0:
                     try:
@@ -559,27 +557,21 @@ class PDFReportGenerator:
                                 break
                     except Exception as e:
                         logger.warning(f"File verification failed for {chart_path}: {e}")
-
                 retry_count += 1
                 if retry_count < max_retries:
                     time.sleep(0.1)  # Wait 100ms before retry
-
             if retry_count >= max_retries:
                 logger.error(f"Could not verify chart file after {max_retries} attempts: {chart_path}")
                 continue
-
             try:
                 # Create the image with explicit error handling
                 img = Image(chart_path, width=6*inch, height=4.5*inch)
                 story.append(img)
                 story.append(Spacer(1, 20))
-
                 # Add page break after every 2 charts
                 if (i + 1) % 2 == 0 and i < len(chart_paths) - 1:
                     story.append(PageBreak())
-
                 logger.info(f"Successfully added chart to PDF: {chart_path}")
-
             except Exception as img_e:
                 logger.error(f"Error adding image {chart_path} to PDF: {img_e}", exc_info=True)
 
@@ -606,7 +598,6 @@ class PDFReportGenerator:
             story = []
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
-
             event_name = processed_data.get('event_name', 'N/A')
             event_date = processed_data.get('event_date', 'N/A')
             event_location = processed_data.get('event_location', 'N/A')
@@ -614,7 +605,6 @@ class PDFReportGenerator:
             filter_end_date = processed_data.get('filter_end_date', 'N/A')
             currency = processed_data.get('currency', 'USD')
             currency_symbol = processed_data.get('currency_symbol', '$')
-
             event_info = f"""
             <para fontSize=14>
             <b>Event:</b> {event_name}<br/>
@@ -630,30 +620,24 @@ class PDFReportGenerator:
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
             story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
-
             insights = self._generate_insights(processed_data)
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
                 for insight in insights:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
-
             if len(story) > 5:
                 story.append(PageBreak())
-
             # Add charts with improved error handling
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
-
             story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
-
             tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
                 story.append(Paragraph(table_title, self.header_style))
                 story.append(table)
                 story.append(Spacer(1, 20))
-
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
             This report was automatically generated by the Event Management System<br/>
@@ -662,20 +646,14 @@ class PDFReportGenerator:
             """
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
-
             doc.build(story)
-
             # Cleanup chart files after successful PDF generation
             self._cleanup_chart_files(chart_paths)
-
             return output_path
-
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
-
             # Cleanup chart files on error
             self._cleanup_chart_files(chart_paths)
-
             return None
 
 class CSVReportGenerator:
