@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from contextlib import contextmanager
 from .config import ReportConfig
 import logging
+import time
 
 # Optional: Import psutil for memory logging
 try:
@@ -37,8 +38,6 @@ class ReportDataProcessor:
     def convert_enum_keys_to_strings(data: Dict[Any, Any]) -> Dict[str, Any]:
         """
         Convert Enum keys to their string values for JSON serialization.
-        This is typically used when preparing data that might have Enum objects as keys
-        from a data source, making it JSON-serializable.
         """
         if not isinstance(data, dict):
             return data
@@ -152,6 +151,43 @@ class ChartGenerator:
         finally:
             plt.close(fig)
 
+    def _save_chart_safely(self, fig, title: str) -> Optional[str]:
+        """
+        Safely saves a matplotlib figure to a temporary file with proper error handling.
+        """
+        try:
+            # Create temporary file with a more descriptive name
+            tmp_file = tempfile.NamedTemporaryFile(
+                suffix='.png',
+                prefix=f'chart_{title.replace(" ", "_")}_',
+                delete=False
+            )
+            tmp_filename = tmp_file.name
+            tmp_file.close()  # Close the file handle but keep the file
+
+            # Save the figure
+            fig.savefig(tmp_filename, dpi=self.config.chart_dpi, bbox_inches='tight')
+
+            # Force matplotlib to finish writing
+            plt.close(fig)
+
+            # Verify the file was created and has content
+            if os.path.exists(tmp_filename) and os.path.getsize(tmp_filename) > 0:
+                logger.info(f"Successfully created chart: {tmp_filename}")
+                return tmp_filename
+            else:
+                logger.error(f"Failed to create chart file: {tmp_filename}")
+                # Clean up failed file
+                try:
+                    os.remove(tmp_filename)
+                except:
+                    pass
+                return None
+
+        except Exception as e:
+            logger.error(f"Error saving chart '{title}': {e}", exc_info=True)
+            return None
+
     def create_pie_chart(self, data: Dict[str, Union[int, float]], title: str) -> Optional[str]:
         """
         Creates a pie chart from the given data and saves it to a temporary file.
@@ -159,14 +195,18 @@ class ChartGenerator:
         if not data:
             logger.info(f"No data provided for pie chart '{title}'. Skipping chart generation.")
             return None
+
         try:
             labels = list(data.keys())
             sizes = [float(v) for v in data.values()]
             filtered_labels_sizes = [(lbl, sz) for lbl, sz in zip(labels, sizes) if sz > 0]
+
             if not filtered_labels_sizes:
                 logger.info(f"All data values are zero for pie chart '{title}'. Skipping chart generation.")
                 return None
+
             labels, sizes = zip(*filtered_labels_sizes)
+
             with self._chart_context() as (fig, ax):
                 colors_list = plt.cm.Set3(range(len(labels)))
                 wedges, texts, autotexts = ax.pie(
@@ -174,25 +214,15 @@ class ChartGenerator:
                     colors=colors_list, startangle=90,
                     explode=[0.05] * len(labels) if labels else None
                 )
+
                 for autotext in autotexts:
                     autotext.set_color('white')
                     autotext.set_fontweight('bold')
+
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 plt.tight_layout()
 
-                # Create temporary file with delete=False to prevent premature deletion
-                tmp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-                tmp_file.close()  # Close the file handle but keep the file
-
-                plt.savefig(tmp_file.name, dpi=self.config.chart_dpi, bbox_inches='tight')
-
-                # Verify the file was created and has content
-                if os.path.exists(tmp_file.name) and os.path.getsize(tmp_file.name) > 0:
-                    logger.info(f"Successfully created pie chart: {tmp_file.name}")
-                    return tmp_file.name
-                else:
-                    logger.error(f"Failed to create pie chart file: {tmp_file.name}")
-                    return None
+                return self._save_chart_safely(fig, title)
 
         except Exception as e:
             logger.error(f"Error creating pie chart '{title}': {e}", exc_info=True)
@@ -205,11 +235,14 @@ class ChartGenerator:
         if not data:
             logger.info(f"No data provided for bar chart '{title}'. Skipping chart generation.")
             return None
+
         try:
             categories = list(data.keys())
             values = [float(v) for v in data.values()]
+
             with self._chart_context((12, 8)) as (fig, ax):
                 bars = ax.bar(categories, values, color=plt.cm.viridis(range(len(categories))))
+
                 for bar in bars:
                     height = bar.get_height()
                     if 'Revenue' in ylabel:
@@ -220,25 +253,14 @@ class ChartGenerator:
                         ax.text(bar.get_x() + bar.get_width()/2., height,
                                 f'{height:.0f}',
                                 ha='center', va='bottom', fontweight='bold')
+
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
                 ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
                 plt.xticks(rotation=45, ha='right')
                 plt.tight_layout()
 
-                # Create temporary file with delete=False to prevent premature deletion
-                tmp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-                tmp_file.close()  # Close the file handle but keep the file
-
-                plt.savefig(tmp_file.name, dpi=self.config.chart_dpi, bbox_inches='tight')
-
-                # Verify the file was created and has content
-                if os.path.exists(tmp_file.name) and os.path.getsize(tmp_file.name) > 0:
-                    logger.info(f"Successfully created bar chart: {tmp_file.name}")
-                    return tmp_file.name
-                else:
-                    logger.error(f"Failed to create bar chart file: {tmp_file.name}")
-                    return None
+                return self._save_chart_safely(fig, title)
 
         except Exception as e:
             logger.error(f"Error creating bar chart '{title}': {e}", exc_info=True)
@@ -251,27 +273,33 @@ class ChartGenerator:
         if not sold_data and not attended_data:
             logger.info(f"No data provided for comparison chart '{title}'. Skipping chart generation.")
             return None
+
         try:
             all_ticket_types = sorted(list(set(sold_data.keys()) | set(attended_data.keys())))
             categories = all_ticket_types
             sold_counts = [int(sold_data.get(t, 0)) for t in categories]
             attended_counts = [int(attended_data.get(t, 0)) for t in categories]
+
             if not categories or (sum(sold_counts) == 0 and sum(attended_counts) == 0):
                 logger.info(f"No valid data to plot for comparison chart '{title}'. Skipping.")
                 return None
+
             with self._chart_context((12, 8)) as (fig, ax):
                 x = range(len(categories))
                 width = 0.35
+
                 bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
                              label='Tickets Sold', color='skyblue', alpha=0.8)
                 bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
                              label='Attendees', color='lightcoral', alpha=0.8)
+
                 for bars in [bars1, bars2]:
                     for bar in bars:
                         height = bar.get_height()
                         if height > 0:
                             ax.text(bar.get_x() + bar.get_width()/2., height,
                                     f'{int(height)}', ha='center', va='bottom', fontweight='bold')
+
                 ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
                 ax.set_xlabel('Ticket Type', fontsize=12, fontweight='bold')
                 ax.set_ylabel('Count', fontsize=12, fontweight='bold')
@@ -280,68 +308,11 @@ class ChartGenerator:
                 ax.legend()
                 plt.tight_layout()
 
-                # Create temporary file with delete=False to prevent premature deletion
-                tmp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-                tmp_file.close()  # Close the file handle but keep the file
-
-                plt.savefig(tmp_file.name, dpi=self.config.chart_dpi, bbox_inches='tight')
-
-                # Verify the file was created and has content
-                if os.path.exists(tmp_file.name) and os.path.getsize(tmp_file.name) > 0:
-                    logger.info(f"Successfully created comparison chart: {tmp_file.name}")
-                    return tmp_file.name
-                else:
-                    logger.error(f"Failed to create comparison chart file: {tmp_file.name}")
-                    return None
+                return self._save_chart_safely(fig, title)
 
         except Exception as e:
             logger.error(f"Error creating comparison chart '{title}': {e}", exc_info=True)
             return None
-
-    def create_all_charts(self, report_data: Dict[str, Any]) -> List[str]:
-        """
-        Generates all configured charts based on the provided report data.
-        """
-        if getattr(self.config, "limit_charts", False):
-            logger.warning("Chart generation skipped due to memory constraints (limit_charts=True).")
-            return []
-        if PSUTIL_AVAILABLE:
-            logger.info(f"Memory usage before chart generation: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
-        processed_data = ReportDataProcessor.process_report_data(report_data)
-        chart_paths = []
-        currency_symbol = processed_data.get('currency_symbol', '$')
-        chart_configs = [
-            {'type': 'pie', 'data_key': 'tickets_sold_by_type', 'title': 'Ticket Sales Distribution by Type'},
-            {'type': 'bar', 'data_key': 'revenue_by_ticket_type', 'title': 'Revenue by Ticket Type', 'xlabel': 'Ticket Type', 'ylabel': f'Revenue ({currency_symbol})', 'currency_symbol': currency_symbol},
-            {'type': 'comparison', 'data_key_sold': 'tickets_sold_by_type', 'data_key_attended': 'attendees_by_ticket_type', 'title': 'Tickets Sold vs Actual Attendance'},
-            {'type': 'bar', 'data_key': 'payment_method_usage', 'title': 'Payment Method Usage', 'xlabel': 'Payment Method', 'ylabel': 'Number of Transactions'}
-        ]
-        for chart_conf in chart_configs:
-            chart_path = None
-            if chart_conf['type'] == 'pie' and processed_data.get(chart_conf['data_key']):
-                chart_path = self.create_pie_chart(
-                    processed_data[chart_conf['data_key']],
-                    chart_conf['title']
-                )
-            elif chart_conf['type'] == 'bar' and processed_data.get(chart_conf['data_key']):
-                chart_path = self.create_bar_chart(
-                    processed_data[chart_conf['data_key']],
-                    chart_conf['title'],
-                    chart_conf['xlabel'],
-                    chart_conf['ylabel'],
-                    chart_conf.get('currency_symbol', '$')
-                )
-            elif chart_conf['type'] == 'comparison' and processed_data.get(chart_conf['data_key_sold']) and processed_data.get(chart_conf['data_key_attended']):
-                chart_path = self.create_comparison_chart(
-                    processed_data[chart_conf['data_key_sold']],
-                    processed_data[chart_conf['data_key_attended']],
-                    chart_conf['title']
-                )
-            if chart_path:
-                chart_paths.append(chart_path)
-        if PSUTIL_AVAILABLE:
-            logger.info(f"Memory usage after chart generation: {psutil.Process().memory_info().rss / (1024 ** 2):.2f} MB")
-        return chart_paths
 
 class PDFReportGenerator:
     """
@@ -559,9 +530,74 @@ class PDFReportGenerator:
             tables.append(("Payment Method Usage", table))
         return tables
 
+    def _add_charts_to_story(self, story, chart_paths):
+        """
+        Safely adds charts to the PDF story with proper error handling.
+        """
+        if not chart_paths or not self.config.include_charts:
+            return
+
+        story.append(Paragraph("VISUAL ANALYTICS", self.subtitle_style))
+
+        for i, chart_path in enumerate(chart_paths):
+            if not chart_path:
+                continue
+
+            # Wait a bit to ensure file is fully written
+            max_retries = 3
+            retry_count = 0
+
+            while retry_count < max_retries:
+                if os.path.exists(chart_path) and os.path.getsize(chart_path) > 0:
+                    try:
+                        # Try to open and verify the file
+                        with open(chart_path, 'rb') as f:
+                            # Read first few bytes to verify it's a valid image
+                            header = f.read(8)
+                            if header.startswith(b'\x89PNG\r\n\x1a\n'):
+                                # Valid PNG file
+                                break
+                    except Exception as e:
+                        logger.warning(f"File verification failed for {chart_path}: {e}")
+
+                retry_count += 1
+                if retry_count < max_retries:
+                    time.sleep(0.1)  # Wait 100ms before retry
+
+            if retry_count >= max_retries:
+                logger.error(f"Could not verify chart file after {max_retries} attempts: {chart_path}")
+                continue
+
+            try:
+                # Create the image with explicit error handling
+                img = Image(chart_path, width=6*inch, height=4.5*inch)
+                story.append(img)
+                story.append(Spacer(1, 20))
+
+                # Add page break after every 2 charts
+                if (i + 1) % 2 == 0 and i < len(chart_paths) - 1:
+                    story.append(PageBreak())
+
+                logger.info(f"Successfully added chart to PDF: {chart_path}")
+
+            except Exception as img_e:
+                logger.error(f"Error adding image {chart_path} to PDF: {img_e}", exc_info=True)
+
+    def _cleanup_chart_files(self, chart_paths):
+        """
+        Safely cleanup chart files after PDF generation.
+        """
+        for chart_path in chart_paths:
+            if chart_path and os.path.exists(chart_path):
+                try:
+                    os.remove(chart_path)
+                    logger.debug(f"Cleaned up chart file: {chart_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
+
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
         """
-        Generates the complete PDF report.
+        Generates the complete PDF report with improved error handling.
         """
         try:
             processed_data = ReportDataProcessor.process_report_data(report_data)
@@ -570,6 +606,7 @@ class PDFReportGenerator:
             story = []
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
+
             event_name = processed_data.get('event_name', 'N/A')
             event_date = processed_data.get('event_date', 'N/A')
             event_location = processed_data.get('event_location', 'N/A')
@@ -577,6 +614,7 @@ class PDFReportGenerator:
             filter_end_date = processed_data.get('filter_end_date', 'N/A')
             currency = processed_data.get('currency', 'USD')
             currency_symbol = processed_data.get('currency_symbol', '$')
+
             event_info = f"""
             <para fontSize=14>
             <b>Event:</b> {event_name}<br/>
@@ -592,39 +630,30 @@ class PDFReportGenerator:
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
             story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
+
             insights = self._generate_insights(processed_data)
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
                 for insight in insights:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
+
             if len(story) > 5:
                 story.append(PageBreak())
-            if chart_paths and self.config.include_charts:
-                story.append(Paragraph("VISUAL ANALYTICS", self.subtitle_style))
-                for i, chart_path in enumerate(chart_paths):
-                    if os.path.exists(chart_path):
-                        try:
-                            img = Image(chart_path, width=6*inch, height=4.5*inch)
-                            story.append(img)
-                            story.append(Spacer(1, 20))
-                            if (i + 1) % 2 == 0 and i < len(chart_paths) - 1:
-                                story.append(PageBreak())
-                        except Exception as img_e:
-                            logger.error(f"Error adding image {chart_path} to PDF: {img_e}", exc_info=True)
-                        finally:
-                            try:
-                                os.remove(chart_path)
-                                logger.debug(f"Cleaned up chart file: {chart_path}")
-                            except Exception as cleanup_error:
-                                logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
+
+            # Add charts with improved error handling
+            if chart_paths:
+                self._add_charts_to_story(story, chart_paths)
+
             story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
+
             tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
                 story.append(Paragraph(table_title, self.header_style))
                 story.append(table)
                 story.append(Spacer(1, 20))
+
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
             This report was automatically generated by the Event Management System<br/>
@@ -633,17 +662,20 @@ class PDFReportGenerator:
             """
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
+
             doc.build(story)
+
+            # Cleanup chart files after successful PDF generation
+            self._cleanup_chart_files(chart_paths)
+
             return output_path
+
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
-            for chart_path in chart_paths:
-                if os.path.exists(chart_path):
-                    try:
-                        os.remove(chart_path)
-                        logger.debug(f"Cleaned up chart file: {chart_path}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
+
+            # Cleanup chart files on error
+            self._cleanup_chart_files(chart_paths)
+
             return None
 
 class CSVReportGenerator:
