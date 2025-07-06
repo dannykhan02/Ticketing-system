@@ -78,15 +78,11 @@ class GenerateReportResource(Resource):
             if not target_currency:
                 logger.warning(f"GenerateReportResource: Target currency with ID {target_currency_id} not found or invalid.")
                 return {'error': 'Target currency not found or invalid'}, 400
+
             target_currency_code = target_currency.code.value
 
-            config = ReportConfig(
-                include_charts=True,
-                include_email=send_email,
-                chart_dpi=300,
-                chart_style='seaborn-v0_8',
-                pdf_pagesize='A4'
-            )
+            # Use the default ReportConfig and only override necessary parameters
+            config = ReportConfig(include_email=send_email)
 
             report_service = ReportService(config)
             result = report_service.generate_complete_report(
@@ -171,9 +167,13 @@ class GenerateReportResource(Resource):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
             return response_data, 200
+
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
+
+# The rest of your code remains unchanged...
+
 
 class GetReportsResource(Resource, AuthorizationMixin):
     """
