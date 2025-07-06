@@ -80,11 +80,9 @@ class GenerateReportResource(Resource):
                 return {'error': 'Target currency not found or invalid'}, 400
 
             target_currency_code = target_currency.code.value
-
-            # Use the default ReportConfig and only override necessary parameters
             config = ReportConfig(include_email=send_email)
-
             report_service = ReportService(config)
+
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
@@ -113,8 +111,8 @@ class GenerateReportResource(Resource):
             )
 
             base_url = request.url_root.rstrip('/')
-            pdf_download_url = f"{base_url}api/v1/reports/{report_id}/export?format=pdf"
-            csv_download_url = f"{base_url}api/v1/reports/{report_id}/export?format=csv"
+            pdf_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=pdf"
+            csv_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=csv"
 
             response_data = {
                 'message': 'Report generation initiated. You can download the report using the provided links.',
@@ -148,14 +146,18 @@ class GenerateReportResource(Resource):
                     try:
                         from app import app
                         with app.app_context():
+                            report_data = {
+                                'event_name': event.name,
+                                'currency_symbol': result['report_data'].get('currency_symbol', '$'),
+                                'report_period_start': start_date.strftime('%Y-%m-%d'),
+                                'report_period_end': end_date.strftime('%Y-%m-%d'),
+                            }
+
                             report_service.send_report_email(
-                                recipient_email=recipient_email,
-                                report_id=report_id,
-                                event_name=event.name,
-                                report_period_start=start_date.strftime('%Y-%m-%d'),
-                                report_period_end=end_date.strftime('%Y-%m-%d'),
-                                pdf_download_url=pdf_download_url,
-                                csv_download_url=csv_download_url
+                                report_data=report_data,
+                                pdf_path='',  # Optional: set if actual file paths available
+                                csv_path='',
+                                recipient_email=recipient_email
                             )
                             logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
                     except Exception as e:
@@ -171,6 +173,7 @@ class GenerateReportResource(Resource):
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
+
 
 # The rest of your code remains unchanged...
 
