@@ -182,6 +182,7 @@ class GetReportsResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a list of generated reports.
     Includes download URLs for PDF and CSV for each report.
+    Supports date filtering, specific date queries, and flexible limiting.
     """
     @jwt_required()
     def get(self):
@@ -192,12 +193,50 @@ class GetReportsResource(Resource, AuthorizationMixin):
                 logger.warning(f"GetReportsResource: User with ID {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
 
+            # Extract query parameters
             event_id = request.args.get('event_id', type=int)
             scope = request.args.get('scope')
-            limit = request.args.get('limit', 10, type=int)
+            start_date_str = request.args.get('start_date')
+            end_date_str = request.args.get('end_date')
+            specific_date_str = request.args.get('specific_date')
+            limit_str = request.args.get('limit')
+            get_all = request.args.get('get_all', 'false').lower() == 'true'
             offset = request.args.get('offset', 0, type=int)
             target_currency_id = request.args.get('target_currency_id', type=int)
 
+            # Handle date filtering
+            start_date = None
+            end_date = None
+            if specific_date_str:
+                try:
+                    specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
+                    start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                except Exception as e:
+                    logger.error(f"GetReportsResource: Error parsing specific_date '{specific_date_str}': {e}")
+                    return {'error': 'Invalid specific date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS'}, 400
+            elif start_date_str or end_date_str:
+                start_date, end_date, error = DateValidator.validate_date_range(start_date_str, end_date_str)
+                if error:
+                    logger.warning(f"GetReportsResource: Invalid date range provided: {error}")
+                    return error, error.get('status', 400)
+
+            # Handle limit parameter
+            limit = None
+            if not get_all:
+                if limit_str:
+                    try:
+                        limit = int(limit_str)
+                        if limit <= 0:
+                            logger.warning(f"GetReportsResource: Invalid limit value: {limit_str}")
+                            return {'error': 'Limit must be a positive integer'}, 400
+                    except ValueError:
+                        logger.warning(f"GetReportsResource: Invalid limit format: {limit_str}")
+                        return {'error': 'Limit must be a valid integer'}, 400
+                else:
+                    limit = 10  # Default to 10 most recent reports
+
+            # Build base query based on user role
             if current_user.role == UserRole.ADMIN:
                 query = Report.query
             else:
@@ -207,6 +246,7 @@ class GetReportsResource(Resource, AuthorizationMixin):
                     return {'error': 'Organizer profile not found for this user'}, 403
                 query = Report.query.filter_by(organizer_id=organizer.id)
 
+            # Apply event filter
             if event_id:
                 event = Event.query.get(event_id)
                 if not event:
@@ -217,36 +257,100 @@ class GetReportsResource(Resource, AuthorizationMixin):
                     return {'error': 'Unauthorized to access reports for this event'}, 403
                 query = query.filter_by(event_id=event_id)
 
+            # Apply scope filter
             if scope:
                 query = query.filter_by(report_scope=scope)
 
-            query = query.order_by(Report.timestamp.desc())
-            total_count = query.count()
-            reports = query.offset(offset).limit(limit).all()
+            # Apply date filters
+            if start_date and end_date:
+                query = query.filter(Report.timestamp.between(start_date, end_date))
 
+            # Order by timestamp descending (most recent first)
+            query = query.order_by(Report.timestamp.desc())
+
+            # Get total count before applying limit/offset
+            total_count = query.count()
+
+            # Apply offset and limit
+            if offset:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+
+            reports = query.all()
+
+            # Build response data
             reports_data = []
             base_url = request.url_root.rstrip('/')
             for report in reports:
                 report_dict = report.as_dict(target_currency_id=target_currency_id)
-                report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=pdf"
-                report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=csv"
+                report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=pdf"
+                report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=csv"
                 reports_data.append(report_dict)
 
-            logger.info(f"GetReportsResource: Retrieved {len(reports_data)} reports for user {current_user_id}.")
-            return {
+            # Enhanced logging with filter information
+            filter_info = []
+            if event_id:
+                filter_info.append(f"event_id={event_id}")
+            if scope:
+                filter_info.append(f"scope={scope}")
+            if specific_date_str:
+                filter_info.append(f"specific_date={specific_date_str}")
+            elif start_date_str or end_date_str:
+                filter_info.append(f"date_range={start_date_str} to {end_date_str}")
+            if limit:
+                filter_info.append(f"limit={limit}")
+            if offset:
+                filter_info.append(f"offset={offset}")
+
+            filters_applied = ", ".join(filter_info) if filter_info else "no filters"
+            logger.info(f"GetReportsResource: Retrieved {len(reports_data)} reports for user {current_user_id} with {filters_applied}.")
+
+            response_data = {
                 'reports': reports_data,
                 'total_count': total_count,
+                'total_reports_returned': len(reports_data),
                 'limit': limit,
-                'offset': offset
-            }, 200
+                'offset': offset,
+                'is_limited': bool(limit),
+                'limit_applied': limit
+            }
+
+            # Add query parameters info to response
+            query_info = {
+                'event_id': event_id,
+                'scope': scope,
+                'limit': limit,
+                'offset': offset,
+                'get_all': get_all,
+                'target_currency_id': target_currency_id
+            }
+
+            if specific_date_str:
+                query_info.update({
+                    'specific_date': specific_date_str,
+                    'is_single_day': True
+                })
+            elif start_date_str or end_date_str:
+                query_info.update({
+                    'start_date': start_date_str,
+                    'end_date': end_date_str,
+                    'is_single_day': False
+                })
+
+            response_data['query_info'] = query_info
+
+            return response_data, 200
+
         except Exception as e:
             logger.error(f"GetReportsResource: Error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
+
 class GetReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a single report by its ID.
-    Includes download URLs for PDF and CSV.
+    Includes download URLs for PDF and CSV with enhanced response format.
     """
     @jwt_required()
     def get(self, report_id):
@@ -262,7 +366,9 @@ class GetReportResource(Resource, AuthorizationMixin):
                 logger.warning(f"GetReportResource: Report with ID {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
+            # Enhanced authorization check
             is_authorized = False
+            organizer = None
             if current_user.role == UserRole.ADMIN:
                 is_authorized = True
             else:
@@ -274,18 +380,41 @@ class GetReportResource(Resource, AuthorizationMixin):
                 logger.warning(f"GetReportResource: User {current_user_id} unauthorized to access report {report_id}.")
                 return {'error': 'Unauthorized to access this report'}, 403
 
+            # Get target currency for conversion
             target_currency_id = request.args.get('target_currency_id', type=int)
+            
+            # Build enhanced response
             report_dict = report.as_dict(target_currency_id=target_currency_id)
             base_url = request.url_root.rstrip('/')
-            report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=pdf"
-            report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{report.id}/export?format=csv"
+            report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=pdf"
+            report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=csv"
 
-            logger.info(f"GetReportResource: Retrieved report {report_id} for user {current_user_id}.")
-            return {
-                'report': report_dict
-            }, 200
+            # Add metadata about the request
+            response_data = {
+                'report': report_dict,
+                'request_info': {
+                    'requested_by_user_id': current_user_id,
+                    'requested_by_role': current_user.role.value if current_user.role else None,
+                    'target_currency_id': target_currency_id,
+                    'request_timestamp': datetime.now().isoformat()
+                }
+            }
+
+            # Add currency conversion info if applicable
+            if target_currency_id and hasattr(report, 'total_revenue'):
+                target_currency = Currency.query.get(target_currency_id)
+                if target_currency:
+                    response_data['currency_conversion'] = {
+                        'target_currency_id': target_currency_id,
+                        'target_currency_code': target_currency.code.value,
+                        'conversion_applied': True
+                    }
+
+            logger.info(f"GetReportResource: Retrieved report {report_id} for user {current_user_id} with currency_id {target_currency_id}.")
+            return response_data, 200
+
         except Exception as e:
-            logger.error(f"GetReportResource: Error: {e}", exc_info=True)
+            logger.error(f"GetReportResource: Error retrieving report {report_id}: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
 class ExportReportResource(Resource):
