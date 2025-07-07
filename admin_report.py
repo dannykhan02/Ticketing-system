@@ -12,46 +12,57 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import json
-import time
-import hashlib
-from collections import defaultdict
+# Import the currency conversion function
+from currency_routes import convert_currency # THIS IS THE KEY IMPORT
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class RequestDeduplicator:
-    def __init__(self):
-        self.recent_requests = defaultdict(list)
-        self.cleanup_interval = 300  # every 5 minutes
-        self.last_cleanup = time.time()
+# --- Helper for Date Parsing (Similar to DateUtils from organizer_report) ---
+class AdminDateUtils:
+    @staticmethod
+    def parse_date_param(date_str: str, param_name: str) -> datetime:
+        """Parses a date string into a datetime object. Handles YYYY-MM-DD and YYYY-MM-DD HH:MM:SS."""
+        try:
+            if ' ' in date_str:
+                return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+            else:
+                return datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            raise ValueError(f"Invalid {param_name} format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS.")
 
-    def cleanup_old_requests(self):
-        current_time = time.time()
-        if current_time - self.last_cleanup > self.cleanup_interval:
-            cutoff = current_time - 60  # keep only requests from last 60 seconds
-            for key in list(self.recent_requests):
-                self.recent_requests[key] = [t for t in self.recent_requests[key] if t > cutoff]
-                if not self.recent_requests[key]:
-                    del self.recent_requests[key]
-            self.last_cleanup = current_time
+    @staticmethod
+    def adjust_end_date(end_date: datetime) -> datetime:
+        """Adjusts end date to include the entire day for YYYY-MM-DD format."""
+        # Check if the time component is zero, implying it's a date-only input
+        if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0 and end_date.microsecond == 0:
+            return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return end_date
 
-    def generate_key(self, user_id, organizer_id, event_id, email, days):
-        key = f"{user_id}:{organizer_id}:{event_id}:{email}:{days}"
-        return hashlib.md5(key.encode()).hexdigest()
+    @staticmethod
+    def validate_date_range(start_date_str: Optional[str], end_date_str: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime], Optional[Dict[str, Any]]]:
+        """Validates and parses a date range."""
+        start_date = None
+        end_date = None
+        error = None
 
-    def is_duplicate(self, key, window=30):
-        self.cleanup_old_requests()
-        now = time.time()
-        times = self.recent_requests.get(key, [])
-        for t in times:
-            if now - t < window:
-                return True
-        self.recent_requests[key].append(now)
-        return False
+        if start_date_str:
+            try:
+                start_date = AdminDateUtils.parse_date_param(start_date_str, 'start_date')
+            except ValueError as e:
+                return None, None, {'error': str(e), 'status': 400}
 
-# Create a global instance of the deduplicator
-request_deduplicator = RequestDeduplicator()
+        if end_date_str:
+            try:
+                end_date = AdminDateUtils.parse_date_param(end_date_str, 'end_date')
+                end_date = AdminDateUtils.adjust_end_date(end_date) # Adjust to end of day
+            except ValueError as e:
+                return None, None, {'error': str(e), 'status': 400}
+
+        if start_date and end_date and start_date > end_date:
+            error = {'error': 'Start date cannot be after end date', 'status': 400}
+
+        return start_date, end_date, error
+
 
 @dataclass
 class AdminReportConfig:
@@ -64,6 +75,9 @@ class AdminReportConfig:
     date_range_days: int = 30
     group_by_organizer: bool = True
     use_latest_rates: bool = True
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+
 
 class AdminReportService:
     """Service class for handling admin report operations"""
@@ -141,12 +155,9 @@ class AdminReportService:
         total_attendees = sum(report.number_of_attendees or 0 for report in reports)
         total_revenue = 0.0
         currency_info = {}
-        for report in reports:
-            if target_currency_id:
-                converted_revenue = report.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates)
-                total_revenue += float(converted_revenue)
-            else:
-                total_revenue += float(report.total_revenue)
+
+        # Determine target currency details
+        target_currency = None
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
@@ -154,23 +165,46 @@ class AdminReportService:
                     "currency": target_currency.code.value,
                     "currency_symbol": target_currency.symbol
                 }
-        elif reports:
+        elif reports and reports[0].base_currency:
+            # If no target currency specified, use the base currency of the first report
+            # This might not be ideal if reports have different base currencies.
+            # A more robust solution might involve picking a 'dominant' currency or requiring a target.
             base_currency = reports[0].base_currency
-            if base_currency:
-                currency_info = {
-                    "currency": base_currency.code.value,
-                    "currency_symbol": base_currency.symbol
-                }
+            currency_info = {
+                "currency": base_currency.code.value,
+                "currency_symbol": base_currency.symbol
+            }
+        else:
+            # Fallback if no target currency and no base currency in reports
+            currency_info = {
+                "currency": "USD", # Default to USD or another fallback
+                "currency_symbol": "$"
+            }
+
+
+        for report in reports:
+            if target_currency:
+                # Use report.get_revenue_in_currency which should internally use convert_currency
+                converted_revenue = report.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates)
+                total_revenue += float(converted_revenue)
+            else:
+                # If no target currency, sum up in original currencies (might be mixed)
+                # or assume base currency of the first report
+                total_revenue += float(report.total_revenue)
+
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
             if event:
-                event_revenue = sum(
-                    float(r.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates) if target_currency_id else r.total_revenue)
-                    for r in event_reports
-                )
+                event_revenue = 0.0
+                for r in event_reports:
+                    if target_currency:
+                        event_revenue += float(r.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates))
+                    else:
+                        event_revenue += float(r.total_revenue) # Sum in original currency if no target
+                
                 event_tickets = sum(r.total_tickets_sold for r in event_reports)
                 event_attendees = sum(r.number_of_attendees or 0 for r in event_reports)
                 event_details.append({
@@ -201,12 +235,17 @@ class AdminReportService:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
-            end_date = datetime.utcnow()
-            start_date = end_date - timedelta(days=config.date_range_days)
+
+            start_date = config.start_date
+            end_date = config.end_date
+
+            if not start_date:
+                start_date = datetime.utcnow() - timedelta(days=config.date_range_days)
+            if not end_date:
+                end_date = datetime.utcnow()
+                end_date = AdminDateUtils.adjust_end_date(end_date)
+
             reports = AdminReportService.get_reports_by_organizer(
-                organizer_id, start_date, end_date
-            )
-            events = AdminReportService.get_events_by_organizer(
                 organizer_id, start_date, end_date
             )
             aggregated_data = AdminReportService.aggregate_organizer_reports(
@@ -222,7 +261,7 @@ class AdminReportService:
                 "report_period": {
                     "start_date": start_date.isoformat(),
                     "end_date": end_date.isoformat(),
-                    "days": config.date_range_days
+                    "days": (end_date - start_date).days if start_date and end_date else config.date_range_days
                 },
                 "currency_settings": {
                     "target_currency_id": config.target_currency_id,
@@ -249,14 +288,24 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
-            end_date = datetime.utcnow()
-            start_date = end_date - timedelta(days=config.date_range_days)
+
+            start_date = config.start_date
+            end_date = config.end_date
+
+            if not start_date:
+                start_date = datetime.utcnow() - timedelta(days=config.date_range_days)
+            if not end_date:
+                end_date = datetime.utcnow()
+                end_date = AdminDateUtils.adjust_end_date(end_date)
+
+
             existing_reports = AdminReportService.get_reports_by_event(
                 event_id, start_date, end_date
             )
             fresh_report_data = None
             try:
                 if existing_reports:
+                    # Aggregate using the service method, which handles currency conversion
                     fresh_aggregated = AdminReportService.aggregate_organizer_reports(
                         existing_reports, config.target_currency_id, config.use_latest_rates
                     )
@@ -268,14 +317,22 @@ class AdminReportService:
                             "use_latest_rates": config.use_latest_rates
                         }
                     }
+                    # Currency info is now part of fresh_aggregated
+                    fresh_report_data["currency_info"] = {
+                        "currency": fresh_aggregated.get('currency'),
+                        "currency_symbol": fresh_aggregated.get('currency_symbol')
+                    }
+                else:
+                    # If no existing reports, provide default zero values
+                    # and ensure currency info is still present if a target_currency_id was provided
+                    currency_code = None
+                    currency_symbol = ""
                     if config.target_currency_id:
                         target_currency = Currency.query.get(config.target_currency_id)
                         if target_currency:
-                            fresh_report_data["currency_info"] = {
-                                "currency": target_currency.code.value,
-                                "currency_symbol": target_currency.symbol
-                            }
-                else:
+                            currency_code = target_currency.code.value
+                            currency_symbol = target_currency.symbol
+
                     fresh_report_data = {
                         "event_summary": {
                             "total_tickets_sold": 0,
@@ -283,8 +340,8 @@ class AdminReportService:
                             "total_attendees": 0,
                             "event_count": 0,
                             "report_count": 0,
-                            "currency": None,
-                            "currency_symbol": None,
+                            "currency": currency_code,
+                            "currency_symbol": currency_symbol,
                             "events": []
                         },
                         "report_timestamp": datetime.utcnow().isoformat(),
@@ -293,12 +350,20 @@ class AdminReportService:
                             "use_latest_rates": config.use_latest_rates
                         },
                         "currency_info": {
-                            "currency": None,
-                            "currency_symbol": ""
+                            "currency": currency_code,
+                            "currency_symbol": currency_symbol
                         }
                     }
             except Exception as e:
                 logger.warning(f"Could not generate fresh report data: {e}")
+                # Fallback in case of an error during fresh report data generation
+                currency_code = None
+                currency_symbol = ""
+                if config.target_currency_id:
+                    target_currency = Currency.query.get(config.target_currency_id)
+                    if target_currency:
+                        currency_code = target_currency.code.value
+                        currency_symbol = target_currency.symbol
                 fresh_report_data = {
                     "error": "Fresh report generation failed",
                     "details": str(e),
@@ -308,13 +373,13 @@ class AdminReportService:
                         "total_attendees": 0,
                         "event_count": 0,
                         "report_count": 0,
-                        "currency": None,
-                        "currency_symbol": None,
+                        "currency": currency_code,
+                        "currency_symbol": currency_symbol,
                         "events": []
                     },
                     "currency_info": {
-                        "currency": None,
-                        "currency_symbol": ""
+                        "currency": currency_code,
+                        "currency_symbol": currency_symbol
                     }
                 }
             admin_report = {
@@ -329,13 +394,14 @@ class AdminReportService:
                 "report_period": {
                     "start_date": start_date.isoformat(),
                     "end_date": end_date.isoformat(),
-                    "days": config.date_range_days
+                    "days": (end_date - start_date).days if start_date and end_date else config.date_range_days
                 },
                 "currency_settings": {
                     "target_currency_id": config.target_currency_id,
                     "use_latest_rates": config.use_latest_rates
                 },
                 "existing_reports": [
+                    # This calls as_dict_with_currency which should use convert_currency
                     report.as_dict_with_currency(config.target_currency_id, config.use_latest_rates) for report in existing_reports
                 ],
                 "fresh_report_data": fresh_report_data,
@@ -354,9 +420,36 @@ class AdminReportService:
     def send_report_email(report_data: Dict[str, Any], recipient_email: str) -> bool:
         """Send report via email with enhanced formatting"""
         try:
-            event_name = report_data.get('event_name', 'Unknown Event')
-            currency_symbol = report_data.get('currency_symbol', '$')
-            subject = f"Event Analytics Report - {event_name}"
+            # Determine if it's an event-specific report or an organizer summary
+            is_event_report = 'event_info' in report_data
+
+            if is_event_report:
+                report_title = report_data['event_info'].get('event_name', 'Unknown Event')
+                subject = f"Event Analytics Report - {report_title}"
+                filter_start_date_display = report_data['report_period'].get('start_date', 'N/A')
+                filter_end_date_display = report_data['report_period'].get('end_date', 'N/A')
+                currency_symbol = report_data['fresh_report_data'].get('currency_info', {}).get('currency_symbol', '$')
+                total_tickets_sold = report_data['fresh_report_data']['event_summary'].get('total_tickets_sold', 0)
+                total_revenue = report_data['fresh_report_data']['event_summary'].get('total_revenue', 0.0)
+                number_of_attendees = report_data['fresh_report_data']['event_summary'].get('total_attendees', 0)
+                
+                # These might need to be extracted from 'fresh_report_data.event_summary.events'
+                # if you have per-event ticket type breakdown in aggregated data
+                tickets_sold_by_type = {}
+                revenue_by_ticket_type = {}
+
+            else: # Organizer Summary Report
+                report_title = report_data['organizer_info'].get('organizer_name', 'Unknown Organizer')
+                subject = f"Organizer Summary Report - {report_title}"
+                filter_start_date_display = report_data['report_period'].get('start_date', 'N/A')
+                filter_end_date_display = report_data['report_period'].get('end_date', 'N/A')
+                currency_symbol = report_data['summary'].get('currency_symbol', '$')
+                total_tickets_sold = report_data['summary'].get('total_tickets_sold', 0)
+                total_revenue = report_data['summary'].get('total_revenue', 0.0)
+                number_of_attendees = report_data['summary'].get('total_attendees', 0)
+                tickets_sold_by_type = {} # Organizer summary typically doesn't have breakdown by ticket type directly
+                revenue_by_ticket_type = {}
+
             html_body = f"""
             <!DOCTYPE html>
             <html>
@@ -380,28 +473,28 @@ class AdminReportService:
             </head>
             <body>
                 <div class="header">
-                    <h1>📊 Event Report</h1>
-                    <h2>{event_name}</h2>
-                    <p>Report Period: {report_data.get('filter_start_date', 'N/A')} to {report_data.get('filter_end_date', 'N/A')}</p>
+                    <h1>📊 Admin Report</h1>
+                    <h2>{report_title}</h2>
+                    <p>Report Period: {filter_start_date_display} to {filter_end_date_display}</p>
                 </div>
                 <div class="content">
                     <div class="summary-box">
                         <h3>📈 Executive Summary</h3>
                         <div class="metric">
-                            <div class="metric-value">{report_data.get('total_tickets_sold', 0)}</div>
+                            <div class="metric-value">{total_tickets_sold}</div>
                             <div class="metric-label">Tickets Sold</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-value">{currency_symbol}{report_data.get('total_revenue', 0):,.2f}</div>
+                            <div class="metric-value">{currency_symbol}{total_revenue:,.2f}</div>
                             <div class="metric-label">Total Revenue</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-value">{report_data.get('number_of_attendees', 0)}</div>
+                            <div class="metric-value">{number_of_attendees}</div>
                             <div class="metric-label">Attendees</div>
                         </div>
             """
-            if report_data.get('total_tickets_sold', 0) > 0:
-                attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
+            if total_tickets_sold > 0:
+                attendance_rate = (number_of_attendees / total_tickets_sold * 100)
                 html_body += f"""
                         <div class="metric">
                             <div class="metric-value">{attendance_rate:.1f}%</div>
@@ -411,16 +504,16 @@ class AdminReportService:
             html_body += """
                     </div>
             """
-            if report_data.get('tickets_sold_by_type'):
+            if tickets_sold_by_type: # Only show if data exists
                 html_body += """
                     <div class="summary-box">
                         <h3>🎫 Ticket Sales Breakdown</h3>
                         <table>
                             <tr><th>Ticket Type</th><th>Quantity</th><th>Revenue</th></tr>
                 """
-                for ticket_type in report_data['tickets_sold_by_type'].keys():
-                    quantity = report_data['tickets_sold_by_type'].get(ticket_type, 0)
-                    revenue = report_data.get('revenue_by_ticket_type', {}).get(ticket_type, 0)
+                for ticket_type in tickets_sold_by_type.keys():
+                    quantity = tickets_sold_by_type.get(ticket_type, 0)
+                    revenue = revenue_by_ticket_type.get(ticket_type, 0)
                     html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
                 html_body += """
                         </table>
@@ -431,17 +524,17 @@ class AdminReportService:
                         <h3>💡 Key Insights</h3>
                         <ul>
             """
-            if report_data.get('total_tickets_sold', 0) > 0:
-                attendance_rate = (report_data.get('number_of_attendees', 0) / report_data.get('total_tickets_sold', 1) * 100)
+            if total_tickets_sold > 0:
+                attendance_rate = (number_of_attendees / total_tickets_sold * 100)
                 if attendance_rate > 90:
-                    html_body += "<li>Excellent attendance rate! Most ticket holders attended the event.</li>"
+                    html_body += "<li>Excellent attendance rate! Most ticket holders attended.</li>"
                 elif attendance_rate > 70:
                     html_body += "<li>Good attendance rate with room for improvement in no-show reduction.</li>"
                 else:
                     html_body += "<li>Low attendance rate suggests potential areas for improvement.</li>"
-            if report_data.get('revenue_by_ticket_type'):
-                max_revenue_type = max(report_data['revenue_by_ticket_type'].items(), key=lambda x: x[1])[0]
-                html_body += f"<li>{max_revenue_type} tickets generated the highest revenue for this event.</li>"
+            if revenue_by_ticket_type: # Only add this insight if there's data
+                max_revenue_type = max(revenue_by_ticket_type.items(), key=lambda x: x[1])[0]
+                html_body += f"<li>{max_revenue_type} tickets generated the highest revenue.</li>"
             html_body += """
                         </ul>
                     </div>
@@ -483,20 +576,45 @@ class AdminReportResource(Resource):
         organizer_id = request.args.get('organizer_id', type=int)
         event_id = request.args.get('event_id', type=int)
         format_type = request.args.get('format', 'json')
-        days = request.args.get('days', 30, type=int)
         target_currency_id = request.args.get('currency_id', type=int)
         include_charts = request.args.get('include_charts', 'true').lower() == 'true'
         use_latest_rates = request.args.get('use_latest_rates', 'true').lower() == 'true'
         send_email = request.args.get('send_email', 'false').lower() == 'true'
         recipient_email = request.args.get('recipient_email', user.email)
 
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        specific_date_str = request.args.get('specific_date')
+
+        report_start_date = None
+        report_end_date = None
+
+        if specific_date_str:
+            try:
+                specific_date = AdminDateUtils.parse_date_param(specific_date_str, 'specific_date')
+                report_start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                report_end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError as e:
+                logger.error(f"AdminReportResource: Error parsing specific_date '{specific_date_str}': {e}")
+                return {'error': str(e)}, 400
+        else:
+            parsed_start_date, parsed_end_date, date_error = AdminDateUtils.validate_date_range(start_date_str, end_date_str)
+            if date_error:
+                logger.warning(f"AdminReportResource: Invalid date range provided: {date_error}")
+                return date_error, date_error.get('status', 400)
+
+            report_start_date = parsed_start_date
+            report_end_date = parsed_end_date
+
         config = AdminReportConfig(
             include_charts=include_charts,
             include_email=send_email,
             format_type=format_type,
             target_currency_id=target_currency_id,
-            date_range_days=days,
-            use_latest_rates=use_latest_rates
+            date_range_days=int(request.args.get('days', 30)),
+            use_latest_rates=use_latest_rates,
+            start_date=report_start_date,
+            end_date=report_end_date
         )
 
         try:
@@ -537,18 +655,6 @@ class AdminReportResource(Resource):
                 response = jsonify(report_data)
 
             if send_email:
-                request_key = request_deduplicator.generate_key(
-                    current_user_id, organizer_id, event_id, recipient_email, days
-                )
-
-                if request_deduplicator.is_duplicate(request_key, window=30):
-                    logger.warning(f"Duplicate email blocked for key {request_key} by user {current_user_id}")
-                    return {
-                        "message": "Duplicate request detected. Email already sent recently.",
-                        "duplicate_request": True,
-                        "wait_time": 30
-                    }, 429  # Too Many Requests
-
                 email_success = AdminReportService.send_report_email(report_data, recipient_email)
                 if not email_success:
                     logger.error("Failed to send email")
