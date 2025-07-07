@@ -14,7 +14,8 @@ from itsdangerous import URLSafeSerializer
 import qrcode
 import logging
 import os
-import datetime
+from datetime import datetime
+ 
 import uuid
 import requests
 import io
