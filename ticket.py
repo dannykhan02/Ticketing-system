@@ -582,68 +582,98 @@ class TicketResource(Resource):
     @jwt_required()
     def post(self):
         """Create new tickets for the authenticated user after successful payment."""
+        logger.info("=== TICKET CREATION STARTED ===")
+        
         try:
             identity = get_jwt_identity()
+            logger.info(f"JWT Identity retrieved: {identity}")
+            
             user = User.query.get(identity)
-
             if not user:
+                logger.error(f"User not found for identity: {identity}")
                 return {"error": "User not found"}, 404
+            
+            logger.info(f"User found: ID={user.id}, Email={user.email}, Phone={user.phone_number}")
 
             data = request.get_json()
+            logger.info(f"Request data received: {data}")
+            
             required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]
-            if not all(field in data for field in required_fields):
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                logger.error(f"Missing required fields: {missing_fields}")
                 return {"error": "Missing required fields"}, 400
 
+            # Validate event
             event = Event.query.get(data["event_id"])
             if not event:
+                logger.error(f"Event not found: {data['event_id']}")
                 return {"error": "Event not found"}, 404
+            
+            logger.info(f"Event found: ID={event.id}, Name={getattr(event, 'name', 'N/A')}")
 
+            # Validate ticket type
             ticket_type = TicketType.query.filter_by(id=data["ticket_type_id"], event_id=event.id).first()
             if not ticket_type:
+                logger.error(f"Ticket type not found: {data['ticket_type_id']} for event {event.id}")
                 return {"error": "Ticket type not found for this event"}, 404
+            
+            logger.info(f"Ticket type found: ID={ticket_type.id}, Price={ticket_type.price}, Available={ticket_type.quantity}")
 
+            # Validate availability
             if ticket_type.quantity == 0:
+                logger.warning(f"Ticket type {ticket_type.id} is sold out")
                 return {"error": "Tickets for this type are sold out"}, 400
 
             quantity = int(data["quantity"])
+            logger.info(f"Requested quantity: {quantity}")
+            
             if quantity <= 0:
+                logger.error(f"Invalid quantity requested: {quantity}")
                 return {"error": "Quantity must be at least 1"}, 400
 
             if ticket_type.quantity < quantity:
+                logger.error(f"Insufficient tickets: requested={quantity}, available={ticket_type.quantity}")
                 return {"error": f"Only {ticket_type.quantity} tickets are available"}, 400
 
             amount = ticket_type.price * quantity
+            logger.info(f"Total amount calculated: {amount}")
 
-            # Generate a unique payment reference
+            # Generate payment reference
             payment_reference = str(uuid.uuid4())
+            logger.info(f"Payment reference generated: {payment_reference}")
 
-            # Create a new Transaction first (PENDING for now)
+            # Create Transaction
+            logger.info("Creating transaction record...")
             transaction = Transaction(
                 amount_paid=amount,
                 payment_status=PaymentStatus.PENDING,
                 payment_reference=payment_reference,
                 payment_method=data["payment_method"].upper(),
-                timestamp=datetime.datetime.utcnow(),
+                timestamp=datetime.utcnow(),
                 user_id=user.id
             )
             db.session.add(transaction)
-            db.session.flush()  # Get the transaction.id before commit
+            db.session.flush()
             
-            # Ensure transaction has an ID
             if not transaction.id:
+                logger.error("Failed to create transaction - no ID assigned")
                 db.session.rollback()
                 return {"error": "Failed to create transaction"}, 500
-                
+            
+            logger.info(f"Transaction created successfully: ID={transaction.id}")
+            
+            # Create tickets
+            logger.info(f"Creating {quantity} ticket records...")
             tickets = []
             transaction_tickets = []
             
-            # Create individual tickets (one per quantity)
             for i in range(quantity):
                 temp_qr_code = f"pending_{uuid.uuid4()}"
                 new_ticket = Ticket(
                     event_id=event.id,
                     ticket_type_id=ticket_type.id,
-                    quantity=1,  # Each ticket record represents a single ticket
+                    quantity=1,
                     phone_number=user.phone_number,
                     email=user.email,
                     payment_status=PaymentStatus.PENDING,
@@ -653,98 +683,118 @@ class TicketResource(Resource):
                 )
                 db.session.add(new_ticket)
                 tickets.append(new_ticket)
+                logger.debug(f"Created ticket {i+1}/{quantity} with temp QR: {temp_qr_code}")
             
-            # Flush to get ticket IDs
             db.session.flush()
             
-            # Verify all tickets have IDs
-            for ticket in tickets:
-                if not ticket.id:
-                    db.session.rollback()
-                    return {"error": "Failed to create tickets"}, 500
+            # Verify ticket creation
+            failed_tickets = [i for i, ticket in enumerate(tickets) if not ticket.id]
+            if failed_tickets:
+                logger.error(f"Failed to create tickets at indices: {failed_tickets}")
+                db.session.rollback()
+                return {"error": "Failed to create tickets"}, 500
             
-            # Create relationships in the TransactionTicket table
-            for ticket in tickets:
+            logger.info(f"All {len(tickets)} tickets created successfully")
+            
+            # Create transaction-ticket relationships
+            logger.info("Creating transaction-ticket relationships...")
+            for i, ticket in enumerate(tickets):
                 transaction_ticket = TransactionTicket(
                     transaction_id=transaction.id,
                     ticket_id=ticket.id
                 )
                 db.session.add(transaction_ticket)
                 transaction_tickets.append(transaction_ticket)
+                logger.debug(f"Created relationship {i+1}: transaction={transaction.id}, ticket={ticket.id}")
             
-            # Commit the transaction, tickets, and relationships
             db.session.commit()
+            logger.info("Transaction and tickets committed to database")
 
             # Process Payment
-            if data["payment_method"] == "Mpesa":
-                if "phone_number" not in data or normalize_phone_number(data["phone_number"]) != normalize_phone_number(user.phone_number):
-                    # Rollback everything if phone number validation fails
-                    for tt in transaction_tickets:
-                        db.session.delete(tt)
-                    for ticket in tickets:
-                        db.session.delete(ticket)
-                    db.session.delete(transaction)
-                    db.session.commit()
+            payment_method = data["payment_method"].upper()
+            logger.info(f"Processing payment via {payment_method}")
+            
+            if payment_method == "MPESA":
+                logger.info("=== MPESA PAYMENT PROCESSING ===")
+                
+                # Validate phone number
+                if "phone_number" not in data:
+                    logger.error("Phone number not provided in request data")
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
+                    return {"error": "Phone number must be the registered one"}, 400
+                
+                user_phone_normalized = normalize_phone_number(user.phone_number)
+                request_phone_normalized = normalize_phone_number(data["phone_number"])
+                
+                logger.info(f"Phone validation: user={user_phone_normalized}, request={request_phone_normalized}")
+                
+                if request_phone_normalized != user_phone_normalized:
+                    logger.error("Phone number mismatch - rolling back transaction")
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return {"error": "Phone number must be the registered one"}, 400
 
-                # Initiate STK Push using the imported class
+                # Prepare M-Pesa data
                 mpesa_data = {
                     "phone_number": user.phone_number,
                     "amount": float(amount),
-                    "transaction_id": transaction.id  # Pass the transaction ID for reference
+                    "transaction_id": transaction.id
                 }
+                logger.info(f"M-Pesa request data: {mpesa_data}")
+
+                # Initiate STK Push
+                logger.info("Initiating STK Push...")
                 mpesa = STKPush()
                 response, status_code = mpesa.post(mpesa_data)
+                
+                logger.info(f"STK Push response: status={status_code}, response={response}")
 
                 if status_code == 200:
+                    logger.info("STK Push successful")
+                    
+                    # Store M-Pesa references
                     if 'MerchantRequestID' in response:
                         transaction.merchant_request_id = response['MerchantRequestID']
-                        # Also store CheckoutRequestID if available
-                        if 'CheckoutRequestID' in response:
-                            transaction.checkout_request_id = response['CheckoutRequestID']
-                        db.session.commit()
-                        logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']} for transaction {transaction.id}")
+                        logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']}")
                     
-                    # Wait a bit for the payment to process, then check status
+                    if 'CheckoutRequestID' in response:
+                        transaction.checkout_request_id = response['CheckoutRequestID']
+                        logger.info(f"Stored CheckoutRequestID: {response['CheckoutRequestID']}")
+                    
+                    db.session.commit()
+                    
+                    # Handle status checking
                     checkout_request_id = response.get('CheckoutRequestID')
                     if checkout_request_id:
+                        logger.info(f"Starting status check for CheckoutRequestID: {checkout_request_id}")
                         return self._handle_mpesa_with_status_check(transaction, checkout_request_id, tickets, transaction_tickets)
                     else:
+                        logger.warning("No CheckoutRequestID in response, returning STK Push response")
                         return response, status_code
                 else:
-                    # If STK Push fails, revert everything
+                    logger.error(f"STK Push failed: status={status_code}, response={response}")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return response, status_code
 
-            elif data["payment_method"] == "Paystack":
+            elif payment_method == "PAYSTACK":
+                logger.info("=== PAYSTACK PAYMENT PROCESSING ===")
+                
                 if not user.email:
-                    # Rollback everything if email validation fails
-                    for tt in transaction_tickets:
-                        db.session.delete(tt)
-                    for ticket in tickets:
-                        db.session.delete(ticket)
-                    db.session.delete(transaction)
-                    db.session.commit()
+                    logger.error("User email not available for Paystack payment")
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return {"error": "User email is required for Paystack payment"}, 400
 
-                # Initialize Paystack payment
+                logger.info(f"Initializing Paystack payment for email: {user.email}, amount: {amount}")
                 init = initialize_paystack_payment(user.email, int(amount * 100))
+                
                 if isinstance(init, dict) and "error" in init:
-                    # Remote error – roll back everything
-                    for tt in transaction_tickets:
-                        db.session.delete(tt)
-                    for ticket in tickets:
-                        db.session.delete(ticket)
-                    db.session.delete(transaction)
-                    db.session.commit()
+                    logger.error(f"Paystack initialization failed: {init}")
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return init, 502
 
-                # Save the Paystack reference
                 transaction.payment_reference = init["reference"]
                 db.session.commit()
                 logger.info(f"Paystack payment initialized with reference: {init['reference']}")
                 
-                # Return the authorization URL so front-end can redirect
                 return {
                     "message": "Payment initialized",
                     "authorization_url": init["authorization_url"],
@@ -752,147 +802,198 @@ class TicketResource(Resource):
                 }, 200
 
             else:
-                # Invalid payment method - rollback everything
-                for tt in transaction_tickets:
-                    db.session.delete(tt)
-                for ticket in tickets:
-                    db.session.delete(ticket)
-                db.session.delete(transaction)
-                db.session.commit()
+                logger.error(f"Invalid payment method: {payment_method}")
+                self._rollback_transaction(transaction, tickets, transaction_tickets)
                 return {"error": "Invalid payment method"}, 400
 
         except OperationalError as e:
+            logger.error(f"Database operational error: {e}")
             db.session.rollback()
-            logger.error(f"Database error: {e}")
             return {"error": "Database connection error"}, 500
 
         except Exception as e:
+            logger.error(f"Unexpected error in ticket creation: {e}", exc_info=True)
             db.session.rollback()
-            logger.error(f"Error initializing payment: {e}")
             return {"error": "An internal error occurred"}, 500
 
     @jwt_required()
     def put(self, ticket_id):
         """Update a ticket (Only the ticket owner can update)."""
+        logger.info(f"=== TICKET UPDATE STARTED === Ticket ID: {ticket_id}")
+        
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
 
             if not user:
+                logger.error(f"User not found for identity: {identity}")
                 return {"error": "User not found"}, 404
 
-            ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+            logger.info(f"User found: ID={user.id}")
 
+            ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
             if not ticket:
+                logger.error(f"Ticket not found or access denied: ticket_id={ticket_id}, user_id={user.id}")
                 return {"error": "Ticket not found or does not belong to you"}, 404
 
+            logger.info(f"Ticket found: ID={ticket.id}, Current quantity={ticket.quantity}")
+
             data = request.get_json()
+            logger.info(f"Update data received: {data}")
+            
             original_quantity = ticket.quantity
 
             if "quantity" in data:
                 new_quantity = data["quantity"]
+                logger.info(f"Quantity update requested: {original_quantity} -> {new_quantity}")
 
-                if ticket.email is not None:  # Check if email is present
+                if ticket.email is not None:
+                    logger.warning(f"Update blocked - confirmation email already sent for ticket {ticket.id}")
                     return {"error": "Tickets for which confirmation emails have been sent cannot have their quantity reduced or be cancelled for a refund."}, 400
 
                 if new_quantity <= 0:
+                    logger.error(f"Invalid quantity requested: {new_quantity}")
                     return {"error": "Quantity must be at least 1"}, 400
 
                 ticket_type = TicketType.query.get(ticket.ticket_type_id)
                 if not ticket_type:
+                    logger.error(f"Ticket type not found: {ticket.ticket_type_id}")
                     return {"error": "Ticket type not found"}, 404
 
                 original_total_price = ticket.total_price
                 ticket.quantity = new_quantity
                 new_total_price = ticket.total_price
-
                 price_difference = original_total_price - new_total_price
 
+                logger.info(f"Price calculation: original={original_total_price}, new={new_total_price}, difference={price_difference}")
+
                 transaction = ticket.transaction
-                if price_difference > 0:  # Quantity reduced, initiate refund
+                if price_difference > 0:  # Refund needed
+                    logger.info(f"Refund required: {price_difference}")
+                    
                     if transaction:
+                        logger.info(f"Transaction found: ID={transaction.id}, Method={transaction.payment_method}")
+                        
                         if transaction.payment_method == PaymentMethod.MPESA:
-                            # Initiate M-Pesa refund for the price difference
+                            logger.info("Processing M-Pesa refund...")
                             refund_data = {
                                 "transaction_id": transaction.merchant_request_id,
                                 "amount": float(price_difference)
                             }
+                            logger.info(f"M-Pesa refund data: {refund_data}")
+                            
                             mpesa_refund = RefundTransaction()
                             refund_response, refund_status = mpesa_refund.post(refund_data)
+                            
+                            logger.info(f"M-Pesa refund response: status={refund_status}, response={refund_response}")
 
                             if refund_status == 200:
                                 db.session.commit()
+                                logger.info("M-Pesa refund successful")
                                 return {"message": "Ticket quantity updated and M-Pesa refund initiated.", "refund_details": refund_response}, 200
                             else:
+                                logger.error(f"M-Pesa refund failed: {refund_response}")
                                 db.session.rollback()
                                 return {"error": "Error initiating M-Pesa refund.", "details": refund_response}, 500
+                                
                         elif transaction.payment_method == PaymentMethod.PAYSTACK:
-                            # Initiate Paystack refund for the price difference
-                            refund_amount = int(price_difference * 100)  # Amount in kobo/cents
+                            logger.info("Processing Paystack refund...")
+                            refund_amount = int(price_difference * 100)
+                            logger.info(f"Paystack refund amount: {refund_amount} kobo")
+                            
                             refund_result = refund_paystack_payment(transaction.payment_reference, refund_amount)
+                            logger.info(f"Paystack refund result: {refund_result}")
+                            
                             if isinstance(refund_result, dict) and "error" not in refund_result:
                                 db.session.commit()
+                                logger.info("Paystack refund successful")
                                 return {"message": "Ticket quantity updated and Paystack refund initiated.", "refund_details": refund_result}, 200
                             else:
+                                logger.error(f"Paystack refund failed: {refund_result}")
                                 db.session.rollback()
                                 return {"error": "Error initiating Paystack refund.", "details": refund_result}, 500
                         else:
-                            db.session.commit()  # If no transaction, just update quantity
+                            logger.info("No transaction method found, updating quantity only")
+                            db.session.commit()
                             return {"message": "Ticket quantity updated."}, 200
-                elif price_difference < 0:  # Quantity increased, you might want to handle additional payment here
+                            
+                elif price_difference < 0:  # Additional payment needed
+                    logger.info(f"Additional payment required: {abs(price_difference)}")
                     db.session.commit()
                     return {"message": "Ticket quantity updated, additional payment might be required."}, 200
                 else:
+                    logger.info("No price difference, updating quantity only")
                     db.session.commit()
                     return {"message": "Ticket quantity updated."}, 200
 
             if "status" in data:
-                pass  # You might want to handle other status updates here if needed
+                logger.info(f"Status update requested: {data['status']}")
+                # Handle status updates if needed
 
             db.session.commit()
+            logger.info("Ticket update completed successfully")
             return {"message": "Ticket updated successfully"}, 200
 
         except Exception as e:
+            logger.error(f"Error updating ticket {ticket_id}: {e}", exc_info=True)
             db.session.rollback()
-            logger.error(f"Error updating ticket: {e}")
             return {"error": "An internal error occurred"}, 500
-    
+
     def _rollback_transaction(self, transaction, tickets, transaction_tickets):
         """Helper method to rollback transaction and associated records."""
+        logger.info(f"=== TRANSACTION ROLLBACK === Transaction ID: {transaction.id}")
+        
         try:
+            logger.info(f"Rolling back {len(transaction_tickets)} transaction-ticket relationships")
             for tt in transaction_tickets:
                 db.session.delete(tt)
+            
+            logger.info(f"Rolling back {len(tickets)} tickets")
             for ticket in tickets:
                 db.session.delete(ticket)
+            
+            logger.info(f"Rolling back transaction {transaction.id}")
             db.session.delete(transaction)
+            
             db.session.commit()
+            logger.info("Transaction rollback completed successfully")
+            
         except Exception as e:
-            logger.error(f"Error during rollback: {e}")
+            logger.error(f"Error during rollback: {e}", exc_info=True)
             db.session.rollback()
+
     def _handle_mpesa_with_status_check(self, transaction, checkout_request_id, tickets, transaction_tickets):
         """Handle M-Pesa payment with status checking."""
+        logger.info(f"=== MPESA STATUS CHECK === Transaction: {transaction.id}, CheckoutRequestID: {checkout_request_id}")
+        
         max_attempts = 3
-        wait_times = [5, 10, 15]  # Wait 5, 10, then 15 seconds
+        wait_times = [5, 10, 15]
         
         for attempt in range(max_attempts):
+            logger.info(f"Status check attempt {attempt + 1}/{max_attempts}")
+            
             try:
-                # Wait before checking status
-                time.sleep(wait_times[attempt])
+                # Wait before checking
+                wait_time = wait_times[attempt]
+                logger.info(f"Waiting {wait_time} seconds before status check...")
+                time.sleep(wait_time)
                 
-                # Check transaction status
+                # Check status
+                logger.info(f"Checking M-Pesa transaction status...")
                 status_result = self._check_mpesa_transaction_status(checkout_request_id)
+                logger.info(f"Status check result: {status_result}")
                 
                 if status_result["status"] == "success":
-                   
+                    logger.info("Payment successful - updating transaction")
                     self._update_successful_transaction(transaction, status_result["response_data"])
                     
-            
+                    # Send confirmation email
                     try:
+                        logger.info("Sending confirmation email...")
                         complete_ticket_operation(transaction)
-                        logger.info(f"Email sent successfully for transaction {transaction.id}")
+                        logger.info("Confirmation email sent successfully")
                     except Exception as email_error:
-                        logger.error(f"Failed to send confirmation email for transaction {transaction.id}: {email_error}")
-                        # Don't fail the whole transaction if email fails
+                        logger.error(f"Failed to send confirmation email: {email_error}")
                     
                     return {
                         "status": "success",
@@ -902,7 +1003,7 @@ class TicketResource(Resource):
                     }, 200
                     
                 elif status_result["status"] == "failed":
-                    # Payment failed - rollback everything
+                    logger.error(f"Payment failed: {status_result['message']}")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
                     
                     return {
@@ -911,22 +1012,23 @@ class TicketResource(Resource):
                         "transaction_status": "FAILED"
                     }, 400
                     
-                elif status_result["status"] == "pending" and attempt == max_attempts - 1:
-                    # Still pending after all attempts - return pending status
-                    return {
-                        "status": "pending",
-                        "message": "Payment is still being processed. Please check status later.",
-                        "transaction_id": transaction.id,
-                        "transaction_status": "PENDING",
-                        "checkout_request_id": checkout_request_id
-                    }, 202
-                    
-                # If still pending and not the last attempt, continue to next iteration
-                
+                elif status_result["status"] == "pending":
+                    if attempt == max_attempts - 1:
+                        logger.warning("Payment still pending after all attempts")
+                        return {
+                            "status": "pending",
+                            "message": "Payment is still being processed. Please check status later.",
+                            "transaction_id": transaction.id,
+                            "transaction_status": "PENDING",
+                            "checkout_request_id": checkout_request_id
+                        }, 202
+                    else:
+                        logger.info(f"Payment still pending, will retry (attempt {attempt + 1}/{max_attempts})")
+                        
             except Exception as e:
-                logger.error(f"Error checking transaction status (attempt {attempt + 1}): {e}")
+                logger.error(f"Error in status check attempt {attempt + 1}: {e}", exc_info=True)
                 if attempt == max_attempts - 1:
-                    # Last attempt failed - return pending status
+                    logger.error("All status check attempts failed")
                     return {
                         "status": "pending",
                         "message": "Payment initiated but status check failed. Please verify manually.",
@@ -935,7 +1037,7 @@ class TicketResource(Resource):
                         "checkout_request_id": checkout_request_id
                     }, 202
         
-        # Fallback (shouldn't reach here)
+        logger.warning("Reached fallback return - this shouldn't happen")
         return {
             "status": "pending",
             "message": "Payment initiated but status unknown",
@@ -946,15 +1048,24 @@ class TicketResource(Resource):
 
     def _check_mpesa_transaction_status(self, checkout_request_id):
         """Check M-Pesa transaction status."""
+        logger.info(f"=== MPESA STATUS QUERY === CheckoutRequestID: {checkout_request_id}")
+        
         try:
-            # Get access token for M-Pesa API
+            # Get access token
+            logger.info("Getting M-Pesa access token...")
             access_token = get_access_token()
+            if not access_token:
+                logger.error("Failed to get M-Pesa access token")
+                raise Exception("Failed to get access token")
+            
+            logger.info("Access token obtained successfully")
+            
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
             }
             
-            # Prepare payload for STK Push Query
+            # Prepare payload
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             password = base64.b64encode(f"{BUSINESS_SHORTCODE}{PASSKEY}{timestamp}".encode()).decode()
             
@@ -965,17 +1076,25 @@ class TicketResource(Resource):
                 "CheckoutRequestID": checkout_request_id
             }
             
-            # Query M-Pesa STK Push status
+            logger.info(f"STK Push query payload: {payload}")
+            
+            # Make API call
             url = "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query"
+            logger.info(f"Making STK Push query to: {url}")
+            
             response = requests.post(url, json=payload, headers=headers)
             response_data = response.json()
             
-            logging.info(f"STK Push query response: {response_data}")
+            logger.info(f"STK Push query response: status={response.status_code}, data={response_data}")
             
-            # Check result code
+            # Parse result
             result_code = response_data.get("ResultCode")
+            result_desc = response_data.get("ResultDesc", "")
+            
+            logger.info(f"Result code: {result_code}, Description: {result_desc}")
             
             if result_code == "0":
+                logger.info("Payment successful")
                 return {
                     "status": "success",
                     "response_data": response_data
@@ -988,54 +1107,70 @@ class TicketResource(Resource):
                     "2001": "Insufficient funds",
                     "2006": "User did not enter PIN"
                 }
+                error_message = error_messages.get(result_code, "Payment failed")
+                logger.error(f"Payment failed: {error_message} (Code: {result_code})")
                 return {
                     "status": "failed",
-                    "message": error_messages.get(result_code, "Payment failed"),
+                    "message": error_message,
                     "response_data": response_data
                 }
             else:
+                logger.info(f"Payment still pending (Code: {result_code})")
                 return {
                     "status": "pending",
                     "response_data": response_data
                 }
                 
         except Exception as e:
-            logger.error(f"Error checking M-Pesa status: {e}")
+            logger.error(f"Error checking M-Pesa status: {e}", exc_info=True)
             raise
 
     def _update_successful_transaction(self, transaction, response_data):
         """Update transaction as successful."""
+        logger.info(f"=== UPDATING SUCCESSFUL TRANSACTION === Transaction ID: {transaction.id}")
+        
         try:
-            # Extract payment details from response
+            # Extract payment details
             receipt_number = response_data.get("MpesaReceiptNumber", f"QUERY_{transaction.id}")
+            logger.info(f"M-Pesa receipt number: {receipt_number}")
             
             # Update transaction
             transaction.payment_status = PaymentStatus.PAID
             transaction.payment_reference = receipt_number
             transaction.mpesa_receipt_number = receipt_number
             
+            logger.info(f"Transaction {transaction.id} updated to PAID status")
+            
             # Update associated tickets
             transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
+            logger.info(f"Found {len(transaction_tickets)} associated tickets to update")
             
-            for trans_ticket in transaction_tickets:
+            for i, trans_ticket in enumerate(transaction_tickets):
                 ticket = Ticket.query.get(trans_ticket.ticket_id)
                 if ticket:
                     ticket.payment_status = PaymentStatus.PAID
-                    # Generate proper QR code now that payment is successful
-                    ticket.qr_code = f"PAID_{ticket.id}_{uuid.uuid4()}"
+                    # Generate proper QR code
+                    new_qr_code = f"PAID_{ticket.id}_{uuid.uuid4()}"
+                    ticket.qr_code = new_qr_code
+                    
+                    logger.info(f"Updated ticket {ticket.id}: status=PAID, QR={new_qr_code}")
                     
                     # Reduce ticket quantity
                     ticket_type = TicketType.query.get(ticket.ticket_type_id)
                     if ticket_type:
+                        old_quantity = ticket_type.quantity
                         ticket_type.quantity -= ticket.quantity
+                        logger.info(f"Reduced ticket type {ticket_type.id} quantity: {old_quantity} -> {ticket_type.quantity}")
                     else:
-                        logging.error(f"Ticket type not found for ticket ID: {ticket.id}")
+                        logger.error(f"Ticket type not found for ticket ID: {ticket.id}")
+                else:
+                    logger.error(f"Ticket not found: {trans_ticket.ticket_id}")
             
             db.session.commit()
-            logging.info(f"Transaction {transaction.id} updated to PAID")
+            logger.info(f"Transaction {transaction.id} and all associated tickets updated successfully")
             
         except Exception as e:
-            logging.error(f"Error updating successful transaction {transaction.id}: {e}")
+            logger.error(f"Error updating successful transaction {transaction.id}: {e}", exc_info=True)
             db.session.rollback()
             raise
     @jwt_required()
