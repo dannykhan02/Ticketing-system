@@ -6,7 +6,7 @@ from config import Config
 # Import Paystack functionalities
 from paystack import initialize_paystack_payment, refund_paystack_payment
 # Import M-Pesa functionalities
-from mpesa_intergration import STKPush, normalize_phone_number, RefundTransaction
+from mpesa_intergration import STKPush, normalize_phone_number, RefundTransaction, get_access_token
 from email_utils import mail
 import mimetypes
 from flask_mail import Message
@@ -18,6 +18,7 @@ import datetime
 import uuid
 import requests
 import io
+import time 
 from io import BytesIO
 import base64
 from sqlalchemy.exc import OperationalError
@@ -25,7 +26,11 @@ from sqlalchemy.exc import OperationalError
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+CONSUMER_KEY = os.getenv("CONSUMER_KEY")
+CONSUMER_SECRET = os.getenv("CONSUMER_SECRET")
+BUSINESS_SHORTCODE = os.getenv("BUSINESS_SHORTCODE")
+PASSKEY = os.getenv("PASSKEY")
+CALLBACK_URL = os.getenv("CALLBACK_URL")
 def get_valid_phone(request_json, user):
     """
     Returns a cleaned phone number or raises ValueError
@@ -519,6 +524,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         return False
 
 
+
 class TicketResource(Resource):
 
     @jwt_required()
@@ -693,17 +699,21 @@ class TicketResource(Resource):
                 if status_code == 200:
                     if 'MerchantRequestID' in response:
                         transaction.merchant_request_id = response['MerchantRequestID']
+                        # Also store CheckoutRequestID if available
+                        if 'CheckoutRequestID' in response:
+                            transaction.checkout_request_id = response['CheckoutRequestID']
                         db.session.commit()
                         logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']} for transaction {transaction.id}")
-                    return response, status_code
+                    
+                    # Wait a bit for the payment to process, then check status
+                    checkout_request_id = response.get('CheckoutRequestID')
+                    if checkout_request_id:
+                        return self._handle_mpesa_with_status_check(transaction, checkout_request_id, tickets, transaction_tickets)
+                    else:
+                        return response, status_code
                 else:
                     # If STK Push fails, revert everything
-                    for tt in transaction_tickets:
-                        db.session.delete(tt)
-                    for ticket in tickets:
-                        db.session.delete(ticket)
-                    db.session.delete(transaction)
-                    db.session.commit()
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return response, status_code
 
             elif data["payment_method"] == "Paystack":
@@ -846,7 +856,188 @@ class TicketResource(Resource):
             db.session.rollback()
             logger.error(f"Error updating ticket: {e}")
             return {"error": "An internal error occurred"}, 500
+    
+    def _rollback_transaction(self, transaction, tickets, transaction_tickets):
+        """Helper method to rollback transaction and associated records."""
+        try:
+            for tt in transaction_tickets:
+                db.session.delete(tt)
+            for ticket in tickets:
+                db.session.delete(ticket)
+            db.session.delete(transaction)
+            db.session.commit()
+        except Exception as e:
+            logger.error(f"Error during rollback: {e}")
+            db.session.rollback()
+    def _handle_mpesa_with_status_check(self, transaction, checkout_request_id, tickets, transaction_tickets):
+        """Handle M-Pesa payment with status checking."""
+        max_attempts = 3
+        wait_times = [5, 10, 15]  # Wait 5, 10, then 15 seconds
+        
+        for attempt in range(max_attempts):
+            try:
+                # Wait before checking status
+                time.sleep(wait_times[attempt])
+                
+                # Check transaction status
+                status_result = self._check_mpesa_transaction_status(checkout_request_id)
+                
+                if status_result["status"] == "success":
+                   
+                    self._update_successful_transaction(transaction, status_result["response_data"])
+                    
+            
+                    try:
+                        self.complete_ticket_operation(transaction)
+                        logger.info(f"Email sent successfully for transaction {transaction.id}")
+                    except Exception as email_error:
+                        logger.error(f"Failed to send confirmation email for transaction {transaction.id}: {email_error}")
+                        # Don't fail the whole transaction if email fails
+                    
+                    return {
+                        "status": "success",
+                        "message": "Payment completed successfully",
+                        "transaction_id": transaction.id,
+                        "transaction_status": "PAID"
+                    }, 200
+                    
+                elif status_result["status"] == "failed":
+                    # Payment failed - rollback everything
+                    self._rollback_transaction(transaction, tickets, transaction_tickets)
+                    
+                    return {
+                        "status": "failed",
+                        "message": status_result["message"],
+                        "transaction_status": "FAILED"
+                    }, 400
+                    
+                elif status_result["status"] == "pending" and attempt == max_attempts - 1:
+                    # Still pending after all attempts - return pending status
+                    return {
+                        "status": "pending",
+                        "message": "Payment is still being processed. Please check status later.",
+                        "transaction_id": transaction.id,
+                        "transaction_status": "PENDING",
+                        "checkout_request_id": checkout_request_id
+                    }, 202
+                    
+                # If still pending and not the last attempt, continue to next iteration
+                
+            except Exception as e:
+                logger.error(f"Error checking transaction status (attempt {attempt + 1}): {e}")
+                if attempt == max_attempts - 1:
+                    # Last attempt failed - return pending status
+                    return {
+                        "status": "pending",
+                        "message": "Payment initiated but status check failed. Please verify manually.",
+                        "transaction_id": transaction.id,
+                        "transaction_status": "PENDING",
+                        "checkout_request_id": checkout_request_id
+                    }, 202
+        
+        # Fallback (shouldn't reach here)
+        return {
+            "status": "pending",
+            "message": "Payment initiated but status unknown",
+            "transaction_id": transaction.id,
+            "transaction_status": "PENDING",
+            "checkout_request_id": checkout_request_id
+        }, 202
 
+    def _check_mpesa_transaction_status(self, checkout_request_id):
+        """Check M-Pesa transaction status."""
+        try:
+            # Get access token for M-Pesa API
+            access_token = get_access_token()
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Prepare payload for STK Push Query
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            password = base64.b64encode(f"{BUSINESS_SHORTCODE}{PASSKEY}{timestamp}".encode()).decode()
+            
+            payload = {
+                "BusinessShortCode": BUSINESS_SHORTCODE,
+                "Password": password,
+                "Timestamp": timestamp,
+                "CheckoutRequestID": checkout_request_id
+            }
+            
+            # Query M-Pesa STK Push status
+            url = "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query"
+            response = requests.post(url, json=payload, headers=headers)
+            response_data = response.json()
+            
+            logging.info(f"STK Push query response: {response_data}")
+            
+            # Check result code
+            result_code = response_data.get("ResultCode")
+            
+            if result_code == "0":
+                return {
+                    "status": "success",
+                    "response_data": response_data
+                }
+            elif result_code in ["1032", "1037", "2001", "2006", "1"]:
+                error_messages = {
+                    "1": "Insufficient funds",
+                    "1032": "Request cancelled by user",
+                    "1037": "Transaction timeout",
+                    "2001": "Insufficient funds",
+                    "2006": "User did not enter PIN"
+                }
+                return {
+                    "status": "failed",
+                    "message": error_messages.get(result_code, "Payment failed"),
+                    "response_data": response_data
+                }
+            else:
+                return {
+                    "status": "pending",
+                    "response_data": response_data
+                }
+                
+        except Exception as e:
+            logger.error(f"Error checking M-Pesa status: {e}")
+            raise
+
+    def _update_successful_transaction(self, transaction, response_data):
+        """Update transaction as successful."""
+        try:
+            # Extract payment details from response
+            receipt_number = response_data.get("MpesaReceiptNumber", f"QUERY_{transaction.id}")
+            
+            # Update transaction
+            transaction.payment_status = PaymentStatus.PAID
+            transaction.payment_reference = receipt_number
+            transaction.mpesa_receipt_number = receipt_number
+            
+            # Update associated tickets
+            transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
+            
+            for trans_ticket in transaction_tickets:
+                ticket = Ticket.query.get(trans_ticket.ticket_id)
+                if ticket:
+                    ticket.payment_status = PaymentStatus.PAID
+                    # Generate proper QR code now that payment is successful
+                    ticket.qr_code = f"PAID_{ticket.id}_{uuid.uuid4()}"
+                    
+                    # Reduce ticket quantity
+                    ticket_type = TicketType.query.get(ticket.ticket_type_id)
+                    if ticket_type:
+                        ticket_type.quantity -= ticket.quantity
+                    else:
+                        logging.error(f"Ticket type not found for ticket ID: {ticket.id}")
+            
+            db.session.commit()
+            logging.info(f"Transaction {transaction.id} updated to PAID")
+            
+        except Exception as e:
+            logging.error(f"Error updating successful transaction {transaction.id}: {e}")
+            db.session.rollback()
+            raise
     @jwt_required()
     def delete(self, ticket_id):
         """Cancel a ticket (Only the ticket owner can delete)."""
@@ -929,6 +1120,7 @@ class TicketResource(Resource):
             db.session.rollback()
             logger.error(f"Error cancelling ticket: {e}")
             return {"error": "An internal error occurred"}, 500
+        
 
 def register_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
