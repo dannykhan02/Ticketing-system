@@ -355,7 +355,6 @@ class ExportReportResource(Resource):
                     logger.error(f"ExportReportResource: Error generating PDF for report {report.id}: {e}", exc_info=True)
                     return {'error': 'Failed to generate PDF report'}, 500
                 finally:
-                    # Clean up chart images
                     for c_path in chart_paths:
                         if os.path.exists(c_path):
                             try:
@@ -385,28 +384,34 @@ class ExportReportResource(Resource):
                 logger.error(f"ExportReportResource: Generated file path is invalid or file does not exist: {file_path}")
                 return {'error': 'Failed to generate report file. Please try again.'}, 500
 
-            # Register cleanup after sending the response
+            file_size = os.path.getsize(file_path)
+            logger.info(f"ExportReportResource: File size to be sent: {file_size} bytes")
+
+            if file_size == 0:
+                logger.error(f"ExportReportResource: Generated file is empty: {file_path}")
+                return {'error': 'Report file is empty.'}, 500
+
             @after_this_request
             def delete_temp_file(response):
                 try:
-                    if file_path and os.path.exists(file_path):
+                    if os.path.exists(file_path):
                         os.remove(file_path)
                         logger.info(f"ExportReportResource: Cleaned up temporary file: {file_path}")
                 except Exception as e:
                     logger.error(f"ExportReportResource: Error cleaning up temporary file {file_path}: {e}")
                 return response
 
-            return send_file(
+            response = send_file(
                 file_path,
                 mimetype=mime_type,
                 as_attachment=True,
                 download_name=filename
             )
+            return response
 
         except Exception as e:
             logger.error(f"ExportReportResource: Unhandled error: {str(e)}", exc_info=True)
             return {'error': 'Internal server error'}, 500
-        
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a summary report for an organizer.
@@ -485,10 +490,39 @@ class EventReportsResource(Resource):
 
             start_date_str = request.args.get('start_date')
             end_date_str = request.args.get('end_date')
-            start_date, end_date, error = DateValidator.validate_date_range(start_date_str, end_date_str)
-            if error:
-                logger.warning(f"EventReportsResource: Invalid date range provided: {error}")
-                return error, error.get('status', 400)
+            specific_date_str = request.args.get('specific_date')
+            limit_str = request.args.get('limit')
+            get_all = request.args.get('get_all', 'false').lower() == 'true'
+
+            # Handle specific date logic similar to GenerateReportResource
+            if specific_date_str:
+                try:
+                    specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
+                    start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                except Exception as e:
+                    logger.error(f"EventReportsResource: Error parsing specific_date '{specific_date_str}': {e}")
+                    return {'error': 'Invalid specific date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS'}, 400
+            else:
+                start_date, end_date, error = DateValidator.validate_date_range(start_date_str, end_date_str)
+                if error:
+                    logger.warning(f"EventReportsResource: Invalid date range provided: {error}")
+                    return error, error.get('status', 400)
+
+            # Handle limit parameter
+            limit = None
+            if not get_all:
+                if limit_str:
+                    try:
+                        limit = int(limit_str)
+                        if limit <= 0:
+                            logger.warning(f"EventReportsResource: Invalid limit value: {limit_str}")
+                            return {'error': 'Limit must be a positive integer'}, 400
+                    except ValueError:
+                        logger.warning(f"EventReportsResource: Invalid limit format: {limit_str}")
+                        return {'error': 'Limit must be a valid integer'}, 400
+                else:
+                    limit = 5  # Default to 5 most recent reports
 
             event = Event.query.get(event_id)
             if not event:
@@ -503,8 +537,19 @@ class EventReportsResource(Resource):
             if start_date and end_date:
                 query = query.filter(Report.report_date.between(start_date, end_date))
 
+            # Order by report_date descending to get most recent first
+            query = query.order_by(Report.report_date.desc())
+
+            # Apply limit if specified
+            if limit:
+                query = query.limit(limit)
+
             reports = query.all()
-            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} from {start_date} to {end_date}.")
+            
+            # Enhanced logging to include limit information
+            date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}"
+            limit_info = f"(limited to {limit})" if limit else "(all reports)"
+            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}.")
 
             reports_data = []
             base_url = request.url_root.rstrip('/')
@@ -517,18 +562,45 @@ class EventReportsResource(Resource):
                     'number_of_attendees': r.number_of_attendees,
                     'report_date': r.report_date.isoformat() if r.report_date else None
                 }
-                report_dict['pdf_download_url'] = f"{base_url}api/v1/reports/{r.id}/export?format=pdf"
-                report_dict['csv_download_url'] = f"{base_url}api/v1/reports/{r.id}/export?format=csv"
+                report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{r.id}/export?format=pdf"
+                report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{r.id}/export?format=csv"
                 reports_data.append(report_dict)
 
-            return {
+            response_data = {
                 'event_id': event_id,
-                'reports': reports_data
-            }, 200
+                'reports': reports_data,
+                'total_reports_returned': len(reports_data),
+                'is_limited': bool(limit),
+                'limit_applied': limit
+            }
+
+            # Add query parameters info to response for clarity
+            if specific_date_str:
+                response_data['query_info'] = {
+                    'specific_date': specific_date_str,
+                    'is_single_day': True,
+                    'limit': limit,
+                    'get_all': get_all
+                }
+            elif start_date_str or end_date_str:
+                response_data['query_info'] = {
+                    'start_date': start_date_str,
+                    'end_date': end_date_str,
+                    'is_single_day': False,
+                    'limit': limit,
+                    'get_all': get_all
+                }
+            else:
+                response_data['query_info'] = {
+                    'limit': limit,
+                    'get_all': get_all
+                }
+
+            return response_data, 200
+
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error'}, 500
-
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
     @staticmethod
