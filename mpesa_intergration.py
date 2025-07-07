@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import os
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from config import Config
-
+from ticket import complete_ticket_operation
 # Load environment variables from .env file
 load_dotenv()
 
@@ -342,6 +342,6 @@ class RefundTransaction(Resource):
 def register_mpesa_routes(api, complete_ticket_operation_func):
     """Register M-Pesa routes with the API."""
     api.add_resource(STKPush, "/mpesa/stkpush")
-    api.add_resource(STKCallback, "/mpesa/stk", resource_class_kwargs={'complete_ticket_operation_func': complete_ticket_operation_func})
+    api.add_resource(STKCallback, "/mpesa/stk", resource_class_kwargs={'complete_ticket_operation_func': complete_ticket_operation})
     api.add_resource(TransactionStatus, "/mpesa/status")
     api.add_resource(RefundTransaction, "/mpesa/refund")
