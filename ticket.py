@@ -888,7 +888,7 @@ class TicketResource(Resource):
                     
             
                     try:
-                        self.complete_ticket_operation(transaction)
+                        complete_ticket_operation(transaction)
                         logger.info(f"Email sent successfully for transaction {transaction.id}")
                     except Exception as email_error:
                         logger.error(f"Failed to send confirmation email for transaction {transaction.id}: {email_error}")
