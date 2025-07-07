@@ -691,6 +691,10 @@ class TicketResource(Resource):
                 response, status_code = mpesa.post(mpesa_data)
 
                 if status_code == 200:
+                    if 'MerchantRequestID' in response:
+                        transaction.merchant_request_id = response['MerchantRequestID']
+                        db.session.commit()
+                        logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']} for transaction {transaction.id}")
                     return response, status_code
                 else:
                     # If STK Push fails, revert everything

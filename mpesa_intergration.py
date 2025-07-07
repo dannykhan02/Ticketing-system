@@ -5,7 +5,7 @@ import datetime
 import base64
 import uuid  # To generate unique transaction IDs
 import logging
-from model import db, TicketType, Ticket, Transaction, PaymentStatus, PaymentMethod  # Import your models
+from model import db, TicketType, Ticket, Transaction, PaymentStatus, PaymentMethod, TransactionTicket  # Import your models
 from dotenv import load_dotenv
 import os
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -25,7 +25,7 @@ CALLBACK_URL = os.getenv("CALLBACK_URL")
 if not all([CONSUMER_KEY, CONSUMER_SECRET, BUSINESS_SHORTCODE, PASSKEY, CALLBACK_URL]):
     raise ValueError("One or more M-Pesa credentials are missing. Check your .env file.")
 
-# Configure logging for debugging
+
 logging.basicConfig(level=logging.INFO)
 
 def get_access_token():
@@ -161,7 +161,7 @@ class STKCallback(Resource):
         result_code = callback_data.get("ResultCode", -1)
         result_desc = callback_data.get("ResultDesc", "Unknown response")
 
-        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item",)
+        callback_metadata = callback_data.get("CallbackMetadata", {}).get("Item", [])
         amount = next((item["Value"] for item in callback_metadata if item["Name"] == "Amount"), 0)
         mpesa_receipt_number = next((item["Value"] for item in callback_metadata if item["Name"] == "MpesaReceiptNumber"), "")
         transaction_date = next((item["Value"] for item in callback_metadata if item["Name"] == "TransactionDate"), "")
@@ -170,54 +170,58 @@ class STKCallback(Resource):
 
         logging.info(f"MerchantRequestID: {merchant_request_id}")
 
-        # Check if a transaction with this merchant_request_id already exists
-        existing_transaction = Transaction.query.filter_by(merchant_request_id=merchant_request_id).first()
-
-        if existing_transaction:
-            logging.info(f"Transaction with MerchantRequestID {merchant_request_id} already processed.")
-            return {"message": "Callback already processed"}, 200  # Or perhaps a 204 No Content
-
         if result_code == 0:
             # Payment Successful
-            payment_status = PaymentStatus.COMPLETED
             logging.info(f"Payment Success: {mpesa_receipt_number}")
 
-            # Find the ticket using the merchant_request_id
-            ticket = Ticket.query.filter_by(merchant_request_id=merchant_request_id).first()
-            if not ticket:
-                logging.error(f"Ticket not found for MerchantRequestID: {merchant_request_id}")
-                return {"error": "Ticket not found"}, 404
-
-            user_id = ticket.user_id
-
-            # Create a new transaction record
-            transaction = Transaction(
-                amount_paid=amount,
-                payment_status=payment_status,
-                payment_reference=mpesa_receipt_number,
-                payment_method=PaymentMethod.MPESA,
-                timestamp=datetime.datetime.strptime(str(transaction_date), "%Y%m%d%H%M%S"),
-                ticket_id=ticket.id,
-                user_id=user_id,
+            # Find the existing PENDING transaction using merchant_request_id
+            transaction = Transaction.query.filter_by(
                 merchant_request_id=merchant_request_id,
-                mpesa_receipt_number=mpesa_receipt_number
-            )
-            db.session.add(transaction)
+                payment_status=PaymentStatus.PENDING
+            ).first()
+
+            if not transaction:
+                logging.error(f"Transaction not found for MerchantRequestID: {merchant_request_id}")
+                return {"error": "Transaction not found"}, 404
+
+            # Check if already processed
+            if transaction.payment_status == PaymentStatus.PAID:
+                logging.info(f"Transaction {transaction.id} with MerchantRequestID {merchant_request_id} already processed.")
+                return {"message": "Callback already processed"}, 200
+
+            # Update the existing transaction
+            transaction.payment_status = PaymentStatus.PAID
+            transaction.payment_reference = mpesa_receipt_number  # Update with actual M-Pesa receipt
+            transaction.mpesa_receipt_number = mpesa_receipt_number
+            if transaction_date:
+                try:
+                    transaction.timestamp = datetime.datetime.strptime(str(transaction_date), "%Y%m%d%H%M%S")
+                except ValueError:
+                    logging.warning(f"Could not parse transaction date: {transaction_date}")
+
+            # Update all associated tickets through TransactionTicket relationships
+            transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
+            
+            if not transaction_tickets:
+                logging.error(f"No tickets found for transaction {transaction.id}")
+                return {"error": "No tickets found for this transaction"}, 404
+
+            for trans_ticket in transaction_tickets:
+                ticket = Ticket.query.get(trans_ticket.ticket_id)
+                if ticket:
+                    ticket.payment_status = PaymentStatus.PAID
+                    
+                    # Reduce ticket quantity
+                    ticket_type = TicketType.query.get(ticket.ticket_type_id)
+                    if ticket_type:
+                        ticket_type.quantity -= ticket.quantity
+                    else:
+                        logging.error(f"Ticket type not found for ticket ID: {ticket.id}")
+
             db.session.commit()
+            logging.info(f"Transaction {transaction.id} updated to PAID status")
 
-            # Update the ticket's transaction ID
-            ticket.transaction_id = transaction.id
-            db.session.commit()
-
-            # Reduce ticket quantity
-            ticket_type = TicketType.query.get(ticket.ticket_type_id)
-            if ticket_type:
-                ticket_type.quantity -= ticket.quantity
-                db.session.commit()
-            else:
-                logging.error(f"Ticket type not found for ticket ID: {ticket.id}")
-
-            # Update ticket status and send confirmation
+            # Complete ticket operation (this sends the email)
             self.complete_ticket_operation(transaction)
 
             return {"message": "Payment successful and ticket operation completed"}, 200
@@ -237,11 +241,24 @@ class STKCallback(Resource):
                 error_message = "User did not enter PIN"
             # Add more result codes and messages as needed
 
-            # Find the ticket and potentially update its status to FAILED
-            ticket = Ticket.query.filter_by(merchant_request_id=merchant_request_id).first()
-            if ticket:
-                ticket.payment_status = PaymentStatus.FAILED
+            # Find and update the existing transaction
+            transaction = Transaction.query.filter_by(
+                merchant_request_id=merchant_request_id,
+                payment_status=PaymentStatus.PENDING
+            ).first()
+
+            if transaction:
+                transaction.payment_status = PaymentStatus.FAILED
+                
+                # Update associated tickets
+                transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
+                for trans_ticket in transaction_tickets:
+                    ticket = Ticket.query.get(trans_ticket.ticket_id)
+                    if ticket:
+                        ticket.payment_status = PaymentStatus.FAILED
+
                 db.session.commit()
+                logging.info(f"Transaction {transaction.id} marked as FAILED")
 
             return {"error": "Payment failed", "details": error_message}, 400
 
