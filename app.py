@@ -32,14 +32,14 @@ from admin import register_admin_resources
 from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
 
-# ✅ Normalize DATABASE_URL immediately
+# ✅ Normalize DATABASE_URL
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ✅ Set back to environment to be read by Config later if needed
+# ✅ Store normalized URL in environment just in case
 os.environ["EXTERNAL_DATABASE_URL"] = DATABASE_URL
 
 # Initialize Flask app
@@ -47,19 +47,22 @@ app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config.from_object(Config)
 
-# ✅ Set SQLAlchemy engine options
+# ✅ Set SQLAlchemy engine options including SSL
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     'pool_size': 5,
     'max_overflow': 10,
     'pool_timeout': 30,
     'pool_recycle': 1800,
-    'pool_pre_ping': True  # Prevent stale DB connections
+    'pool_pre_ping': True,
+    'connect_args': {
+        'sslmode': 'require'
+    }
 }
 
-# ✅ CurrencyAPI
+# CurrencyAPI
 app.config['CURRENCY_API_KEY'] = os.getenv('CURRENCY_API_KEY')
 
-# ✅ JWT and Session setup
+# JWT and Session
 app.config['JWT_COOKIE_SECURE'] = True
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']
 app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
@@ -69,7 +72,7 @@ app.config['JWT_COOKIE_CSRF_PROTECT'] = False
 app.config['JWT_COOKIE_SAMESITE'] = "None"
 app.config['SESSION_SQLALCHEMY'] = db
 
-# ✅ Enable CORS
+# CORS
 CORS(app,
      origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
@@ -77,7 +80,7 @@ CORS(app,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"])
 
-# ✅ Initialize extensions
+# Initialize extensions
 db.init_app(app)
 Session(app)
 api = Api(app)
@@ -86,14 +89,14 @@ migrate = Migrate(app, db)
 mail.init_app(app)
 init_oauth(app)
 
-# ✅ Cloudinary config
+# Cloudinary config
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
 
-# ✅ Register blueprints and routes
+# Register blueprints and routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
@@ -106,44 +109,43 @@ register_admin_resources(api)
 register_currency_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
-# ✅ Currency seeding logic
-from sqlalchemy.exc import IntegrityError
-with app.app_context():
-    db.create_all()
-    if Currency.query.count() == 0:
-        print("🔁 Seeding currencies...")
-        currency_info = {
-            "USD": {"name": "US Dollar", "symbol": "$"},
-            "EUR": {"name": "Euro", "symbol": "€"},
-            "GBP": {"name": "British Pound", "symbol": "£"},
-            "KES": {"name": "Kenyan Shilling", "symbol": "KSh"},
-            "UGX": {"name": "Ugandan Shilling", "symbol": "USh"},
-            "TZS": {"name": "Tanzanian Shilling", "symbol": "TSh"},
-            "NGN": {"name": "Nigerian Naira", "symbol": "₦"},
-            "GHS": {"name": "Ghanaian Cedi", "symbol": "₵"},
-            "ZAR": {"name": "South African Rand", "symbol": "R"},
-            "JPY": {"name": "Japanese Yen", "symbol": "¥"},
-            "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
-            "AUD": {"name": "Australian Dollar", "symbol": "A$"},
-        }
-        currency_objects = []
-        for code in CurrencyCode:
-            info = currency_info.get(code.value)
-            currency = Currency(
-                code=code,
-                name=info["name"],
-                symbol=info["symbol"],
-                is_base_currency=(code.value == "USD")
-            )
-            currency_objects.append(currency)
-        db.session.bulk_save_objects(currency_objects)
-        try:
-            db.session.commit()
-            print("✅ Currency seeding complete.")
-        except IntegrityError:
-            db.session.rollback()
-            print("⚠️ Currency seeding skipped (already exists).")
-
-# ✅ Run the app
+# Run the app
 if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+        if Currency.query.count() == 0:
+            print("🔁 Seeding currencies...")
+            currency_info = {
+                "USD": {"name": "US Dollar", "symbol": "$"},
+                "EUR": {"name": "Euro", "symbol": "€"},
+                "GBP": {"name": "British Pound", "symbol": "£"},
+                "KES": {"name": "Kenyan Shilling", "symbol": "KSh"},
+                "UGX": {"name": "Ugandan Shilling", "symbol": "USh"},
+                "TZS": {"name": "Tanzanian Shilling", "symbol": "TSh"},
+                "NGN": {"name": "Nigerian Naira", "symbol": "₦"},
+                "GHS": {"name": "Ghanaian Cedi", "symbol": "₵"},
+                "ZAR": {"name": "South African Rand", "symbol": "R"},
+                "JPY": {"name": "Japanese Yen", "symbol": "¥"},
+                "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
+                "AUD": {"name": "Australian Dollar", "symbol": "A$"},
+            }
+            from sqlalchemy.exc import IntegrityError
+            currency_objects = []
+            for code in CurrencyCode:
+                info = currency_info.get(code.value)
+                currency = Currency(
+                    code=code,
+                    name=info["name"],
+                    symbol=info["symbol"],
+                    is_base_currency=(code.value == "USD")
+                )
+                currency_objects.append(currency)
+            db.session.bulk_save_objects(currency_objects)
+            try:
+                db.session.commit()
+                print("✅ Currency seeding complete.")
+            except IntegrityError:
+                db.session.rollback()
+                print("⚠️ Currency seeding skipped (already exists).")
+
     app.run(debug=True)
