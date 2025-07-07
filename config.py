@@ -29,7 +29,7 @@ class Config:
     MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER") or MAIL_USERNAME or "no-reply@example.com"
 
     # Database settings
-    # SQLALCHEMY_DATABASE_URI = os.getenv("EXTERNAL_DATABASE_URL")
+    SQLALCHEMY_DATABASE_URI = os.getenv("EXTERNAL_DATABASE_URL")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         'pool_size': 5,
