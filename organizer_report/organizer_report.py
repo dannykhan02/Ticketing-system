@@ -1,4 +1,4 @@
-from flask import request, jsonify, send_file, current_app
+from flask import request, jsonify, send_file, current_app, after_this_request
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction
@@ -293,6 +293,7 @@ class ExportReportResource(Resource):
     API resource for downloading generated reports (PDF or CSV).
     Generates the report file on demand using the data stored in the Report model.
     """
+
     @jwt_required()
     def get(self, report_id):
         try:
@@ -307,18 +308,12 @@ class ExportReportResource(Resource):
                 logger.warning(f"ExportReportResource: Report {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
-            is_authorized = False
-            if report.organizer_id == current_user_id:
-                is_authorized = True
-                logger.info(f"ExportReportResource: User {current_user_id} is direct organizer of report {report_id}.")
-            elif hasattr(current_user, 'role') and current_user.role and current_user.role.value.upper() == 'ADMIN':
-                is_authorized = True
-                logger.info(f"ExportReportResource: User {current_user_id} is admin, allowing access to report {report_id}.")
-            elif hasattr(current_user, 'organizer_profile') and current_user.organizer_profile:
-                if hasattr(report, 'event') and report.event:
-                    if report.event.organizer_id == current_user.organizer_profile.id:
-                        is_authorized = True
-                        logger.info(f"ExportReportResource: User {current_user_id} owns event associated with report {report_id}.")
+            # Authorization check
+            is_authorized = (
+                report.organizer_id == current_user_id or
+                (hasattr(current_user, 'role') and current_user.role and current_user.role.value.upper() == 'ADMIN') or
+                (hasattr(current_user, 'organizer_profile') and report.event and report.event.organizer_id == current_user.organizer_profile.id)
+            )
 
             if not is_authorized:
                 logger.warning(f"ExportReportResource: User {current_user_id} not authorized to access report {report_id}.")
@@ -330,10 +325,6 @@ class ExportReportResource(Resource):
                 logger.error(f"ExportReportResource: No report_data found for report ID {report_id}.")
                 return {'error': 'Report data is missing, cannot generate file.'}, 500
 
-            file_path = None
-            mime_type = None
-            filename = None
-
             config = ReportConfig(
                 include_charts=True,
                 chart_dpi=72,
@@ -341,6 +332,10 @@ class ExportReportResource(Resource):
                 pdf_pagesize=A4,
                 limit_charts=False
             )
+
+            file_path = None
+            mime_type = None
+            filename = None
 
             if format_type == 'pdf':
                 chart_paths = []
@@ -360,6 +355,7 @@ class ExportReportResource(Resource):
                     logger.error(f"ExportReportResource: Error generating PDF for report {report.id}: {e}", exc_info=True)
                     return {'error': 'Failed to generate PDF report'}, 500
                 finally:
+                    # Clean up chart images
                     for c_path in chart_paths:
                         if os.path.exists(c_path):
                             try:
@@ -367,6 +363,7 @@ class ExportReportResource(Resource):
                                 logger.debug(f"ExportReportResource: Cleaned up chart file: {c_path}")
                             except Exception as cleanup_error:
                                 logger.warning(f"ExportReportResource: Failed to cleanup chart file {c_path}: {cleanup_error}")
+
             elif format_type == 'csv':
                 try:
                     csv_generator = CSVReportGenerator()
@@ -379,15 +376,17 @@ class ExportReportResource(Resource):
                 except Exception as e:
                     logger.error(f"ExportReportResource: Error generating CSV for report {report.id}: {e}", exc_info=True)
                     return {'error': 'Failed to generate CSV report'}, 500
+
             else:
                 logger.warning(f"ExportReportResource: Unsupported format '{format_type}' requested for report {report_id}.")
-                return {'error': 'Unsupported format. Use "pdf" or "csv".'}, 400
+                return {'error': 'Unsupported format. Use \"pdf\" or \"csv\".'}, 400
 
             if not file_path or not os.path.exists(file_path):
                 logger.error(f"ExportReportResource: Generated file path is invalid or file does not exist: {file_path}")
                 return {'error': 'Failed to generate report file. Please try again.'}, 500
 
-            @current_app.after_request
+            # Register cleanup after sending the response
+            @after_this_request
             def delete_temp_file(response):
                 try:
                     if file_path and os.path.exists(file_path):
@@ -397,17 +396,17 @@ class ExportReportResource(Resource):
                     logger.error(f"ExportReportResource: Error cleaning up temporary file {file_path}: {e}")
                 return response
 
-            logger.info(f"ExportReportResource: Sending file {filename} for report {report_id}.")
             return send_file(
                 file_path,
                 mimetype=mime_type,
                 as_attachment=True,
                 download_name=filename
             )
+
         except Exception as e:
             logger.error(f"ExportReportResource: Unhandled error: {str(e)}", exc_info=True)
             return {'error': 'Internal server error'}, 500
-
+        
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a summary report for an organizer.
