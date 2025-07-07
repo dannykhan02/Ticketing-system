@@ -13,7 +13,7 @@ from flask_session import Session
 from flask_cors import CORS
 import cloudinary
 
-# Configuration and models
+# Config and models
 from config import Config
 from model import db, Currency, CurrencyCode
 
@@ -32,22 +32,20 @@ from admin import register_admin_resources
 from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
 
-# ✅ Normalize DATABASE_URL
+# ✅ Normalize and load DATABASE_URL
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+os.environ["EXTERNAL_DATABASE_URL"] = DATABASE_URL  # Optional
 
-# ✅ Store normalized URL in environment just in case
-os.environ["EXTERNAL_DATABASE_URL"] = DATABASE_URL
-
-# Initialize Flask app
+# ✅ Initialize Flask app
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config.from_object(Config)
+app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 
-# ✅ Set SQLAlchemy engine options including SSL
+# ✅ Force SSL for PostgreSQL
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     'pool_size': 5,
     'max_overflow': 10,
@@ -59,20 +57,20 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     }
 }
 
-# CurrencyAPI
+# External APIs
 app.config['CURRENCY_API_KEY'] = os.getenv('CURRENCY_API_KEY')
 
-# JWT and Session
+# JWT and Session Config
 app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_COOKIE_SAMESITE'] = "None"
+app.config['JWT_COOKIE_CSRF_PROTECT'] = False
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']
 app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
 app.config['JWT_HEADER_NAME'] = 'Authorization'
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
-app.config['JWT_COOKIE_CSRF_PROTECT'] = False
-app.config['JWT_COOKIE_SAMESITE'] = "None"
 app.config['SESSION_SQLALCHEMY'] = db
 
-# CORS
+# CORS Config for frontend
 CORS(app,
      origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
@@ -89,14 +87,14 @@ migrate = Migrate(app, db)
 mail.init_app(app)
 init_oauth(app)
 
-# Cloudinary config
+# ✅ Cloudinary config
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
 
-# Register blueprints and routes
+# ✅ Register routes/blueprints
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
@@ -109,12 +107,13 @@ register_admin_resources(api)
 register_currency_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
-# Run the app
+# ✅ Run app with currency seeding
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
         if Currency.query.count() == 0:
             print("🔁 Seeding currencies...")
+            from sqlalchemy.exc import IntegrityError
             currency_info = {
                 "USD": {"name": "US Dollar", "symbol": "$"},
                 "EUR": {"name": "Euro", "symbol": "€"},
@@ -129,7 +128,6 @@ if __name__ == "__main__":
                 "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
                 "AUD": {"name": "Australian Dollar", "symbol": "A$"},
             }
-            from sqlalchemy.exc import IntegrityError
             currency_objects = []
             for code in CurrencyCode:
                 info = currency_info.get(code.value)
