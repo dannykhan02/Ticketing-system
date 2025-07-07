@@ -748,32 +748,35 @@ class TicketResource(Resource):
                 response, status_code = mpesa.post(mpesa_data)
                 
                 logger.info(f"STK Push response: status={status_code}, response={response}")
+            # Replace this section in your code:
 
-                if status_code == 200:
-                    logger.info("STK Push successful")
-                    
-                    # Store M-Pesa references
-                    if 'MerchantRequestID' in response:
-                        transaction.merchant_request_id = response['MerchantRequestID']
-                        logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']}")
-                    
-                    if 'CheckoutRequestID' in response:
-                        transaction.checkout_request_id = response['CheckoutRequestID']
-                        logger.info(f"Stored CheckoutRequestID: {response['CheckoutRequestID']}")
-                    
-                    db.session.commit()
-                    
-                    # Handle status checking
-                    checkout_request_id = response.get('CheckoutRequestID')
-                    if checkout_request_id:
-                        logger.info(f"Starting status check for CheckoutRequestID: {checkout_request_id}")
-                        return self._handle_mpesa_with_status_check(transaction, checkout_request_id, tickets, transaction_tickets)
-                    else:
-                        logger.warning("No CheckoutRequestID in response, returning STK Push response")
-                        return response, status_code
+            if status_code == 200:
+                logger.info("STK Push successful")
+                
+                # Store M-Pesa references - check for both formats
+                if 'MerchantRequestID' in response:
+                    transaction.merchant_request_id = response['MerchantRequestID']
+                    logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']}")
+                elif 'merchant_request_id' in response:
+                    transaction.merchant_request_id = response['merchant_request_id']
+                    logger.info(f"Stored merchant_request_id: {response['merchant_request_id']}")
+                
+                if 'CheckoutRequestID' in response:
+                    transaction.checkout_request_id = response['CheckoutRequestID']
+                    logger.info(f"Stored CheckoutRequestID: {response['CheckoutRequestID']}")
+                elif 'checkout_request_id' in response:
+                    transaction.checkout_request_id = response['checkout_request_id']
+                    logger.info(f"Stored checkout_request_id: {response['checkout_request_id']}")
+                
+                db.session.commit()
+                
+                # Handle status checking - check for both formats
+                checkout_request_id = response.get('CheckoutRequestID') or response.get('checkout_request_id')
+                if checkout_request_id:
+                    logger.info(f"Starting status check for CheckoutRequestID: {checkout_request_id}")
+                    return self._handle_mpesa_with_status_check(transaction, checkout_request_id, tickets, transaction_tickets)
                 else:
-                    logger.error(f"STK Push failed: status={status_code}, response={response}")
-                    self._rollback_transaction(transaction, tickets, transaction_tickets)
+                    logger.warning("No CheckoutRequestID in response, returning STK Push response")
                     return response, status_code
 
             elif payment_method == "PAYSTACK":
