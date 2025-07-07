@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
-load_dotenv()  # Load environment variables first
+
+# ✅ Load environment variables first
+load_dotenv()
 
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -30,33 +32,34 @@ from admin import register_admin_resources
 from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
 
-# Initialize Flask app
-app = Flask(__name__)
-
-# ✅ Normalize DATABASE_URL
+# ✅ Normalize DATABASE_URL immediately
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# ✅ Set SQLAlchemy URI early
+# ✅ Set back to environment to be read by Config later if needed
+os.environ["EXTERNAL_DATABASE_URL"] = DATABASE_URL
+
+# Initialize Flask app
+app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 app.config.from_object(Config)
 
-# ✅ Ensure database engine options include connection pre-ping
+# ✅ Set SQLAlchemy engine options
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     'pool_size': 5,
     'max_overflow': 10,
     'pool_timeout': 30,
     'pool_recycle': 1800,
-    'pool_pre_ping': True  # ✅ Prevent stale DB connections
+    'pool_pre_ping': True  # Prevent stale DB connections
 }
 
-# CurrencyAPI
+# ✅ CurrencyAPI
 app.config['CURRENCY_API_KEY'] = os.getenv('CURRENCY_API_KEY')
 
-# JWT and Session
+# ✅ JWT and Session setup
 app.config['JWT_COOKIE_SECURE'] = True
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']
 app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
@@ -66,7 +69,7 @@ app.config['JWT_COOKIE_CSRF_PROTECT'] = False
 app.config['JWT_COOKIE_SAMESITE'] = "None"
 app.config['SESSION_SQLALCHEMY'] = db
 
-# Enable CORS
+# ✅ Enable CORS
 CORS(app,
      origins=["http://localhost:8080", "https://pulse-ticket-verse.netlify.app"],
      supports_credentials=True,
@@ -74,7 +77,7 @@ CORS(app,
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"])
 
-# Initialize extensions
+# ✅ Initialize extensions
 db.init_app(app)
 Session(app)
 api = Api(app)
@@ -83,14 +86,14 @@ migrate = Migrate(app, db)
 mail.init_app(app)
 init_oauth(app)
 
-# Cloudinary configuration
+# ✅ Cloudinary config
 cloudinary.config(
     cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME'),
     api_key=os.getenv('CLOUDINARY_API_KEY'),
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
 
-# Register blueprints and routes
+# ✅ Register blueprints and routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
 register_ticket_resources(api)
@@ -103,7 +106,7 @@ register_admin_resources(api)
 register_currency_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
-# Currency seeding logic (only runs once)
+# ✅ Currency seeding logic
 from sqlalchemy.exc import IntegrityError
 with app.app_context():
     db.create_all()
@@ -141,6 +144,6 @@ with app.app_context():
             db.session.rollback()
             print("⚠️ Currency seeding skipped (already exists).")
 
-# Run the app
+# ✅ Run the app
 if __name__ == "__main__":
     app.run(debug=True)
