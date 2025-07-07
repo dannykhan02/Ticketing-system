@@ -35,12 +35,16 @@ from organizer_report.organizer_report import ReportResourceRegistry
 # Initialize Flask app
 app = Flask(__name__)
 
-# Check for required DB env
+# ✅ Check for required DB env and normalize
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
 
-# App configuration
+# ✅ Normalize postgres:// → postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# ✅ Set DB URI before loading rest of config
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config.from_object(Config)
 
@@ -125,7 +129,7 @@ with app.app_context():
                 code=code,
                 name=info["name"],
                 symbol=info["symbol"],
-                is_base_currency=(code.value == "USD")  # set base
+                is_base_currency=(code.value == "USD")
             )
             currency_objects.append(currency)
         db.session.bulk_save_objects(currency_objects)
