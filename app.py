@@ -24,7 +24,7 @@ from Event import register_event_resources
 # IMPORTANT CHANGE: Ensure your 'ticket.py' does NOT register /tickets/<int:ticket_id> anymore.
 # We are now using the one from ticket_qr_email.py for this.
 from ticket import complete_ticket_operation # Only import what's truly needed from 'ticket.py'
-from ticket_qrcode_email import register_qrcode_ticket_resources # <<-- Updated: Import the *correct function name*
+# from ticket_qrcode_email import register_qrcode_ticket_resources # <<-- Updated: Import the *correct function name*
 
 from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
@@ -104,7 +104,7 @@ cloudinary.config(
 # ✅ Register all routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
-register_qrcode_ticket_resources(api) 
+# register_qrcode_ticket_resources(api) 
 register_ticket_validation_resources(api)
 register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
