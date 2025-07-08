@@ -1,6 +1,6 @@
 import csv
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import matplotlib.pyplot as plt
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -43,6 +43,125 @@ COLORS_BY_TICKET_REPORTLAB = {
 FALLBACK_COLOR_MATPLOTLIB = '#808080'
 FALLBACK_COLOR_REPORTLAB = colors.HexColor('#808080')
 
+def validate_and_process_report_data(report: Dict) -> Dict:
+    """
+    Validate and process report data, adding debugging information.
+    
+    Parameters
+    ----------
+    report : dict
+        The raw report data
+        
+    Returns
+    -------
+    dict
+        Processed and validated report data
+    """
+    logger.info("=== REPORT DATA VALIDATION ===")
+    logger.info(f"Report keys: {list(report.keys())}")
+    
+    # Log all data for debugging
+    for key, value in report.items():
+        logger.info(f"{key}: {value} (type: {type(value)})")
+    
+    # Check if revenue_by_ticket_type exists and has valid data
+    revenue_data = report.get("revenue_by_ticket_type", {})
+    logger.info(f"Revenue data type: {type(revenue_data)}")
+    logger.info(f"Revenue data content: {revenue_data}")
+    
+    # If revenue_by_ticket_type is empty, try to construct it from other data
+    if not revenue_data or not isinstance(revenue_data, dict):
+        logger.warning("Empty or invalid revenue_by_ticket_type, attempting to reconstruct...")
+        
+        # Try to find ticket sales data to construct revenue data
+        ticket_sales = report.get("ticket_sales_by_type", {})
+        ticket_prices = report.get("ticket_prices", {})
+        
+        if ticket_sales and ticket_prices:
+            constructed_revenue = {}
+            for ticket_type, quantity in ticket_sales.items():
+                price = ticket_prices.get(ticket_type, 0)
+                if quantity > 0 and price > 0:
+                    constructed_revenue[ticket_type] = quantity * price
+            
+            if constructed_revenue:
+                logger.info(f"Reconstructed revenue data: {constructed_revenue}")
+                report["revenue_by_ticket_type"] = constructed_revenue
+            else:
+                logger.warning("Could not reconstruct revenue data from ticket sales and prices")
+        
+        # If still no data, check for individual ticket records
+        if not report.get("revenue_by_ticket_type"):
+            tickets = report.get("tickets", [])
+            if tickets:
+                revenue_by_type = {}
+                for ticket in tickets:
+                    ticket_type = ticket.get("type", "UNKNOWN_TYPE").upper()
+                    price = ticket.get("price", 0)
+                    if price > 0:
+                        revenue_by_type[ticket_type] = revenue_by_type.get(ticket_type, 0) + price
+                
+                if revenue_by_type:
+                    logger.info(f"Constructed revenue from individual tickets: {revenue_by_type}")
+                    report["revenue_by_ticket_type"] = revenue_by_type
+    
+    # Final validation
+    final_revenue = report.get("revenue_by_ticket_type", {})
+    if final_revenue:
+        logger.info(f"Final revenue data: {final_revenue}")
+        # Validate data types
+        valid_revenue = {}
+        for ticket_type, amount in final_revenue.items():
+            if isinstance(amount, (int, float)) and amount > 0:
+                valid_revenue[ticket_type.upper()] = amount
+            else:
+                logger.warning(f"Invalid revenue amount for {ticket_type}: {amount}")
+        
+        report["revenue_by_ticket_type"] = valid_revenue
+    else:
+        logger.warning("No valid revenue data found after all attempts")
+    
+    return report
+
+def generate_sample_data_for_testing(event_id: int = 1) -> Dict:
+    """
+    Generate sample data for testing purposes.
+    
+    Parameters
+    ----------
+    event_id : int
+        Event ID for the sample data
+        
+    Returns
+    -------
+    dict
+        Sample report data
+    """
+    return {
+        "event_id": event_id,
+        "event_name": "Sample Music Festival",
+        "event_date": "2024-07-15",
+        "event_location": "Central Park, New York",
+        "event_description": "A fantastic music festival featuring top artists from around the world.",
+        "total_tickets_sold": 1500,
+        "total_revenue": 75000.00,
+        "number_of_attendees": 1450,
+        "revenue_by_ticket_type": {
+            "REGULAR": 30000.00,
+            "VIP": 25000.00,
+            "STUDENT": 12000.00,
+            "COUPLES": 8000.00
+        },
+        "ticket_sales_by_type": {
+            "REGULAR": 1000,
+            "VIP": 250,
+            "STUDENT": 200,
+            "COUPLES": 50
+        },
+        "filter_start_date": "2024-07-01",
+        "filter_end_date": "2024-07-31"
+    }
+
 def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
     """
     Generate a donut chart image for Revenue by Ticket Type.
@@ -58,9 +177,12 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
         The path to the saved image file, or empty string if generation failed.
     """
     try:
+        # Validate and process the report data first
+        processed_report = validate_and_process_report_data(report)
+        
         # Retrieve and log the revenue data for debugging
-        revenue_data = report.get("revenue_by_ticket_type", {})
-        logger.info(f"Raw revenue_by_ticket_type: {revenue_data} ({type(revenue_data)})")
+        revenue_data = processed_report.get("revenue_by_ticket_type", {})
+        logger.info(f"Processed revenue_by_ticket_type: {revenue_data} ({type(revenue_data)})")
 
         # Validate the revenue data format
         if not isinstance(revenue_data, dict):
@@ -73,7 +195,7 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
         if not filtered_data:
             logger.warning("No positive revenue data found for chart generation")
             # Instead of raising an error, create a "No Data" chart
-            return create_no_data_chart(report, path)
+            return create_no_data_chart(processed_report, path)
 
         # Extract labels (ticket types) and values (revenue amounts)
         labels = [label.upper() for label in filtered_data.keys()]
@@ -111,7 +233,7 @@ def generate_graph_image(report: Dict, path: str = "report_graph.png") -> str:
 
         # Add total revenue in center if data exists
         total_revenue = sum(values)
-        ax.text(0, 0, f'Total Revenue\n${total_revenue:.2f}', ha='center', va='center',
+        ax.text(0, 0, f'Total Revenue\n${total_revenue:,.2f}', ha='center', va='center',
                 color='#ffffff', fontsize=12, weight='bold')
 
         # Enhanced styling
@@ -223,35 +345,23 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
                             graph_path: str = "report_graph.png") -> str:
     """
     Build a comprehensive one-page PDF report with embedded sales graph and event details.
-    Parameters
-    ----------
-    report : dict
-        Output of get_event_report(); MUST contain 'event_name', 'total_tickets_sold',
-        'total_revenue', etc.
-    event_id : int
-        Used in the report title if event_name is missing.
-    pdf_path : str, optional
-        Where to write the PDF (default: "ticket_report.pdf").
-    graph_path : str, optional
-        Where the PNG graph is stored/should be saved (default: "report_graph.png").
-    Returns
-    -------
-    str
-        The path to the generated PDF file, or empty string if generation failed.
     """
     # Validate input parameters
     if not isinstance(report, dict):
         logger.error("Report parameter must be a dictionary")
         return ""
     
-    # Log the report data for debugging
-    logger.info(f"Generating PDF for report: {report}")
+    # Validate and process the report data
+    processed_report = validate_and_process_report_data(report)
+    
+    # Log the processed report data for debugging
+    logger.info(f"Generating PDF for processed report with keys: {list(processed_report.keys())}")
     
     # Ensure graph image exists or generate it
     if not os.path.exists(graph_path) or os.path.getsize(graph_path) == 0:
         logger.info(f"Graph image not found at {graph_path}, generating new one")
         try:
-            generated_graph_path = generate_graph_image(report, graph_path)
+            generated_graph_path = generate_graph_image(processed_report, graph_path)
             graph_path = generated_graph_path if generated_graph_path else None
         except Exception as e:
             logger.error(f"Failed to generate graph image for PDF: {e}")
@@ -333,7 +443,7 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         elements = []
         
         # Enhanced title with event information
-        event_name = report.get('event_name', f'Event ID {event_id}')
+        event_name = processed_report.get('event_name', f'Event ID {event_id}')
         title = f"Event Analytics Report"
         subtitle = f"{event_name}"
         elements.append(Paragraph(title, styles['ReportTitle']))
@@ -341,15 +451,15 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         elements.append(Spacer(1, 12))
         
         # Filter information with better formatting
-        filter_start_date = report.get('filter_start_date', 'N/A')
-        filter_end_date = report.get('filter_end_date', 'N/A')
+        filter_start_date = processed_report.get('filter_start_date', 'N/A')
+        filter_end_date = processed_report.get('filter_end_date', 'N/A')
         if filter_start_date != "N/A" or filter_end_date != "N/A":
             filter_text = f"Report Period: {filter_start_date} to {filter_end_date}"
             elements.append(Paragraph(filter_text, styles['FilterText']))
             elements.append(Spacer(1, 16))
         
         # Check if we have revenue data
-        revenue_data = report.get("revenue_by_ticket_type", {})
+        revenue_data = processed_report.get("revenue_by_ticket_type", {})
         has_revenue_data = bool(revenue_data and any(isinstance(v, (int, float)) and v > 0 for v in revenue_data.values()))
         
         # Revenue graph with improved error handling
@@ -378,9 +488,9 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         
         # Key metrics section with improved formatting
         elements.append(Paragraph("📈 Key Performance Metrics", styles['SubHeading']))
-        total_tickets = report.get('total_tickets_sold', 0)
-        total_revenue = report.get('total_revenue', 0)
-        attendees = report.get('number_of_attendees', 0)
+        total_tickets = processed_report.get('total_tickets_sold', 0)
+        total_revenue = processed_report.get('total_revenue', 0)
+        attendees = processed_report.get('number_of_attendees', 0)
         
         elements.append(Paragraph(f"<b>Total Tickets Sold:</b> {total_tickets:,}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Total Revenue Generated:</b> ${total_revenue:,.2f}", styles['HighlightText']))
@@ -403,13 +513,13 @@ def generate_pdf_with_graph(report: Dict, event_id: int, pdf_path: str = "ticket
         
         # Event details section
         elements.append(Paragraph("📅 Event Information", styles['SubHeading']))
-        event_date = report.get('event_date', 'Not specified')
-        event_location = report.get('event_location', 'Not specified')
+        event_date = processed_report.get('event_date', 'Not specified')
+        event_location = processed_report.get('event_location', 'Not specified')
         elements.append(Paragraph(f"<b>Event Date:</b> {event_date}", styles['CustomBodyText']))
         elements.append(Paragraph(f"<b>Event Location:</b> {event_location}", styles['CustomBodyText']))
         
         # Event description with text wrapping
-        description = report.get('event_description', '').strip()
+        description = processed_report.get('event_description', '').strip()
         if description:
             elements.append(Spacer(1, 8))
             elements.append(Paragraph("<b>Event Description:</b>", styles['CustomBodyText']))
@@ -454,3 +564,29 @@ class CSVExporter:
         output = "Field1,Field2\n"
         output += f"{data.get('field1', '')},{data.get('field2', '')}\n"
         return output
+
+# Testing function
+def test_with_sample_data():
+    """Test the PDF generation with sample data."""
+    sample_data = generate_sample_data_for_testing()
+    result = PDFReportGenerator.generate_pdf_report(sample_data)
+    print(f"Test PDF generated: {result}")
+    return result
+
+def test_with_empty_data():
+    """Test the PDF generation with empty data."""
+    empty_data = {
+        "event_id": 999,
+        "event_name": "Empty Event",
+        "revenue_by_ticket_type": {},
+        "total_tickets_sold": 0,
+        "total_revenue": 0.0
+    }
+    result = PDFReportGenerator.generate_pdf_report(empty_data)
+    print(f"Empty data test PDF generated: {result}")
+    return result
+
+if __name__ == "__main__":
+    print("Testing PDF generation...")
+    test_with_sample_data()
+    test_with_empty_data()
