@@ -7,7 +7,6 @@ import base64
 import re
 from datetime import datetime
 from email_utils import send_email_with_attachment
-from ticket import generate_qr_attachment
 from model import db, Ticket, User, UserRole, Event, TicketType
 import logging
 import mimetypes
@@ -91,7 +90,6 @@ class TicketQRCodeEmailResource(Resource):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-
         body {{
             font-family: 'Poppins', Arial, sans-serif;
             line-height: 1.6;
@@ -223,7 +221,6 @@ class TicketQRCodeEmailResource(Resource):
             background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
             border-radius: 5px;
         }}
-
         /* Mobile Responsive Styles */
         @media only screen and (max-width: 480px) {{
             .email-body {{
@@ -263,70 +260,55 @@ class TicketQRCodeEmailResource(Resource):
         </div>
         <div class="email-body">
             <p>Dear {user.full_name},</p>
-
             <div class="highlight">
                 <h2>🎉 Your Ticket QR Code is Ready! 🎉</h2>
             </div>
-
             <div class="event-details">
                 <h3 class="section-title">📌 Event Details</h3>
-
                 <div class="event-property">
                     <div class="property-label">Event:</div>
                     <div class="property-value">{event.name}</div>
                 </div>
-
                 <div class="event-property">
                     <div class="property-label">Location:</div>
                     <div class="property-value">{event.location}</div>
                 </div>
-
                 <div class="event-property">
                     <div class="property-label">Date:</div>
                     <div class="property-value">{event_date}</div>
                 </div>
-
                 <div class="event-property">
                     <div class="property-label">Time:</div>
                     <div class="property-value">{start_time} - {end_time}</div>
                 </div>
-
                 <div class="event-property">
                     <div class="property-label">Description:</div>
                     <div class="property-value">{event.description}</div>
                 </div>
             </div>
-
             <h3 class="section-title">🎟️ Ticket Details</h3>
-
             <div class="event-property">
                 <div class="property-label">Ticket ID:</div>
                 <div class="property-value">{ticket.id}</div>
             </div>
-
             <div class="event-property">
                 <div class="property-label">Ticket Type:</div>
                 <div class="property-value">{ticket.ticket_type.type_name.value if hasattr(ticket.ticket_type.type_name, 'value') else str(ticket.ticket_type.type_name)}</div>
             </div>
-
             <div class="event-property">
                 <div class="property-label">Quantity:</div>
                 <div class="property-value">{ticket.quantity}</div>
             </div>
-
             <div class="event-property">
                 <div class="property-label">Price:</div>
                 <div class="property-value">${float(ticket.ticket_type.price):.2f}</div>
             </div>
-
             <div class="event-property">
                 <div class="property-label">Purchase Date:</div>
                 <div class="property-value">{ticket.purchase_date.strftime('%B %d, %Y')}</div>
             </div>
-
             <h3 class="section-title">📱 Your QR Code</h3>
             <p>Please present this code at the entrance for seamless check-in.</p>
-
             <div class="ticket-list">
                 <div class="ticket-item">
                     <div class="qr-box">
@@ -338,12 +320,10 @@ class TicketQRCodeEmailResource(Resource):
                     </div>
                 </div>
             </div>
-
             <div class="highlight">
                 <p>You can share this QR code with your guests. Each code can only be scanned once.</p>
                 <p>Save this email for quicker entry at the event.</p>
             </div>
-
             <div class="footer">
                 <p>Thank you for your purchase! We look forward to seeing you at the event.</p>
                 <p>If you have any questions, please contact our support team.</p>
@@ -375,14 +355,13 @@ Thank you for your purchase! We look forward to seeing you at the event.
 If you have any questions, please contact our support team."""
 
         return subject, html_content, text_content
-    
+
     @jwt_required()
     def get(self):
         """Return only QR code images for user's tickets"""
         try:
             user_id = get_jwt_identity()
             user = User.query.get(user_id)
-
             if not user:
                 return {"error": "User not found"}, 404
             if str(user.role).upper() != "ATTENDEE":
@@ -396,10 +375,12 @@ If you have any questions, please contact our support team."""
             for ticket in tickets:
                 if not ticket.qr_code:
                     continue
-                filename, img_bytes = generate_qr_attachment(ticket)
-                if not img_bytes:
-                    continue
-                base64_img = base64.b64encode(img_bytes).decode("utf-8")
+                filename = f"ticket_{ticket.id}.png"
+                qr = qrcode.make(ticket.qr_code)
+                buffer = BytesIO()
+                qr.save(buffer, format="PNG")
+                buffer.seek(0)
+                base64_img = base64.b64encode(buffer.read()).decode("utf-8")
                 qr_codes.append({
                     "ticket_id": ticket.id,
                     "qr_code_base64": base64_img,
@@ -432,6 +413,7 @@ If you have any questions, please contact our support team."""
                 return {"error": "recipient_email must be a valid email or list of emails"}, 400
 
             valid_emails = [email.strip().lower() for email in recipient_emails if self._validate_email(email)]
+
             if not valid_emails:
                 return {"error": "No valid recipient emails provided"}, 400
 
@@ -445,16 +427,21 @@ If you have any questions, please contact our support team."""
 
             user_id = get_jwt_identity()
             user = User.query.get(user_id)
+
             if not user:
                 return {"error": "User not found"}, 404
+
             if str(user.role).upper() != "ATTENDEE":
                 return {"error": "Only attendees can email ticket QR codes"}, 403
 
             ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+
             if not ticket:
                 return {"error": "Ticket not found or does not belong to you"}, 404
+
             if not ticket.qr_code:
                 return {"error": "Ticket does not have a QR code"}, 400
+
             if ticket.quantity <= 1:
                 return {"error": "You must purchase more than 1 ticket to send to others"}, 400
 
@@ -512,8 +499,7 @@ If you have any questions, please contact our support team."""
             logger.error("Unexpected error in QR code email endpoint", exc_info=True)
             return {"error": "Internal server error"}, 500
 
-    def register_qrcode_ticket_resources(api):
-        """Register the Ticket and TicketQRCodeEmail resources with the API."""
-        api.add_resource(TicketResource, "/tickets/<int:ticket_id>")
-        api.add_resource(TicketQRCodeEmailResource, "/tickets", "/tickets/email-qrcode")
-   
+def register_qrcode_ticket_resources(api):
+    """Registers ticket-related resources with Flask-RESTful API."""
+    api.add_resource(TicketResource, "/tickets/<int:ticket_id>")
+    api.add_resource(TicketQRCodeEmailResource, "/tickets", "/tickets/email-qrcode")
