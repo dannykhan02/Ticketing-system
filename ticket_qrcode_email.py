@@ -310,7 +310,7 @@ The Event Team"""
             logger.error(f"Unexpected error in ticket QR email: {e}", exc_info=True)
             return {"error": "Internal server error"}, 500
 
-def register_ticket_resources(api):
+def register_qrcode_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
     api.add_resource(TicketResource, "/tickets/<int:ticket_id>")
     api.add_resource(TicketQRCodeEmailResource, "/tickets", "/tickets/email-qrcode")

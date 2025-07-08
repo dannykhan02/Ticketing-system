@@ -27,6 +27,7 @@ from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from admin_report import register_admin_report_resources
+from ticket_qrcode_email import register_qrcode_ticket_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
@@ -108,6 +109,7 @@ register_ticket_type_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
 register_currency_resources(api)
+register_qrcode_ticket_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
 # ✅ Run app locally and seed currencies
