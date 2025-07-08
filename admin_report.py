@@ -170,7 +170,7 @@ class AdminReportService:
             }
         for report in reports:
             if target_currency:
-                converted_revenue = report.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates)
+                converted_revenue = report.get_revenue_in_currency(target_currency_id)
                 total_revenue += float(converted_revenue)
             else:
                 total_revenue += float(report.total_revenue)
@@ -183,7 +183,7 @@ class AdminReportService:
                 event_revenue = 0.0
                 for r in event_reports:
                     if target_currency:
-                        event_revenue += float(r.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates))
+                        event_revenue += float(r.get_revenue_in_currency(target_currency_id))
                     else:
                         event_revenue += float(r.total_revenue)
                 event_tickets = sum(r.total_tickets_sold for r in event_reports)
@@ -227,7 +227,7 @@ class AdminReportService:
                 organizer_id, start_date, end_date
             )
             aggregated_data = AdminReportService.aggregate_organizer_reports(
-                reports, config.target_currency_id, config.use_latest_rates
+                reports, config.target_currency_id
             )
             summary_report = {
                 "organizer_info": {
@@ -280,7 +280,7 @@ class AdminReportService:
             try:
                 if existing_reports:
                     fresh_aggregated = AdminReportService.aggregate_organizer_reports(
-                        existing_reports, config.target_currency_id, config.use_latest_rates
+                        existing_reports, config.target_currency_id
                     )
                     fresh_report_data = {
                         "event_summary": fresh_aggregated,
