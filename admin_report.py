@@ -444,7 +444,7 @@ class AdminReportService:
                     table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
                     th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
                     th {{ background-color: #2E86AB; color: white; }}
-                    .attachment-note {{ background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 20px 0; }}
+                    .download-note {{ background: #e8f5e8; border: 1px solid #4caf50; padding: 15px; border-radius: 4px; margin: 20px 0; }}
                 </style>
             </head>
             <body>
@@ -490,7 +490,7 @@ class AdminReportService:
                 for ticket_type in tickets_sold_by_type.keys():
                     quantity = tickets_sold_by_type.get(ticket_type, 0)
                     revenue = revenue_by_ticket_type.get(ticket_type, 0)
-                    html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
+                    html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{revenue:,.2f}</td></tr>"
                 html_body += """
                         </table>
                     </div>
@@ -514,10 +514,10 @@ class AdminReportService:
             html_body += """
                         </ul>
                     </div>
-                    <div class="attachment-note">
-                        <h3>📎 Attachments</h3>
-                        <p><strong>Detailed PDF Report:</strong> Complete analytics with charts and visualizations</p>
-                        <p><strong>CSV Data Export:</strong> Raw data for further analysis and processing</p>
+                    <div class="download-note">
+                        <h3>📥 Download Reports</h3>
+                        <p><strong>PDF Report:</strong> You can download the detailed PDF report with charts and visualizations directly from your browser</p>
+                        <p><strong>CSV Data Export:</strong> You can download the CSV data export for further analysis and processing directly from your browser</p>
                     </div>
                 </div>
                 <div class="footer">
@@ -537,7 +537,7 @@ class AdminReportService:
         except Exception as e:
             logger.error(f"Error sending report email: {e}")
             return False
-
+        
 class AdminReportResource(Resource):
     """Admin report API resource"""
 
