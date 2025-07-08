@@ -18,7 +18,7 @@ from currency_routes import convert_currency
 
 logger = logging.getLogger(__name__)
 
-# --- Helper for Date Parsing (Similar to DateUtils from organizer_report) ---
+# Helper for Date Parsing
 class AdminDateUtils:
     @staticmethod
     def parse_date_param(date_str: str, param_name: str) -> datetime:
@@ -145,12 +145,10 @@ class AdminReportService:
                 "currency": None,
                 "events": []
             }
-
         total_tickets = sum(report.total_tickets_sold for report in reports)
         total_attendees = sum(report.number_of_attendees or 0 for report in reports)
         total_revenue = 0.0
         currency_info = {}
-
         target_currency = None
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
@@ -170,17 +168,14 @@ class AdminReportService:
                 "currency": "USD",
                 "currency_symbol": "$"
             }
-
         for report in reports:
             if target_currency:
                 converted_revenue = report.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates)
                 total_revenue += float(converted_revenue)
             else:
                 total_revenue += float(report.total_revenue)
-
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
-
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
@@ -191,7 +186,6 @@ class AdminReportService:
                         event_revenue += float(r.get_revenue_in_currency(target_currency_id, use_latest_rates=use_latest_rates))
                     else:
                         event_revenue += float(r.total_revenue)
-
                 event_tickets = sum(r.total_tickets_sold for r in event_reports)
                 event_attendees = sum(r.number_of_attendees or 0 for r in event_reports)
                 event_details.append({
@@ -204,7 +198,6 @@ class AdminReportService:
                     "attendees": event_attendees,
                     "report_count": len(event_reports)
                 })
-
         return {
             "total_tickets_sold": total_tickets,
             "total_revenue": total_revenue,
@@ -223,7 +216,6 @@ class AdminReportService:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
-
             start_date = config.start_date
             end_date = config.end_date
             if not start_date:
@@ -231,15 +223,12 @@ class AdminReportService:
             if not end_date:
                 end_date = datetime.utcnow()
                 end_date = AdminDateUtils.adjust_end_date(end_date)
-
             reports = AdminReportService.get_reports_by_organizer(
                 organizer_id, start_date, end_date
             )
-
             aggregated_data = AdminReportService.aggregate_organizer_reports(
                 reports, config.target_currency_id, config.use_latest_rates
             )
-
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -277,7 +266,6 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
-
             start_date = config.start_date
             end_date = config.end_date
             if not start_date:
@@ -285,11 +273,9 @@ class AdminReportService:
             if not end_date:
                 end_date = datetime.utcnow()
                 end_date = AdminDateUtils.adjust_end_date(end_date)
-
             existing_reports = AdminReportService.get_reports_by_event(
                 event_id, start_date, end_date
             )
-
             fresh_report_data = None
             try:
                 if existing_reports:
@@ -364,7 +350,6 @@ class AdminReportService:
                         "currency_symbol": currency_symbol
                     }
                 }
-
             admin_report = {
                 "event_info": {
                     "event_id": event.id,
@@ -490,7 +475,7 @@ class AdminReportService:
                 for ticket_type in tickets_sold_by_type.keys():
                     quantity = tickets_sold_by_type.get(ticket_type, 0)
                     revenue = revenue_by_ticket_type.get(ticket_type, 0)
-                    html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{revenue:,.2f}</td></tr>"
+                    html_body += f"<tr><td>{ticket_type}</td><td>{quantity}</td><td>{currency_symbol}{revenue:,.2f}</td></tr>"
                 html_body += """
                         </table>
                     </div>
@@ -537,7 +522,7 @@ class AdminReportService:
         except Exception as e:
             logger.error(f"Error sending report email: {e}")
             return False
-        
+
 class AdminReportResource(Resource):
     """Admin report API resource"""
 
