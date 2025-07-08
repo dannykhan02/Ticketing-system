@@ -196,7 +196,25 @@ The Event Team"""
             # Parse and validate input
             data = request.get_json() or {}
             ticket_id = data.get('ticket_id')
-            recipient_email = data.get('recipient_email', '').strip().lower()
+            
+            # Accept one or more emails
+            recipient_emails = data.get("recipient_email")
+            # Normalize to list even if a single string is passed
+            if isinstance(recipient_emails, str):
+                recipient_emails = [recipient_emails]
+            
+            if not recipient_emails or not isinstance(recipient_emails, list):
+                return {"error": "recipient_email must be a valid email or list of emails"}, 400
+            
+            # Validate all emails
+            valid_emails = [
+                email.strip().lower()
+                for email in recipient_emails
+                if self._validate_email(email)
+            ]
+            
+            if not valid_emails:
+                return {"error": "No valid recipient emails provided"}, 400
             
             # Validate required fields
             if not ticket_id:
@@ -240,17 +258,6 @@ The Event Team"""
                 logger.error(f"Event not found for ticket {ticket_id}")
                 return {"error": "Event information not available"}, 404
             
-            # Determine recipient email with priority order
-            if not recipient_email:
-                recipient_email = ticket.email or user.email
-            
-            # Validate final recipient email
-            if not recipient_email:
-                return {"error": "No recipient_email provided and none available on record"}, 400
-            
-            if not self._validate_email(recipient_email):
-                return {"error": "Invalid email format"}, 400
-            
             # Get QR code image from existing ticket QR code
             try:
                 qr_bytes = self._get_qr_code_image(ticket)
@@ -268,35 +275,36 @@ The Event Team"""
             # Create email content with event details
             subject, body = self._create_email_content(user, ticket, event)
             
-            # Send email with enhanced error handling
-            try:
-                email_sent = send_email_with_attachment(
-                    recipient=recipient_email,
-                    subject=subject,
-                    body=body,
-                    attachments=attachment,
-                    is_html=False
-                )
-                
-                if not email_sent:
-                    logger.error(f"Email sending failed for ticket {ticket_id} to {recipient_email}")
-                    return {"error": "Failed to send email. Please try again later."}, 500
-                
-            except Exception as e:
-                logger.error(f"Email sending exception for ticket {ticket_id}: {e}")
-                return {"error": "Email service temporarily unavailable"}, 503
+            failed = []
+            sent = []
+            for email in valid_emails:
+                try:
+                    success = send_email_with_attachment(
+                        recipient=email,
+                        subject=subject,
+                        body=body,
+                        attachments=attachment,
+                        is_html=False
+                    )
+                    if success:
+                        sent.append(email)
+                    else:
+                        failed.append(email)
+                except Exception as e:
+                    logger.error(f"Failed to send QR email to {email}: {e}")
+                    failed.append(email)
             
             # Log successful email sending
-            logger.info(f"Existing QR code email sent successfully for ticket {ticket_id} to {recipient_email}")
+            logger.info(f"Existing QR code email sent successfully for ticket {ticket_id} to {sent}. Failed to {failed}")
             
             return {
-                "message": f"QR code sent successfully to {recipient_email}",
-                "ticket_id": ticket_id,
+                "message": "QR code email attempt complete",
+                "ticket_id": ticket.id,
                 "event_name": event.name,
-                "event_date": event.date.strftime('%Y-%m-%d') if event.date else None,
-                "sent_to": recipient_email,
+                "sent_to": sent,
+                "failed": failed,
                 "timestamp": datetime.utcnow().isoformat()
-            }, 200
+            }, 207 if failed else 200
             
         except Exception as e:
             logger.error(f"Unexpected error in ticket QR email: {e}", exc_info=True)
