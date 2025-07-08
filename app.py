@@ -21,13 +21,16 @@ from model import db, Currency, CurrencyCode
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
 from Event import register_event_resources
-from ticket import register_ticket_resources, complete_ticket_operation
+# IMPORTANT CHANGE: Ensure your 'ticket.py' does NOT register /tickets/<int:ticket_id> anymore.
+# We are now using the one from ticket_qr_email.py for this.
+from ticket import complete_ticket_operation # Only import what's truly needed from 'ticket.py'
+from ticket_qrcode_email import register_qrcode_ticket_resources # <<-- Updated: Import the *correct function name*
+
 from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from admin_report import register_admin_report_resources
-from ticket_qrcode_email import register_qrcode_ticket_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
@@ -101,7 +104,7 @@ cloudinary.config(
 # ✅ Register all routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
 register_event_resources(api)
-register_ticket_resources(api)
+register_qrcode_ticket_resources(api) 
 register_ticket_validation_resources(api)
 register_mpesa_routes(api, complete_ticket_operation)
 register_paystack_routes(api)
@@ -109,7 +112,6 @@ register_ticket_type_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
 register_currency_resources(api)
-register_qrcode_ticket_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
 # ✅ Run app locally and seed currencies
