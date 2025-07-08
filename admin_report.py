@@ -13,51 +13,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import json
 
-# Import the currency conversion function
-from currency_routes import convert_currency
-
 logger = logging.getLogger(__name__)
-
-# Helper for Date Parsing
-class AdminDateUtils:
-    @staticmethod
-    def parse_date_param(date_str: str, param_name: str) -> datetime:
-        """Parses a date string into a datetime object. Handles YYYY-MM-DD and YYYY-MM-DD HH:MM:SS."""
-        try:
-            if ' ' in date_str:
-                return datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-            else:
-                return datetime.strptime(date_str, '%Y-%m-%d')
-        except ValueError:
-            raise ValueError(f"Invalid {param_name} format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS.")
-
-    @staticmethod
-    def adjust_end_date(end_date: datetime) -> datetime:
-        """Adjusts end date to include the entire day for YYYY-MM-DD format."""
-        if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0 and end_date.microsecond == 0:
-            return end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return end_date
-
-    @staticmethod
-    def validate_date_range(start_date_str: Optional[str], end_date_str: Optional[str]) -> Tuple[Optional[datetime], Optional[datetime], Optional[Dict[str, Any]]]:
-        """Validates and parses a date range."""
-        start_date = None
-        end_date = None
-        error = None
-        if start_date_str:
-            try:
-                start_date = AdminDateUtils.parse_date_param(start_date_str, 'start_date')
-            except ValueError as e:
-                return None, None, {'error': str(e), 'status': 400}
-        if end_date_str:
-            try:
-                end_date = AdminDateUtils.parse_date_param(end_date_str, 'end_date')
-                end_date = AdminDateUtils.adjust_end_date(end_date)
-            except ValueError as e:
-                return None, None, {'error': str(e), 'status': 400}
-        if start_date and end_date and start_date > end_date:
-            error = {'error': 'Start date cannot be after end date', 'status': 400}
-        return start_date, end_date, error
 
 @dataclass
 class AdminReportConfig:
@@ -67,11 +23,8 @@ class AdminReportConfig:
     format_type: str = 'json'
     currency_conversion: bool = True
     target_currency_id: Optional[int] = None
-    date_range_days: int = 30
     group_by_organizer: bool = True
     use_latest_rates: bool = True
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
 
 class AdminReportService:
     """Service class for handling admin report operations"""
@@ -91,42 +44,30 @@ class AdminReportService:
             return None
 
     @staticmethod
-    def get_events_by_organizer(organizer_id: int, start_date: datetime = None, end_date: datetime = None) -> List[Event]:
-        """Get all events for a specific organizer within date range"""
+    def get_events_by_organizer(organizer_id: int) -> List[Event]:
+        """Get all events for a specific organizer"""
         try:
             query = Event.query.join(Organizer).filter(Organizer.user_id == organizer_id)
-            if start_date:
-                query = query.filter(Event.date >= start_date)
-            if end_date:
-                query = query.filter(Event.date <= end_date)
             return query.all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching events for organizer {organizer_id}: {e}")
             return []
 
     @staticmethod
-    def get_reports_by_organizer(organizer_id: int, start_date: datetime = None, end_date: datetime = None) -> List[Report]:
-        """Get all reports for a specific organizer within date range"""
+    def get_reports_by_organizer(organizer_id: int) -> List[Report]:
+        """Get all reports for a specific organizer"""
         try:
             query = Report.query.filter_by(organizer_id=organizer_id)
-            if start_date:
-                query = query.filter(Report.timestamp >= start_date)
-            if end_date:
-                query = query.filter(Report.timestamp <= end_date)
             return query.order_by(Report.timestamp.desc()).all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching reports for organizer {organizer_id}: {e}")
             return []
 
     @staticmethod
-    def get_reports_by_event(event_id: int, start_date: datetime = None, end_date: datetime = None) -> List[Report]:
-        """Get all reports for a specific event within date range"""
+    def get_reports_by_event(event_id: int) -> List[Report]:
+        """Get all reports for a specific event"""
         try:
             query = Report.query.filter_by(event_id=event_id)
-            if start_date:
-                query = query.filter(Report.timestamp >= start_date)
-            if end_date:
-                query = query.filter(Report.timestamp <= end_date)
             return query.order_by(Report.timestamp.desc()).all()
         except SQLAlchemyError as e:
             logger.error(f"Database error fetching reports for event {event_id}: {e}")
@@ -145,11 +86,13 @@ class AdminReportService:
                 "currency": None,
                 "events": []
             }
+
         total_tickets = sum(report.total_tickets_sold for report in reports)
         total_attendees = sum(report.number_of_attendees or 0 for report in reports)
         total_revenue = 0.0
         currency_info = {}
         target_currency = None
+
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
@@ -168,12 +111,14 @@ class AdminReportService:
                 "currency": "USD",
                 "currency_symbol": "$"
             }
+
         for report in reports:
             if target_currency:
                 converted_revenue = report.get_revenue_in_currency(target_currency_id)
                 total_revenue += float(converted_revenue)
             else:
                 total_revenue += float(report.total_revenue)
+
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
         for event_id in unique_events:
@@ -198,6 +143,7 @@ class AdminReportService:
                     "attendees": event_attendees,
                     "report_count": len(event_reports)
                 })
+
         return {
             "total_tickets_sold": total_tickets,
             "total_revenue": total_revenue,
@@ -216,19 +162,10 @@ class AdminReportService:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
-            start_date = config.start_date
-            end_date = config.end_date
-            if not start_date:
-                start_date = datetime.utcnow() - timedelta(days=config.date_range_days)
-            if not end_date:
-                end_date = datetime.utcnow()
-                end_date = AdminDateUtils.adjust_end_date(end_date)
-            reports = AdminReportService.get_reports_by_organizer(
-                organizer_id, start_date, end_date
-            )
-            aggregated_data = AdminReportService.aggregate_organizer_reports(
-                reports, config.target_currency_id
-            )
+
+            reports = AdminReportService.get_reports_by_organizer(organizer_id)
+            aggregated_data = AdminReportService.aggregate_organizer_reports(reports, config.target_currency_id)
+
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -237,9 +174,7 @@ class AdminReportService:
                     "phone": organizer.phone_number
                 },
                 "report_period": {
-                    "start_date": start_date.isoformat(),
-                    "end_date": end_date.isoformat(),
-                    "days": (end_date - start_date).days if start_date and end_date else config.date_range_days
+                    "days": "All available data"
                 },
                 "currency_settings": {
                     "target_currency_id": config.target_currency_id,
@@ -266,17 +201,10 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
-            start_date = config.start_date
-            end_date = config.end_date
-            if not start_date:
-                start_date = datetime.utcnow() - timedelta(days=config.date_range_days)
-            if not end_date:
-                end_date = datetime.utcnow()
-                end_date = AdminDateUtils.adjust_end_date(end_date)
-            existing_reports = AdminReportService.get_reports_by_event(
-                event_id, start_date, end_date
-            )
+
+            existing_reports = AdminReportService.get_reports_by_event(event_id)
             fresh_report_data = None
+
             try:
                 if existing_reports:
                     fresh_aggregated = AdminReportService.aggregate_organizer_reports(
@@ -350,6 +278,7 @@ class AdminReportService:
                         "currency_symbol": currency_symbol
                     }
                 }
+
             admin_report = {
                 "event_info": {
                     "event_id": event.id,
@@ -360,9 +289,7 @@ class AdminReportService:
                     "organizer_name": event.organizer.user.full_name if event.organizer and event.organizer.user else "N/A"
                 },
                 "report_period": {
-                    "start_date": start_date.isoformat(),
-                    "end_date": end_date.isoformat(),
-                    "days": (end_date - start_date).days if start_date and end_date else config.date_range_days
+                    "days": "All available data"
                 },
                 "currency_settings": {
                     "target_currency_id": config.target_currency_id,
@@ -391,8 +318,6 @@ class AdminReportService:
             if is_event_report:
                 report_title = report_data['event_info'].get('event_name', 'Unknown Event')
                 subject = f"Event Analytics Report - {report_title}"
-                filter_start_date_display = report_data['report_period'].get('start_date', 'N/A')
-                filter_end_date_display = report_data['report_period'].get('end_date', 'N/A')
                 currency_symbol = report_data['fresh_report_data'].get('currency_info', {}).get('currency_symbol', '$')
                 total_tickets_sold = report_data['fresh_report_data']['event_summary'].get('total_tickets_sold', 0)
                 total_revenue = report_data['fresh_report_data']['event_summary'].get('total_revenue', 0.0)
@@ -402,8 +327,6 @@ class AdminReportService:
             else:
                 report_title = report_data['organizer_info'].get('organizer_name', 'Unknown Organizer')
                 subject = f"Organizer Summary Report - {report_title}"
-                filter_start_date_display = report_data['report_period'].get('start_date', 'N/A')
-                filter_end_date_display = report_data['report_period'].get('end_date', 'N/A')
                 currency_symbol = report_data['summary'].get('currency_symbol', '$')
                 total_tickets_sold = report_data['summary'].get('total_tickets_sold', 0)
                 total_revenue = report_data['summary'].get('total_revenue', 0.0)
@@ -436,7 +359,6 @@ class AdminReportService:
                 <div class="header">
                     <h1>📊 Admin Report</h1>
                     <h2>{report_title}</h2>
-                    <p>Report Period: {filter_start_date_display} to {filter_end_date_display}</p>
                 </div>
                 <div class="content">
                     <div class="summary-box">
@@ -542,37 +464,13 @@ class AdminReportResource(Resource):
         use_latest_rates = request.args.get('use_latest_rates', 'true').lower() == 'true'
         send_email = request.args.get('send_email', 'false').lower() == 'true'
         recipient_email = request.args.get('recipient_email', user.email)
-        start_date_str = request.args.get('start_date')
-        end_date_str = request.args.get('end_date')
-        specific_date_str = request.args.get('specific_date')
-
-        report_start_date = None
-        report_end_date = None
-        if specific_date_str:
-            try:
-                specific_date = AdminDateUtils.parse_date_param(specific_date_str, 'specific_date')
-                report_start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                report_end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-            except ValueError as e:
-                logger.error(f"AdminReportResource: Error parsing specific_date '{specific_date_str}': {e}")
-                return {'error': str(e)}, 400
-        else:
-            parsed_start_date, parsed_end_date, date_error = AdminDateUtils.validate_date_range(start_date_str, end_date_str)
-            if date_error:
-                logger.warning(f"AdminReportResource: Invalid date range provided: {date_error}")
-                return date_error, date_error.get('status', 400)
-            report_start_date = parsed_start_date
-            report_end_date = parsed_end_date
 
         config = AdminReportConfig(
             include_charts=include_charts,
             include_email=send_email,
             format_type=format_type,
             target_currency_id=target_currency_id,
-            date_range_days=int(request.args.get('days', 30)),
-            use_latest_rates=use_latest_rates,
-            start_date=report_start_date,
-            end_date=report_end_date
+            use_latest_rates=use_latest_rates
         )
 
         try:
