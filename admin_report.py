@@ -121,6 +121,7 @@ class AdminReportService:
 
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
+
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
@@ -156,16 +157,50 @@ class AdminReportService:
         }
 
     @staticmethod
+    def aggregate_event_reports(event: Event, reports: List[Report], target_currency_id: Optional[int]) -> Dict[str, Any]:
+        """Aggregate data for a single event"""
+        tickets = sum(r.total_tickets_sold for r in reports)
+        attendees = sum(r.number_of_attendees or 0 for r in reports)
+        revenue = 0.0
+        for r in reports:
+            if target_currency_id:
+                revenue += float(r.get_revenue_in_currency(target_currency_id))
+            else:
+                revenue += float(r.total_revenue)
+
+        currency = "USD"
+        currency_symbol = "$"
+        if target_currency_id:
+            target_currency = Currency.query.get(target_currency_id)
+            if target_currency:
+                currency = target_currency.code.value
+                currency_symbol = target_currency.symbol
+        elif reports and reports[0].base_currency:
+            currency = reports[0].base_currency.code.value
+            currency_symbol = reports[0].base_currency.symbol
+
+        return {
+            "event_id": event.id,
+            "event_name": event.name,
+            "event_date": event.date.isoformat() if event.date else None,
+            "location": event.location,
+            "tickets_sold": tickets,
+            "attendees": attendees,
+            "revenue": revenue,
+            "currency": currency,
+            "currency_symbol": currency_symbol,
+            "report_count": len(reports)
+        }
+
+    @staticmethod
     def generate_organizer_summary_report(organizer_id: int, config: AdminReportConfig) -> Dict[str, Any]:
         """Generate a comprehensive summary report for an organizer"""
         try:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
-
             reports = AdminReportService.get_reports_by_organizer(organizer_id)
             aggregated_data = AdminReportService.aggregate_organizer_reports(reports, config.target_currency_id)
-
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -201,26 +236,24 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
-
             existing_reports = AdminReportService.get_reports_by_event(event_id)
             fresh_report_data = None
-
             try:
                 if existing_reports:
-                    fresh_aggregated = AdminReportService.aggregate_organizer_reports(
-                        existing_reports, config.target_currency_id
+                    fresh_summary = AdminReportService.aggregate_event_reports(
+                        event, existing_reports, config.target_currency_id
                     )
                     fresh_report_data = {
-                        "event_summary": fresh_aggregated,
+                        "event_summary": fresh_summary,
                         "report_timestamp": datetime.utcnow().isoformat(),
                         "currency_conversion": {
                             "target_currency_id": config.target_currency_id,
                             "use_latest_rates": config.use_latest_rates
+                        },
+                        "currency_info": {
+                            "currency": fresh_summary["currency"],
+                            "currency_symbol": fresh_summary["currency_symbol"]
                         }
-                    }
-                    fresh_report_data["currency_info"] = {
-                        "currency": fresh_aggregated.get('currency'),
-                        "currency_symbol": fresh_aggregated.get('currency_symbol')
                     }
                 else:
                     currency_code = None
@@ -232,14 +265,13 @@ class AdminReportService:
                             currency_symbol = target_currency.symbol
                     fresh_report_data = {
                         "event_summary": {
-                            "total_tickets_sold": 0,
-                            "total_revenue": 0.0,
-                            "total_attendees": 0,
-                            "event_count": 0,
-                            "report_count": 0,
+                            "event_id": event.id,
+                            "event_name": event.name,
+                            "tickets_sold": 0,
+                            "revenue": 0.0,
+                            "attendees": 0,
                             "currency": currency_code,
                             "currency_symbol": currency_symbol,
-                            "events": []
                         },
                         "report_timestamp": datetime.utcnow().isoformat(),
                         "currency_conversion": {
@@ -264,14 +296,13 @@ class AdminReportService:
                     "error": "Fresh report generation failed",
                     "details": str(e),
                     "event_summary": {
-                        "total_tickets_sold": 0,
-                        "total_revenue": 0.0,
-                        "total_attendees": 0,
-                        "event_count": 0,
-                        "report_count": 0,
+                        "event_id": event.id,
+                        "event_name": event.name,
+                        "tickets_sold": 0,
+                        "revenue": 0.0,
+                        "attendees": 0,
                         "currency": currency_code,
                         "currency_symbol": currency_symbol,
-                        "events": []
                     },
                     "currency_info": {
                         "currency": currency_code,
@@ -319,9 +350,9 @@ class AdminReportService:
                 report_title = report_data['event_info'].get('event_name', 'Unknown Event')
                 subject = f"Event Analytics Report - {report_title}"
                 currency_symbol = report_data['fresh_report_data'].get('currency_info', {}).get('currency_symbol', '$')
-                total_tickets_sold = report_data['fresh_report_data']['event_summary'].get('total_tickets_sold', 0)
-                total_revenue = report_data['fresh_report_data']['event_summary'].get('total_revenue', 0.0)
-                number_of_attendees = report_data['fresh_report_data']['event_summary'].get('total_attendees', 0)
+                total_tickets_sold = report_data['fresh_report_data']['event_summary'].get('tickets_sold', 0)
+                total_revenue = report_data['fresh_report_data']['event_summary'].get('revenue', 0.0)
+                number_of_attendees = report_data['fresh_report_data']['event_summary'].get('attendees', 0)
                 tickets_sold_by_type = {}
                 revenue_by_ticket_type = {}
             else:
