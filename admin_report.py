@@ -1,17 +1,17 @@
 from flask import jsonify, request, Response, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Report, Event, User, Organizer, Currency, ExchangeRate, TicketType
-from pdf_utils import PDFReportGenerator, CSVExporter
-from email_utils import send_email_with_attachment
-from sqlalchemy.orm.exc import NoResultFound
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func
+from datetime import datetime
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
-import json
+
+# Your application-specific imports
+from model import User, Event, Organizer, Report, db, Currency, ExchangeRate
+from pdf_utils import CSVExporter
+from pdf_utils import PDFReportGenerator
+from email_utils import send_email_with_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,42 @@ class AdminReportConfig:
     use_latest_rates: bool = True
 
 class AdminReportService:
-    """Service class for handling admin report operations"""
+    @staticmethod
+    def format_report_data_for_frontend(report_data, config):
+        """Format report data to ensure frontend compatibility"""
+
+        # Ensure events is a list and contains the required fields
+        if 'events' not in report_data:
+            report_data['events'] = []
+
+        # Format each event to ensure numeric values and required fields
+        formatted_events = []
+        for event in report_data.get('events', []):
+            formatted_event = {
+                'event_id': event.get('event_id', ''),
+                'event_name': event.get('event_name', 'Unknown Event'),
+                'event_date': event.get('event_date', ''),
+                'location': event.get('location', 'N/A'),
+                'revenue': float(event.get('revenue', 0)),
+                'attendees': int(event.get('attendees', 0)),
+                'tickets_sold': int(event.get('tickets_sold', 0)),
+            }
+            formatted_events.append(formatted_event)
+
+        # Ensure currency symbol is present
+        if 'currency_symbol' not in report_data:
+            report_data['currency_symbol'] = '$'
+
+        # Add summary statistics
+        report_data['summary'] = {
+            'total_events': len(formatted_events),
+            'total_revenue': sum(event['revenue'] for event in formatted_events),
+            'total_attendees': sum(event['attendees'] for event in formatted_events),
+            'total_tickets_sold': sum(event['tickets_sold'] for event in formatted_events),
+        }
+
+        report_data['events'] = formatted_events
+        return report_data
 
     @staticmethod
     def validate_admin_access(user: User) -> bool:
@@ -39,7 +74,7 @@ class AdminReportService:
         """Get organizer user by ID"""
         try:
             return User.query.filter_by(id=organizer_id, role='ORGANIZER').first()
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Database error fetching organizer {organizer_id}: {e}")
             return None
 
@@ -49,7 +84,7 @@ class AdminReportService:
         try:
             query = Event.query.join(Organizer).filter(Organizer.user_id == organizer_id)
             return query.all()
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Database error fetching events for organizer {organizer_id}: {e}")
             return []
 
@@ -59,7 +94,7 @@ class AdminReportService:
         try:
             query = Report.query.filter_by(organizer_id=organizer_id)
             return query.order_by(Report.timestamp.desc()).all()
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Database error fetching reports for organizer {organizer_id}: {e}")
             return []
 
@@ -69,7 +104,7 @@ class AdminReportService:
         try:
             query = Report.query.filter_by(event_id=event_id)
             return query.order_by(Report.timestamp.desc()).all()
-        except SQLAlchemyError as e:
+        except Exception as e:
             logger.error(f"Database error fetching reports for event {event_id}: {e}")
             return []
 
@@ -121,7 +156,6 @@ class AdminReportService:
 
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
-
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
@@ -199,8 +233,10 @@ class AdminReportService:
             organizer = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found", "status": 404}
+
             reports = AdminReportService.get_reports_by_organizer(organizer_id)
             aggregated_data = AdminReportService.aggregate_organizer_reports(reports, config.target_currency_id)
+
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer.id,
@@ -236,6 +272,7 @@ class AdminReportService:
             ).first()
             if not event:
                 return {"error": "Event not found or doesn't belong to organizer", "status": 404}
+
             existing_reports = AdminReportService.get_reports_by_event(event_id)
             fresh_report_data = None
             try:
@@ -478,7 +515,6 @@ class AdminReportService:
 
 class AdminReportResource(Resource):
     """Admin report API resource"""
-
     @jwt_required()
     def get(self):
         """Get admin reports with various filtering options"""
@@ -553,7 +589,6 @@ class AdminReportResource(Resource):
 
 class AdminOrganizerListResource(Resource):
     """Resource for listing all organizers for admin"""
-
     @jwt_required()
     def get(self):
         """Get list of all organizers with basic info"""
@@ -599,7 +634,6 @@ class AdminOrganizerListResource(Resource):
 
 class AdminEventListResource(Resource):
     """Resource for listing events by organizer for admin"""
-
     @jwt_required()
     def get(self, organizer_id):
         """Get list of events for a specific organizer"""
