@@ -904,23 +904,36 @@ class AdminEventListResource(Resource):
 
         try:
             events = AdminReportService.get_events_by_organizer(organizer_id)
-            event_list = [{
-                'event_id': event.id,
-                'event_name': event.name,
-                'event_date': event.date.isoformat() if event.date else None,
-                'location': event.location,
-                'description': event.description,
-                'total_tickets': sum(tt.quantity for tt in event.ticket_types) if event.ticket_types else 0,
-                'tickets_available': sum(tt.quantity for tt in event.ticket_types) - sum(1 for t in event.tickets if t.payment_status.value == "PAID") if event.ticket_types else 0,
-                'price_per_ticket': float(event.price_per_ticket) if event.price_per_ticket else 0.0,
-                'created_at': event.created_at.isoformat() if event.created_at else None
-            } for event in events]
+            event_list = []
+
+            for event in events:
+                # Calculate total ticket quantity
+                total_tickets = sum(tt.quantity for tt in event.ticket_types) if event.ticket_types else 0
+
+                # Calculate average price per ticket
+                if event.ticket_types:
+                    total_price = sum(tt.price or 0 for tt in event.ticket_types)
+                    avg_price = total_price / len(event.ticket_types)
+                else:
+                    avg_price = 0.0
+
+                event_list.append({
+                    'event_id': event.id,
+                    'event_name': event.name,
+                    'event_date': event.date.isoformat() if event.date else None,
+                    'location': event.location,
+                    'description': event.description,
+                    'total_tickets': total_tickets,
+                    'tickets_available': event.tickets_available,
+                    'price_per_ticket': round(float(avg_price), 2),
+                    'created_at': event.created_at.isoformat() if event.created_at else None
+                })
 
             return event_list, 200
         except Exception as e:
             logger.error(f"Error fetching events for organizer {organizer_id}: {e}")
             return {"message": f"Internal server error fetching events for organizer {organizer_id}"}, 500
-        
+
 def register_admin_report_resources(api):
     """Register admin report resources with the Flask-RESTful API"""
     api.add_resource(AdminReportResource, '/admin/reports')
