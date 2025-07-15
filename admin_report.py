@@ -888,17 +888,13 @@ class AdminOrganizerListResource(Resource):
             logger.error(f"Error fetching organizer list: {e}")
             return {"message": "Internal server error fetching organizers"}, 500
 
-
-
-from sqlalchemy import func, case
-
 class AdminEventListResource(Resource):
     """Resource for listing events by organizer for admin"""
     @jwt_required()
     def get(self, organizer_id):
+        """Get list of events for a specific organizer"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
@@ -908,13 +904,10 @@ class AdminEventListResource(Resource):
                 Event.name,
                 Event.date,
                 Event.location,
-                func.count(Report.id).label('report_count'),
-                func.coalesce(func.sum(TicketType.quantity), 0).label('total_tickets'),
-                func.coalesce(func.avg(TicketType.price), 0.0).label('average_price')
+                func.count(Report.id).label('report_count')
             ).select_from(Event)\
             .join(Organizer, Event.organizer_id == Organizer.id)\
             .outerjoin(Report, Event.id == Report.event_id)\
-            .outerjoin(TicketType, TicketType.event_id == Event.id)\
             .filter(Organizer.user_id == organizer_id)\
             .group_by(Event.id, Event.name, Event.date, Event.location)\
             .order_by(Event.date.desc())\
@@ -927,9 +920,7 @@ class AdminEventListResource(Resource):
                     "name": event.name,
                     "event_date": event.date.isoformat() if event.date else None,
                     "location": event.location,
-                    "report_count": event.report_count,
-                    "total_tickets": event.total_tickets,
-                    "price_per_ticket": float(event.average_price)
+                    "report_count": event.report_count
                 })
 
             return {
@@ -937,12 +928,9 @@ class AdminEventListResource(Resource):
                 "events": event_list,
                 "total_count": len(event_list)
             }
-
         except Exception as e:
             logger.error(f"Error fetching event list for organizer {organizer_id}: {e}")
             return {"message": "Failed to fetch event list", "error": str(e)}, 500
-
-
 
 
 def register_admin_report_resources(api):
