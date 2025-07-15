@@ -1,7 +1,7 @@
 from flask import jsonify, request, Response, send_file
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from sqlalchemy import func
+from sqlalchemy import func, case
 from datetime import datetime
 import logging
 from typing import Dict, List, Optional, Any
@@ -10,7 +10,7 @@ import requests
 from decimal import Decimal, ROUND_HALF_UP
 
 # Your application-specific imports
-from model import User, Event, Organizer, Report, db, Currency, ExchangeRate
+from model import User, Event, Organizer, Report, db, Currency, ExchangeRate,Ticket, TicketType
 from pdf_utils import CSVExporter
 from pdf_utils import PDFReportGenerator
 from email_utils import send_email_with_attachment
@@ -888,51 +888,73 @@ class AdminOrganizerListResource(Resource):
             logger.error(f"Error fetching organizer list: {e}")
             return {"message": "Internal server error fetching organizers"}, 500
 
-class AdminEventListResource(Resource):
-    """API resource for listing events of a specific organizer for admin"""
 
+
+class AdminEventListResource(Resource):
+    """Resource for listing events by organizer for admin"""
     @jwt_required()
     def get(self, organizer_id):
+        """Get list of events for a specific organizer"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
-        organizer = AdminReportService.get_organizer_by_id(organizer_id)
-        if not organizer:
-            return {"message": "Organizer not found"}, 404
-
         try:
-            events = AdminReportService.get_events_by_organizer(organizer_id)
+            events = db.session.query(
+                Event.id,
+                Event.name,
+                Event.date,
+                Event.location,
+                Event.description,
+                Event.created_at,
+                func.count(Report.id).label('report_count'),
+                func.coalesce(func.sum(TicketType.quantity), 0).label('total_tickets'),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (Ticket.payment_status.notin_(['paid', 'completed']), 1),
+                            else_=0
+                        )
+                    ), 0
+                ).label('tickets_available'),
+                func.coalesce(func.avg(TicketType.price), 0).label('average_price')
+            )\
+            .select_from(Event)\
+            .join(Organizer, Event.organizer_id == Organizer.id)\
+            .outerjoin(Report, Report.event_id == Event.id)\
+            .outerjoin(TicketType, TicketType.event_id == Event.id)\
+            .outerjoin(Ticket, Ticket.event_id == Event.id)\
+            .filter(Organizer.user_id == organizer_id)\
+            .group_by(Event.id)\
+            .order_by(Event.date.desc())\
+            .all()
+
             event_list = []
-
             for event in events:
-                # Calculate total ticket quantity
-                total_tickets = sum(tt.quantity for tt in event.ticket_types) if event.ticket_types else 0
-
-                # Calculate average price per ticket
-                if event.ticket_types:
-                    total_price = sum(tt.price or 0 for tt in event.ticket_types)
-                    avg_price = total_price / len(event.ticket_types)
-                else:
-                    avg_price = 0.0
-
                 event_list.append({
-                    'event_id': event.id,
-                    'event_name': event.name,
-                    'event_date': event.date.isoformat() if event.date else None,
-                    'location': event.location,
-                    'description': event.description,
-                    'total_tickets': total_tickets,
-                    'tickets_available': event.tickets_available,
-                    'price_per_ticket': round(float(avg_price), 2),
-                    'created_at': event.created_at.isoformat() if event.created_at else None
+                    "event_id": event.id,
+                    "name": event.name,
+                    "event_date": event.date.isoformat() if event.date else None,
+                    "location": event.location,
+                    "description": event.description,
+                    "created_at": event.created_at.isoformat() if event.created_at else None,
+                    "report_count": event.report_count,
+                    "total_tickets": event.total_tickets,
+                    "tickets_available": event.tickets_available,
+                    "price_per_ticket": float(event.average_price)
                 })
 
-            return event_list, 200
+            return {
+                "organizer_id": organizer_id,
+                "events": event_list,
+                "total_count": len(event_list)
+            }
+
         except Exception as e:
-            logger.error(f"Error fetching events for organizer {organizer_id}: {e}")
-            return {"message": f"Internal server error fetching events for organizer {organizer_id}"}, 500
+            logger.error(f"Error fetching event list for organizer {organizer_id}: {e}")
+            return {"message": "Failed to fetch event list", "error": str(e)}, 500
+
 
 def register_admin_report_resources(api):
     """Register admin report resources with the Flask-RESTful API"""
