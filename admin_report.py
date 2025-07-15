@@ -1,4 +1,4 @@
-from flask import jsonify, request, Response, send_file
+from flask import jsonify, request, Response
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from sqlalchemy import func, case
@@ -10,7 +10,7 @@ import requests
 from decimal import Decimal, ROUND_HALF_UP
 
 # Your application-specific imports
-from model import User, Event, Organizer, Report, db, Currency, ExchangeRate,Ticket, TicketType
+from model import User, Event, Organizer, Report, db, Currency, ExchangeRate, Ticket, TicketType
 from pdf_utils import CSVExporter
 from pdf_utils import PDFReportGenerator
 from email_utils import send_email_with_attachment
@@ -40,11 +40,18 @@ class CurrencyConversionService:
             if from_currency == to_currency:
                 return 1.0
 
+            # Fetch currency instances
+            from_currency_obj = Currency.query.filter_by(code=from_currency).first()
+            to_currency_obj = Currency.query.filter_by(code=to_currency).first()
+
+            if not from_currency_obj or not to_currency_obj:
+                return None
+
             # Try to get from database first
             if use_latest:
                 rate = ExchangeRate.query.filter_by(
-                    from_currency=from_currency,
-                    to_currency=to_currency
+                    from_currency_id=from_currency_obj.id,
+                    to_currency_id=to_currency_obj.id
                 ).order_by(ExchangeRate.timestamp.desc()).first()
 
                 if rate and rate.is_current():
@@ -64,15 +71,12 @@ class CurrencyConversionService:
             api_url = f"https://api.exchangerate-api.com/v4/latest/{from_currency}"
             response = requests.get(api_url, timeout=10)
             response.raise_for_status()
-
             data = response.json()
             if to_currency in data.get('rates', {}):
                 rate = float(data['rates'][to_currency])
-
                 # Store in database for caching
                 CurrencyConversionService.store_exchange_rate(from_currency, to_currency, rate)
                 return rate
-
             return None
         except Exception as e:
             logger.error(f"Error fetching exchange rate from API: {e}")
@@ -82,14 +86,18 @@ class CurrencyConversionService:
     def store_exchange_rate(from_currency: str, to_currency: str, rate: float):
         """Store exchange rate in database"""
         try:
-            exchange_rate = ExchangeRate(
-                from_currency=from_currency,
-                to_currency=to_currency,
-                rate=rate,
-                timestamp=datetime.utcnow()
-            )
-            db.session.add(exchange_rate)
-            db.session.commit()
+            from_currency_obj = Currency.query.filter_by(code=from_currency).first()
+            to_currency_obj = Currency.query.filter_by(code=to_currency).first()
+
+            if from_currency_obj and to_currency_obj:
+                exchange_rate = ExchangeRate(
+                    from_currency_id=from_currency_obj.id,
+                    to_currency_id=to_currency_obj.id,
+                    rate=rate,
+                    timestamp=datetime.utcnow()
+                )
+                db.session.add(exchange_rate)
+                db.session.commit()
         except Exception as e:
             logger.error(f"Error storing exchange rate: {e}")
             db.session.rollback()
@@ -135,12 +143,10 @@ class CurrencyConversionService:
                         'intermediate_amount': float(usd_amount),
                         'intermediate_currency': 'USD'
                     }
-
                 final_amount = usd_amount * Decimal(str(usd_to_target_rate))
 
             # Round to 2 decimal places
             final_amount = final_amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
             return {
                 'success': True,
                 'original_amount': float(ksh_amount),
@@ -155,7 +161,6 @@ class CurrencyConversionService:
                 },
                 'conversion_timestamp': datetime.utcnow().isoformat()
             }
-
         except Exception as e:
             logger.error(f"Error in currency conversion: {e}")
             return {
@@ -170,19 +175,16 @@ class AdminReportService:
     @staticmethod
     def format_report_data_for_frontend(report_data, config):
         """Format report data to ensure frontend compatibility with currency conversion"""
-
-        # Ensure events is a list and contains the required fields
         if 'events' not in report_data:
             report_data['events'] = []
 
         # Get target currency info
         target_currency_code = 'KSH'  # Default
         target_currency_symbol = 'KSh'
-
         if config.target_currency_id:
             target_currency = Currency.query.get(config.target_currency_id)
             if target_currency:
-                target_currency_code = target_currency.code.value
+                target_currency_code = target_currency.code
                 target_currency_symbol = target_currency.symbol
 
         # Format each event to ensure numeric values and currency conversion
@@ -224,7 +226,6 @@ class AdminReportService:
         # Calculate summary statistics with converted amounts
         total_converted_revenue = sum(event['revenue'] for event in formatted_events)
         total_original_revenue = sum(event['original_revenue_ksh'] for event in formatted_events)
-
         report_data['summary'] = {
             'total_events': len(formatted_events),
             'total_revenue': total_converted_revenue,
@@ -240,7 +241,7 @@ class AdminReportService:
     @staticmethod
     def validate_admin_access(user: User) -> bool:
         """Validate that the user has admin access"""
-        return user and user.role.value == "ADMIN"
+        return user and user.role == "ADMIN"
 
     @staticmethod
     def get_organizer_by_id(organizer_id: int) -> Optional[User]:
@@ -283,7 +284,7 @@ class AdminReportService:
 
     @staticmethod
     def aggregate_organizer_reports(reports: List[Report], target_currency_id: Optional[int] = None,
-                                  use_latest_rates: bool = True) -> Dict[str, Any]:
+                                    use_latest_rates: bool = True) -> Dict[str, Any]:
         """Aggregate multiple reports for an organizer with enhanced currency conversion"""
         if not reports:
             return {
@@ -301,11 +302,10 @@ class AdminReportService:
         # Get target currency info
         target_currency_code = 'KSH'
         target_currency_symbol = 'KSh'
-
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
-                target_currency_code = target_currency.code.value
+                target_currency_code = target_currency.code
                 target_currency_symbol = target_currency.symbol
 
         total_tickets = sum(report.total_tickets_sold for report in reports)
@@ -329,7 +329,6 @@ class AdminReportService:
         # Process individual events
         unique_events = list(set(report.event_id for report in reports))
         event_details = []
-
         for event_id in unique_events:
             event_reports = [r for r in reports if r.event_id == event_id]
             event = Event.query.get(event_id)
@@ -351,7 +350,6 @@ class AdminReportService:
 
                 event_tickets = sum(r.total_tickets_sold for r in event_reports)
                 event_attendees = sum(r.number_of_attendees or 0 for r in event_reports)
-
                 event_details.append({
                     "event_id": event.id,
                     "event_name": event.name,
@@ -380,7 +378,7 @@ class AdminReportService:
 
     @staticmethod
     def aggregate_event_reports(event: Event, reports: List[Report], target_currency_id: Optional[int],
-                                  use_latest_rates: bool = True) -> Dict[str, Any]:
+                                use_latest_rates: bool = True) -> Dict[str, Any]:
         """Aggregate data for a single event with currency conversion"""
         tickets = sum(r.total_tickets_sold for r in reports)
         attendees = sum(r.number_of_attendees or 0 for r in reports)
@@ -389,11 +387,10 @@ class AdminReportService:
         # Get target currency info
         target_currency_code = 'KSH'
         target_currency_symbol = 'KSh'
-
         if target_currency_id:
             target_currency = Currency.query.get(target_currency_id)
             if target_currency:
-                target_currency_code = target_currency.code.value
+                target_currency_code = target_currency.code
                 target_currency_symbol = target_currency.symbol
 
         # Convert revenue to target currency
@@ -440,11 +437,10 @@ class AdminReportService:
             # Get target currency info for display
             target_currency_code = 'KSH'
             target_currency_symbol = 'KSh'
-
             if config.target_currency_id:
                 target_currency = Currency.query.get(config.target_currency_id)
                 if target_currency:
-                    target_currency_code = target_currency.code.value
+                    target_currency_code = target_currency.code
                     target_currency_symbol = target_currency.symbol
 
             summary_report = {
@@ -480,7 +476,6 @@ class AdminReportService:
 
             # Format the report data for frontend compatibility
             summary_report = AdminReportService.format_report_data_for_frontend(summary_report, config)
-
             return summary_report
         except Exception as e:
             logger.error(f"Error generating organizer summary report: {e}")
@@ -503,11 +498,10 @@ class AdminReportService:
             # Get target currency info
             target_currency_code = 'KSH'
             target_currency_symbol = 'KSh'
-
             if config.target_currency_id:
                 target_currency = Currency.query.get(config.target_currency_id)
                 if target_currency:
-                    target_currency_code = target_currency.code.value
+                    target_currency_code = target_currency.code
                     target_currency_symbol = target_currency.symbol
 
             fresh_report_data = None
@@ -614,7 +608,6 @@ class AdminReportService:
 
             # Format the report data for frontend compatibility
             admin_report = AdminReportService.format_report_data_for_frontend(admin_report, config)
-
             return admin_report
         except Exception as e:
             logger.error(f"Error generating event admin report: {e}")
@@ -684,7 +677,6 @@ class AdminReportService:
                 <div class="container">
                     <h2>Report for {report_title}</h2>
                     <p><strong>Date Generated:</strong> {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
-
                     {currency_conversion_info}
                     <div class="summary-box">
                         <h3>Summary</h3>
@@ -732,7 +724,6 @@ class AdminReportService:
             html_body += """
                         </tbody>
                     </table>
-
                     <div class="footer">
                         <p>This report was generated by the Eventbrite Admin System.</p>
                         <p>&copy; 2025 Eventbrite. All rights reserved.</p>
@@ -756,6 +747,7 @@ class AdminReportResource(Resource):
     def get(self):
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
+
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
@@ -790,6 +782,7 @@ class AdminReportResource(Resource):
                 # Get all organizers
                 organizers = User.query.filter_by(role='ORGANIZER').all()
                 all_reports = []
+
                 for organizer in organizers:
                     organizer_reports = AdminReportService.generate_organizer_summary_report(organizer.id, config)
                     if organizer_reports and organizer_reports.get('status') != 404:
@@ -811,6 +804,7 @@ class AdminReportResource(Resource):
                 # Generate a global report (not grouped by organizer)
                 all_events = Event.query.all()
                 global_events_data = []
+
                 for event in all_events:
                     event_reports = AdminReportService.get_reports_by_event(event.id)
                     if event_reports:
@@ -870,6 +864,7 @@ class AdminOrganizerListResource(Resource):
     def get(self):
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
+
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
@@ -882,18 +877,14 @@ class AdminOrganizerListResource(Resource):
                 'phone_number': org.phone_number,
                 'registration_date': org.created_at.isoformat() if org.created_at else None
             } for org in organizers]
-
             return organizer_list, 200
         except Exception as e:
             logger.error(f"Error fetching organizer list: {e}")
             return {"message": "Internal server error fetching organizers"}, 500
 
-
-
-from sqlalchemy import func, case
-
 class AdminEventListResource(Resource):
     """Resource for listing events by organizer for admin"""
+
     @jwt_required()
     def get(self, organizer_id):
         current_user_id = get_jwt_identity()
@@ -937,13 +928,9 @@ class AdminEventListResource(Resource):
                 "events": event_list,
                 "total_count": len(event_list)
             }
-
         except Exception as e:
             logger.error(f"Error fetching event list for organizer {organizer_id}: {e}")
             return {"message": "Failed to fetch event list", "error": str(e)}, 500
-
-
-
 
 def register_admin_report_resources(api):
     """Register admin report resources with the Flask-RESTful API"""
