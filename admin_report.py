@@ -910,8 +910,8 @@ class AdminEventListResource(Resource):
                 'event_date': event.date.isoformat() if event.date else None,
                 'location': event.location,
                 'description': event.description,
-                'total_tickets': event.total_tickets,
-                'tickets_available': event.tickets_available,
+                'total_tickets': sum(tt.quantity for tt in event.ticket_types) if event.ticket_types else 0,
+                'tickets_available': sum(tt.quantity for tt in event.ticket_types) - sum(1 for t in event.tickets if t.payment_status.value == "PAID") if event.ticket_types else 0,
                 'price_per_ticket': float(event.price_per_ticket) if event.price_per_ticket else 0.0,
                 'created_at': event.created_at.isoformat() if event.created_at else None
             } for event in events]
@@ -920,7 +920,7 @@ class AdminEventListResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching events for organizer {organizer_id}: {e}")
             return {"message": f"Internal server error fetching events for organizer {organizer_id}"}, 500
-
+        
 def register_admin_report_resources(api):
     """Register admin report resources with the Flask-RESTful API"""
     api.add_resource(AdminReportResource, '/admin/reports')
