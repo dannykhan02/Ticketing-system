@@ -481,23 +481,23 @@ class AdminReportService:
             try:
                 # Use the correct method name from your PDFReportGenerator class
                 pdf_path = PDFReportGenerator.generate_pdf_report(formatted_data)
-                
+
                 # If generation was successful and file exists
                 if pdf_path and os.path.exists(pdf_path):
                     with open(pdf_path, 'rb') as pdf_file:
                         pdf_content = pdf_file.read()
-                    
+
                     # Clean up the generated file
                     try:
                         os.unlink(pdf_path)
                     except OSError:
                         pass
-                    
+
                     return pdf_content
                 else:
                     logger.error("PDF generation failed - no file was created")
                     return b""
-                    
+
             finally:
                 # Clean up temporary file
                 try:
@@ -508,186 +508,187 @@ class AdminReportService:
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}")
             return b""
-@staticmethod
-def send_report_email_with_download_guide(report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
-    """Send report email with download guide for admin dashboard instead of direct links"""
-    try:
-        is_event_report = 'event_info' in report_data
-        currency_settings = report_data.get('currency_settings', {})
 
-        if is_event_report:
-            report_title = report_data['event_info'].get('event_name', 'Unknown Event')
-            subject = f"Event Analytics Report - {report_title}"
-            event_summary = report_data.get('event_summary', {})
-            currency_symbol = currency_settings.get('target_currency_symbol', 'KSh')
-            currency_code = currency_settings.get('target_currency', 'KES')
-            currency_name = currency_settings.get('target_currency_name', 'Kenyan Shilling')
-            total_tickets_sold = event_summary.get('tickets_sold', 0)
-            total_revenue = event_summary.get('revenue', 0.0)
-            number_of_attendees = event_summary.get('attendees', 0)
-        else:
-            report_title = report_data['organizer_info'].get('organizer_name', 'Unknown Organizer')
-            subject = f"Organizer Summary Report - {report_title}"
-            summary = report_data.get('summary', {})
-            currency_symbol = currency_settings.get('target_currency_symbol', 'KSh')
-            currency_code = currency_settings.get('target_currency', 'KES')
-            currency_name = currency_settings.get('target_currency_name', 'Kenyan Shilling')
-            total_tickets_sold = summary.get('total_tickets_sold', 0)
-            total_revenue = summary.get('total_revenue', 0.0)
-            number_of_attendees = summary.get('total_attendees', 0)
+    @staticmethod
+    def send_report_email_with_download_guide(report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
+        """Send report email with download guide for admin dashboard instead of direct links"""
+        try:
+            is_event_report = 'event_info' in report_data
+            currency_settings = report_data.get('currency_settings', {})
 
-        attendance_rate = (number_of_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
-        
-        # Create download guide section
-        download_guide = f"""
-        <div class="download-section">
-            <h3>📥 How to Download Full Report</h3>
-            <p>To download the complete report with detailed breakdowns and additional metrics:</p>
-            <div class="guide-steps">
-                <div class="step">
-                    <strong>Step 1:</strong> Log in to your Admin Dashboard
-                </div>
-                <div class="step">
-                    <strong>Step 2:</strong> Navigate to the Reports section
-                </div>
-                <div class="step">
-                    <strong>Step 3:</strong> Select the appropriate filters:
-                    <ul>
-                        <li>Organizer ID: {organizer_id}</li>
-                        {f"<li>Event ID: {event_id}</li>" if event_id else ""}
-                        <li>Currency: {currency_name} ({currency_code})</li>
-                    </ul>
-                </div>
-                <div class="step">
-                    <strong>Step 4:</strong> Choose your preferred format:
-                    <ul>
-                        <li>📄 CSV - For data analysis and spreadsheet import</li>
-                        <li>📑 PDF - For professional presentation and printing</li>
-                    </ul>
-                </div>
-                <div class="step">
-                    <strong>Step 5:</strong> Click the Download button to get your report
-                </div>
-            </div>
-            <p style="font-size: 12px; color: #666; margin-top: 15px;">
-                <strong>Note:</strong> The downloaded report will include the same currency settings ({currency_code}) as shown in this email summary.
-                Both formats contain comprehensive data including detailed breakdowns and additional metrics not shown in this email.
-            </p>
-        </div>
-        """
+            if is_event_report:
+                report_title = report_data['event_info'].get('event_name', 'Unknown Event')
+                subject = f"Event Analytics Report - {report_title}"
+                event_summary = report_data.get('event_summary', {})
+                currency_symbol = currency_settings.get('target_currency_symbol', 'KSh')
+                currency_code = currency_settings.get('target_currency', 'KES')
+                currency_name = currency_settings.get('target_currency_name', 'Kenyan Shilling')
+                total_tickets_sold = event_summary.get('tickets_sold', 0)
+                total_revenue = event_summary.get('revenue', 0.0)
+                number_of_attendees = event_summary.get('attendees', 0)
+            else:
+                report_title = report_data['organizer_info'].get('organizer_name', 'Unknown Organizer')
+                subject = f"Organizer Summary Report - {report_title}"
+                summary = report_data.get('summary', {})
+                currency_symbol = currency_settings.get('target_currency_symbol', 'KSh')
+                currency_code = currency_settings.get('target_currency', 'KES')
+                currency_name = currency_settings.get('target_currency_name', 'Kenyan Shilling')
+                total_tickets_sold = summary.get('total_tickets_sold', 0)
+                total_revenue = summary.get('total_revenue', 0.0)
+                number_of_attendees = summary.get('total_attendees', 0)
 
-        html_body = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-                .header {{ background: linear-gradient(135deg, #2E86AB, #A23B72); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
-                .content {{ padding: 30px; background: #f9f9f9; }}
-                .summary-box {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-                .metric {{ display: inline-block; margin: 10px 20px; text-align: center; }}
-                .metric-value {{ font-size: 24px; font-weight: bold; color: #2E86AB; }}
-                .metric-label {{ font-size: 14px; color: #666; }}
-                .insights {{ background: #e8f4fd; padding: 15px; border-left: 4px solid #2E86AB; margin: 20px 0; }}
-                .download-section {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #007bff; }}
-                .guide-steps {{ margin: 15px 0; }}
-                .step {{ background: white; padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid #007bff; }}
-                .step strong {{ color: #007bff; }}
-                .step ul {{ margin: 8px 0; padding-left: 20px; }}
-                .step li {{ margin: 4px 0; }}
-                .footer {{ background: #333; color: white; padding: 15px; text-align: center; font-size: 12px; border-radius: 0 0 8px 8px; }}
-                .currency-info {{ background: #f0f8ff; padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 12px; }}
-                .dashboard-highlight {{ background: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border: 1px solid #ffeaa7; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>📊 Admin Report</h1>
-                <h2>{report_title}</h2>
-            </div>
-            <div class="content">
-                <div class="currency-info">
-                    <strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol}) |
-                    <strong>Data Source:</strong> Live database metrics
-                </div>
-                <div class="summary-box">
-                    <h3>📈 Executive Summary</h3>
-                    <div class="metric">
-                        <div class="metric-value">{total_tickets_sold}</div>
-                        <div class="metric-label">Tickets Sold (PAID)</div>
+            attendance_rate = (number_of_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
+
+            # Create download guide section
+            download_guide = f"""
+            <div class="download-section">
+                <h3>📥 How to Download Full Report</h3>
+                <p>To download the complete report with detailed breakdowns and additional metrics:</p>
+                <div class="guide-steps">
+                    <div class="step">
+                        <strong>Step 1:</strong> Log in to your Admin Dashboard
                     </div>
-                    <div class="metric">
-                        <div class="metric-value">{currency_symbol}{total_revenue:,.2f}</div>
-                        <div class="metric-label">Total Revenue</div>
+                    <div class="step">
+                        <strong>Step 2:</strong> Navigate to the Reports section
                     </div>
-                    <div class="metric">
-                        <div class="metric-value">{number_of_attendees}</div>
-                        <div class="metric-label">Attendees (SCANNED)</div>
+                    <div class="step">
+                        <strong>Step 3:</strong> Select the appropriate filters:
+                        <ul>
+                            <li>Organizer ID: {organizer_id}</li>
+                            {f"<li>Event ID: {event_id}</li>" if event_id else ""}
+                            <li>Currency: {currency_name} ({currency_code})</li>
+                        </ul>
                     </div>
-                    <div class="metric">
-                        <div class="metric-value">{attendance_rate:.1f}%</div>
-                        <div class="metric-label">Attendance Rate</div>
+                    <div class="step">
+                        <strong>Step 4:</strong> Choose your preferred format:
+                        <ul>
+                            <li>📄 CSV - For data analysis and spreadsheet import</li>
+                            <li>📑 PDF - For professional presentation and printing</li>
+                        </ul>
+                    </div>
+                    <div class="step">
+                        <strong>Step 5:</strong> Click the Download button to get your report
                     </div>
                 </div>
-
-                {download_guide}
-
-                <div class="dashboard-highlight">
-                    <strong>💡 Pro Tip:</strong> Use the admin dashboard for the most up-to-date reports with real-time data and additional filtering options.
-                </div>
-
-                <div class="insights">
-                    <h3>💡 Key Insights</h3>
-                    <ul>
-                        <li><strong>Revenue Calculation:</strong> Based on sum of all PAID ticket prices</li>
-                        <li><strong>Tickets Sold:</strong> Count of tickets with PAID status</li>
-                        <li><strong>Attendees:</strong> Count of tickets with SCANNED status</li>
-                        <li><strong>Currency:</strong> All amounts displayed in {currency_name} ({currency_code})</li>
-        """
-
-        if attendance_rate > 90:
-            html_body += "<li><strong>Excellent attendance rate!</strong> Most ticket holders attended the event.</li>"
-        elif attendance_rate > 70:
-            html_body += "<li><strong>Good attendance rate</strong> with room for improvement in no-show reduction.</li>"
-        elif attendance_rate > 0:
-            html_body += "<li><strong>Low attendance rate</strong> suggests potential areas for improvement.</li>"
-        else:
-            html_body += "<li><strong>No attendance recorded</strong> - check scanning process.</li>"
-
-        html_body += f"""
-                    </ul>
-                </div>
-
-                <div class="summary-box">
-                    <h3>📋 Report Details</h3>
-                    <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    <p><strong>Data Source:</strong> Live database with real-time metrics</p>
-                    <p><strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol})</p>
-                    <p><strong>Download Options:</strong> CSV and PDF reports available via Admin Dashboard</p>
-                </div>
+                <p style="font-size: 12px; color: #666; margin-top: 15px;">
+                    <strong>Note:</strong> The downloaded report will include the same currency settings ({currency_code}) as shown in this email summary.
+                    Both formats contain comprehensive data including detailed breakdowns and additional metrics not shown in this email.
+                </p>
             </div>
-            <div class="footer">
-                <p>This report was automatically generated by the Event Management System</p>
-                <p>All figures are based on actual database records with PAID/SCANNED status</p>
-                <p>For detailed reports, please visit the Admin Dashboard</p>
-            </div>
-        </body>
-        </html>
-        """
+            """
 
-        success = send_email_with_attachment(
-            recipient=recipient_email,
-            subject=subject,
-            body=html_body,
-            is_html=True,
-            attachments=[]
-        )
-        return success
+            html_body = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+                    .header {{ background: linear-gradient(135deg, #2E86AB, #A23B72); color: white; padding: 20px; text-align: center; border-radius: 8px 8px 0 0; }}
+                    .content {{ padding: 30px; background: #f9f9f9; }}
+                    .summary-box {{ background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                    .metric {{ display: inline-block; margin: 10px 20px; text-align: center; }}
+                    .metric-value {{ font-size: 24px; font-weight: bold; color: #2E86AB; }}
+                    .metric-label {{ font-size: 14px; color: #666; }}
+                    .insights {{ background: #e8f4fd; padding: 15px; border-left: 4px solid #2E86AB; margin: 20px 0; }}
+                    .download-section {{ background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px solid #007bff; }}
+                    .guide-steps {{ margin: 15px 0; }}
+                    .step {{ background: white; padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid #007bff; }}
+                    .step strong {{ color: #007bff; }}
+                    .step ul {{ margin: 8px 0; padding-left: 20px; }}
+                    .step li {{ margin: 4px 0; }}
+                    .footer {{ background: #333; color: white; padding: 15px; text-align: center; font-size: 12px; border-radius: 0 0 8px 8px; }}
+                    .currency-info {{ background: #f0f8ff; padding: 10px; border-radius: 4px; margin: 10px 0; font-size: 12px; }}
+                    .dashboard-highlight {{ background: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border: 1px solid #ffeaa7; }}
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>📊 Admin Report</h1>
+                    <h2>{report_title}</h2>
+                </div>
+                <div class="content">
+                    <div class="currency-info">
+                        <strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol}) |
+                        <strong>Data Source:</strong> Live database metrics
+                    </div>
+                    <div class="summary-box">
+                        <h3>📈 Executive Summary</h3>
+                        <div class="metric">
+                            <div class="metric-value">{total_tickets_sold}</div>
+                            <div class="metric-label">Tickets Sold (PAID)</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value">{currency_symbol}{total_revenue:,.2f}</div>
+                            <div class="metric-label">Total Revenue</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value">{number_of_attendees}</div>
+                            <div class="metric-label">Attendees (SCANNED)</div>
+                        </div>
+                        <div class="metric">
+                            <div class="metric-value">{attendance_rate:.1f}%</div>
+                            <div class="metric-label">Attendance Rate</div>
+                        </div>
+                    </div>
 
-    except Exception as e:
-        logger.error(f"Error sending report email with download guide: {e}")
-        return False
+                    {download_guide}
+
+                    <div class="dashboard-highlight">
+                        <strong>💡 Pro Tip:</strong> Use the admin dashboard for the most up-to-date reports with real-time data and additional filtering options.
+                    </div>
+
+                    <div class="insights">
+                        <h3>💡 Key Insights</h3>
+                        <ul>
+                            <li><strong>Revenue Calculation:</strong> Based on sum of all PAID ticket prices</li>
+                            <li><strong>Tickets Sold:</strong> Count of tickets with PAID status</li>
+                            <li><strong>Attendees:</strong> Count of tickets with SCANNED status</li>
+                            <li><strong>Currency:</strong> All amounts displayed in {currency_name} ({currency_code})</li>
+            """
+
+            if attendance_rate > 90:
+                html_body += "<li><strong>Excellent attendance rate!</strong> Most ticket holders attended the event.</li>"
+            elif attendance_rate > 70:
+                html_body += "<li><strong>Good attendance rate</strong> with room for improvement in no-show reduction.</li>"
+            elif attendance_rate > 0:
+                html_body += "<li><strong>Low attendance rate</strong> suggests potential areas for improvement.</li>"
+            else:
+                html_body += "<li><strong>No attendance recorded</strong> - check scanning process.</li>"
+
+            html_body += f"""
+                        </ul>
+                    </div>
+
+                    <div class="summary-box">
+                        <h3>📋 Report Details</h3>
+                        <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                        <p><strong>Data Source:</strong> Live database with real-time metrics</p>
+                        <p><strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol})</p>
+                        <p><strong>Download Options:</strong> CSV and PDF reports available via Admin Dashboard</p>
+                    </div>
+                </div>
+                <div class="footer">
+                    <p>This report was automatically generated by the Event Management System</p>
+                    <p>All figures are based on actual database records with PAID/SCANNED status</p>
+                    <p>For detailed reports, please visit the Admin Dashboard</p>
+                </div>
+            </body>
+            </html>
+            """
+
+            success = send_email_with_attachment(
+                recipient=recipient_email,
+                subject=subject,
+                body=html_body,
+                is_html=True,
+                attachments=[]
+            )
+            return success
+
+        except Exception as e:
+            logger.error(f"Error sending report email with download guide: {e}")
+            return False
 
 class AdminReportResource(Resource):
     """Admin report API resource with enhanced AdminReportService integration"""
@@ -726,7 +727,7 @@ class AdminReportResource(Resource):
             group_by_organizer=group_by_organizer,
             use_latest_rates=use_latest_rates
         )
-        
+
         try:
             if organizer_id and event_id:
                 report_data = AdminReportService.generate_event_admin_report(
@@ -757,7 +758,7 @@ class AdminReportResource(Resource):
 
             response = self._format_response(report_data, format_type, organizer_id, event_id)
             return response
-            
+
         except Exception as e:
             logger.error(f"Admin report generation failed: {e}")
             return {"message": "Report generation failed", "error": str(e)}, 500
@@ -768,7 +769,7 @@ class AdminReportResource(Resource):
             filename_prefix = f"admin_report_org{organizer_id}"
             if event_id:
                 filename_prefix += f"_event{event_id}"
-            
+
             if format_type.lower() == 'csv':
                 csv_content = AdminReportService.generate_csv_report(report_data)
                 return Response(
@@ -792,7 +793,7 @@ class AdminReportResource(Resource):
                     return {"message": "PDF generation failed"}, 500
             else:
                 return jsonify(report_data)
-                
+
         except Exception as e:
             logger.error(f"Response formatting failed for format {format_type}: {e}")
             raise
