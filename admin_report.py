@@ -13,12 +13,10 @@ import tempfile
 import os
 
 # Your application-specific imports
-# Ensure these imports correctly point to your model and utility files
 from model import User, Event, Organizer, Report, db, Currency, ExchangeRate, Ticket, PaymentStatus
-from pdf_utils import CSVExporter
-from pdf_utils import PDFReportGenerator
+from pdf_utils import CSVExporter, PDFReportGenerator
 from email_utils import send_email_with_attachment
-from currency_routes import convert_ksh_to_target_currency # Assuming this is correctly implemented
+from currency_routes import convert_ksh_to_target_currency
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +54,7 @@ class AdminReportService:
                         'symbol': currency.symbol,
                         'name': currency.name
                     }
-            
+
             if currency_code:
                 currency = Currency.query.filter_by(code=currency_code, is_active=True).first()
                 if currency:
@@ -65,9 +63,9 @@ class AdminReportService:
                         'symbol': currency.symbol,
                         'name': currency.name
                     }
-                    
+
             return AdminReportService.get_default_currency()
-            
+
         except Exception as e:
             logger.error(f"Error getting currency settings: {e}")
             return AdminReportService.get_default_currency()
@@ -76,27 +74,23 @@ class AdminReportService:
     def get_actual_event_metrics(event_id: int) -> Dict[str, Any]:
         """Get actual event metrics from database"""
         try:
-            # Get tickets sold (PAID status only)
             tickets_sold_count = Ticket.query.filter_by(
                 event_id=event_id,
                 payment_status=PaymentStatus.PAID
             ).count()
-            
-            # Get total revenue (sum of paid tickets)
+
             paid_tickets = Ticket.query.filter_by(
                 event_id=event_id,
                 payment_status=PaymentStatus.PAID
             ).all()
-            
-            # Sum the total_price from each paid ticket
+
             total_revenue = sum(ticket.total_price for ticket in paid_tickets)
-            
-            # Get attendees (scanned tickets) - Use the 'scanned' boolean field
+
             attendees_count = Ticket.query.filter_by(
                 event_id=event_id,
                 scanned=True
             ).count()
-            
+
             return {
                 'tickets_sold': tickets_sold_count,
                 'total_revenue': float(total_revenue),
@@ -123,31 +117,28 @@ class AdminReportService:
                     'currency_symbol': 'KSh',
                     'conversion_rate': 1.0
                 }
-            
-            # Use the existing conversion function
+
             converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
                 ksh_amount, target_currency_code
             )
-            
-            # Get currency symbol
+
             target_currency_obj = Currency.query.filter_by(
-                code=target_currency_code, 
+                code=target_currency_code,
                 is_active=True
             ).first()
-            
+
             currency_symbol = target_currency_obj.symbol if target_currency_obj else target_currency_code
             overall_rate = ksh_to_usd_rate * usd_to_target_rate
-            
+
             return {
                 'converted_amount': float(converted_amount.quantize(Decimal('0.01'))),
                 'currency_code': target_currency_code,
                 'currency_symbol': currency_symbol,
                 'conversion_rate': float(overall_rate)
             }
-            
+
         except Exception as e:
             logger.error(f"Error converting {ksh_amount} KSH to {target_currency_code}: {e}")
-            # Return original amount if conversion fails
             return {
                 'converted_amount': ksh_amount,
                 'currency_code': 'KES',
@@ -158,82 +149,79 @@ class AdminReportService:
     @staticmethod
     def format_report_data_for_frontend(report_data: Dict[str, Any], config: AdminReportConfig) -> Dict[str, Any]:
         """Format report data to ensure frontend compatibility and apply final currency conversion."""
-        
-        # Get target currency settings
         currency_settings = AdminReportService.get_currency_settings(
-            config.target_currency_id, 
+            config.target_currency_id,
             config.target_currency_code
         )
-        
+
         target_currency_code = currency_settings['code']
         target_currency_symbol = currency_settings['symbol']
         target_currency_name = currency_settings['name']
 
-        # Process reports based on type
-        if 'event_info' in report_data:  # Single event report
+        if 'event_info' in report_data:
             event_summary = report_data.get('event_summary', {})
             original_revenue = event_summary.get('revenue_ksh', event_summary.get('revenue', 0.0))
-
             if target_currency_code.upper() != 'KES':
                 conversion_result = AdminReportService.convert_revenue_to_currency(
                     original_revenue, target_currency_code
                 )
-                event_summary['revenue'] = conversion_result['converted_amount']
-                event_summary['currency'] = conversion_result['currency_code']
-                event_summary['currency_symbol'] = conversion_result['currency_symbol']
-                event_summary['conversion_rate'] = conversion_result['conversion_rate']
+                event_summary.update({
+                    'revenue': conversion_result['converted_amount'],
+                    'currency': conversion_result['currency_code'],
+                    'currency_symbol': conversion_result['currency_symbol'],
+                    'conversion_rate': conversion_result['conversion_rate']
+                })
             else:
-                event_summary['revenue'] = original_revenue
-                event_summary['currency'] = 'KES'
-                event_summary['currency_symbol'] = 'KSh'
-                event_summary['conversion_rate'] = 1.0
-            
-            # Store original KSH amount for reference
+                event_summary.update({
+                    'revenue': original_revenue,
+                    'currency': 'KES',
+                    'currency_symbol': 'KSh',
+                    'conversion_rate': 1.0
+                })
+
             event_summary['revenue_ksh'] = original_revenue
             event_summary['currency_name'] = target_currency_name
-            
             report_data['event_summary'] = event_summary
-            
-        elif 'organizer_info' in report_data:  # Organizer summary report
+
+        elif 'organizer_info' in report_data:
             summary_data = report_data.get('summary', {})
             events_data = summary_data.get('events', [])
-
             formatted_events = []
             total_converted_revenue = 0.0
-
             for event_dict in events_data:
                 original_event_revenue = event_dict.get('revenue_ksh', event_dict.get('revenue', 0.0))
-                
+
                 if target_currency_code.upper() != 'KES':
                     conversion_result = AdminReportService.convert_revenue_to_currency(
                         original_event_revenue, target_currency_code
                     )
-                    event_dict['revenue'] = conversion_result['converted_amount']
-                    event_dict['currency'] = conversion_result['currency_code']
-                    event_dict['currency_symbol'] = conversion_result['currency_symbol']
-                    event_dict['conversion_rate'] = conversion_result['conversion_rate']
+                    event_dict.update({
+                        'revenue': conversion_result['converted_amount'],
+                        'currency': conversion_result['currency_code'],
+                        'currency_symbol': conversion_result['currency_symbol'],
+                        'conversion_rate': conversion_result['conversion_rate']
+                    })
                 else:
-                    event_dict['revenue'] = original_event_revenue
-                    event_dict['currency'] = 'KES'
-                    event_dict['currency_symbol'] = 'KSh'
-                    event_dict['conversion_rate'] = 1.0
-                
-                # Store original KSH amount for reference
+                    event_dict.update({
+                        'revenue': original_event_revenue,
+                        'currency': 'KES',
+                        'currency_symbol': 'KSh',
+                        'conversion_rate': 1.0
+                    })
+
                 event_dict['revenue_ksh'] = original_event_revenue
                 event_dict['currency_name'] = target_currency_name
-                
                 total_converted_revenue += event_dict['revenue']
                 formatted_events.append(event_dict)
-
             summary_data['events'] = formatted_events
-            summary_data['total_revenue'] = total_converted_revenue
-            summary_data['currency'] = target_currency_code
-            summary_data['currency_symbol'] = target_currency_symbol
-            summary_data['currency_name'] = target_currency_name
-            
+            summary_data.update({
+                'total_revenue': total_converted_revenue,
+                'currency': target_currency_code,
+                'currency_symbol': target_currency_symbol,
+                'currency_name': target_currency_name
+            })
             report_data['summary'] = summary_data
 
-        # Update global currency settings
         report_data['currency_settings'] = {
             'target_currency_id': config.target_currency_id,
             'target_currency': target_currency_code,
@@ -241,7 +229,6 @@ class AdminReportService:
             'target_currency_name': target_currency_name,
             'use_latest_rates': config.use_latest_rates
         }
-
         return report_data
 
     @staticmethod
@@ -280,21 +267,21 @@ class AdminReportService:
             organizer_user = AdminReportService.get_organizer_by_id(organizer_user_id)
             if not organizer_user:
                 return {"error": "Organizer not found"}
-            
+
             events = AdminReportService.get_events_by_organizer(organizer_user_id)
-            
+
             total_tickets_sold = 0
             total_revenue_ksh = 0.0
             total_attendees = 0
             event_details = []
-            
+
             for event in events:
                 metrics = AdminReportService.get_actual_event_metrics(event.id)
-                
+
                 total_tickets_sold += metrics['tickets_sold']
                 total_revenue_ksh += metrics['total_revenue']
                 total_attendees += metrics['attendees']
-                
+
                 event_details.append({
                     "event_id": event.id,
                     "event_name": event.name,
@@ -304,7 +291,6 @@ class AdminReportService:
                     "revenue_ksh": metrics['total_revenue'],
                     "attendees": metrics['attendees']
                 })
-
             return {
                 "total_tickets_sold": total_tickets_sold,
                 "total_revenue_ksh": total_revenue_ksh,
@@ -312,7 +298,7 @@ class AdminReportService:
                 "event_count": len(events),
                 "events": event_details
             }
-            
+
         except Exception as e:
             logger.error(f"Error aggregating organizer reports: {e}")
             return {"error": "Failed to aggregate reports for organizer", "status": 500}
@@ -322,7 +308,7 @@ class AdminReportService:
         """Aggregate data for a single event using actual database metrics."""
         try:
             metrics = AdminReportService.get_actual_event_metrics(event.id)
-            
+
             return {
                 "event_id": event.id,
                 "event_name": event.name,
@@ -332,7 +318,7 @@ class AdminReportService:
                 "attendees": metrics['attendees'],
                 "revenue_ksh": metrics['total_revenue'],
             }
-            
+
         except Exception as e:
             logger.error(f"Error aggregating event reports: {e}")
             return {"error": "Failed to aggregate event data", "status": 500}
@@ -344,12 +330,9 @@ class AdminReportService:
             organizer_user = AdminReportService.get_organizer_by_id(organizer_user_id)
             if not organizer_user:
                 return {"error": "Organizer not found", "status": 404}
-
             aggregated_data_ksh = AdminReportService.aggregate_organizer_reports(organizer_user_id)
-
             if "error" in aggregated_data_ksh:
                 return {"error": aggregated_data_ksh["error"], "status": aggregated_data_ksh.get("status", 500)}
-
             summary_report = {
                 "organizer_info": {
                     "organizer_id": organizer_user.id,
@@ -363,9 +346,9 @@ class AdminReportService:
                 "summary": aggregated_data_ksh,
                 "generation_timestamp": datetime.utcnow().isoformat()
             }
-            
+
             return AdminReportService.format_report_data_for_frontend(summary_report, config)
-            
+
         except Exception as e:
             logger.error(f"Error generating organizer summary report: {e}")
             return {"error": "Failed to generate report", "status": 500}
@@ -377,20 +360,17 @@ class AdminReportService:
             organizer_profile = Organizer.query.filter_by(user_id=organizer_user_id).first()
             if not organizer_profile:
                 return {"error": "Organizer not found", "status": 404}
-
             event = Event.query.filter(
                 Event.id == event_id,
                 Event.organizer_id == organizer_profile.id
             ).first()
-            
+
             if not event:
                 return {"error": "Event not found or doesn't belong to the specified organizer", "status": 404}
-
             event_summary_ksh = AdminReportService.aggregate_event_reports(event)
-            
+
             if "error" in event_summary_ksh:
                 return {"error": event_summary_ksh["error"], "status": event_summary_ksh.get("status", 500)}
-
             admin_report = {
                 "event_info": {
                     "event_id": event.id,
@@ -406,9 +386,9 @@ class AdminReportService:
                 "event_summary": event_summary_ksh,
                 "generation_timestamp": datetime.utcnow().isoformat()
             }
-            
+
             return AdminReportService.format_report_data_for_frontend(admin_report, config)
-            
+
         except Exception as e:
             logger.error(f"Error generating event admin report: {e}")
             return {"error": "Failed to generate event report", "status": 500}
@@ -418,25 +398,24 @@ class AdminReportService:
         """Generate CSV content from report data"""
         try:
             csv_content = io.StringIO()
-            
-            # Write CSV header with currency info
+
             currency_symbol = report_data.get('currency_settings', {}).get('target_currency_symbol', 'KSh')
             currency_name = report_data.get('currency_settings', {}).get('target_currency_name', 'Kenyan Shilling')
-            
+
             csv_content.write(f"Event Management System Report\n")
             csv_content.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             csv_content.write(f"Currency: {currency_name} ({currency_symbol})\n\n")
-            
-            if 'event_info' in report_data:  # Single event report
+
+            if 'event_info' in report_data:
                 event_info = report_data['event_info']
                 event_summary = report_data['event_summary']
-                
+
                 csv_content.write("EVENT DETAILS\n")
                 csv_content.write(f"Event Name,{event_info['event_name']}\n")
                 csv_content.write(f"Event Date,{event_info['event_date']}\n")
                 csv_content.write(f"Location,{event_info['location']}\n")
                 csv_content.write(f"Organizer,{event_info['organizer_name']}\n\n")
-                
+
                 csv_content.write("PERFORMANCE METRICS\n")
                 csv_content.write(f"Tickets Sold,{event_summary['tickets_sold']}\n")
                 csv_content.write(f"Total Revenue,{currency_symbol}{event_summary['revenue']:,.2f}\n")
@@ -444,30 +423,30 @@ class AdminReportService:
                 if event_summary['tickets_sold'] > 0:
                     attendance_rate = (event_summary['attendees'] / event_summary['tickets_sold']) * 100
                     csv_content.write(f"Attendance Rate,{attendance_rate:.1f}%\n")
-                
-            elif 'organizer_info' in report_data:  # Organizer summary report
+
+            elif 'organizer_info' in report_data:
                 organizer_info = report_data['organizer_info']
                 summary = report_data['summary']
-                
+
                 csv_content.write("ORGANIZER DETAILS\n")
                 csv_content.write(f"Organizer Name,{organizer_info['organizer_name']}\n")
                 csv_content.write(f"Email,{organizer_info['email']}\n")
                 csv_content.write(f"Phone,{organizer_info['phone']}\n\n")
-                
+
                 csv_content.write("SUMMARY METRICS\n")
                 csv_content.write(f"Total Events,{summary['event_count']}\n")
                 csv_content.write(f"Total Tickets Sold,{summary['total_tickets_sold']}\n")
                 csv_content.write(f"Total Revenue,{currency_symbol}{summary['total_revenue']:,.2f}\n")
                 csv_content.write(f"Total Attendees,{summary['total_attendees']}\n\n")
-                
+
                 csv_content.write("EVENT BREAKDOWN\n")
                 csv_content.write("Event Name,Event Date,Location,Tickets Sold,Revenue,Attendees\n")
-                
+
                 for event in summary['events']:
                     csv_content.write(f"{event['event_name']},{event['event_date']},{event['location']},{event['tickets_sold']},{currency_symbol}{event['revenue']:,.2f},{event['attendees']}\n")
-            
+
             return csv_content.getvalue()
-            
+
         except Exception as e:
             logger.error(f"Error generating CSV report: {e}")
             return "Error generating CSV report"
@@ -476,56 +455,49 @@ class AdminReportService:
     def generate_pdf_report(report_data: Dict[str, Any]) -> bytes:
         """Generate PDF content from report data"""
         try:
-            # Create a temporary file for PDF generation
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
                 pdf_generator = PDFReportGenerator()
-                
-                # Format data for PDF generator
+
                 formatted_data = {
                     'title': 'Event Management System Report',
                     'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'currency_info': report_data.get('currency_settings', {}),
                     'report_data': report_data
                 }
-                
+
                 pdf_generator.generate_admin_report(formatted_data, tmp_file.name)
-                
-                # Read the generated PDF
+
                 with open(tmp_file.name, 'rb') as pdf_file:
                     pdf_content = pdf_file.read()
-                
-                # Clean up temporary file
+
                 os.unlink(tmp_file.name)
-                
+
                 return pdf_content
-                
+
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}")
-            # Return empty bytes if PDF generation fails
             return b""
 
-    
-    def _send_report_email_with_download_guide(self, report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
+    @staticmethod
+    def send_report_email_with_download_guide(report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
         """Send report email with download guide instead of attachments"""
         try:
             is_event_report = 'event_info' in report_data
             currency_settings = report_data.get('currency_settings', {})
-            
-            # Generate download URLs
+
             base_url = request.url_root.rstrip('/')
             download_params = f"organizer_id={organizer_id}"
             if event_id:
                 download_params += f"&event_id={event_id}"
-            
-            # Add currency parameters if present
+
             if currency_settings.get('target_currency_id'):
                 download_params += f"&currency_id={currency_settings['target_currency_id']}"
             elif currency_settings.get('target_currency'):
                 download_params += f"&currency_code={currency_settings['target_currency']}"
-            
+
             csv_download_url = f"{base_url}/admin/reports?{download_params}&format=csv"
             pdf_download_url = f"{base_url}/admin/reports?{download_params}&format=pdf"
-            
+
             if is_event_report:
                 report_title = report_data['event_info'].get('event_name', 'Unknown Event')
                 subject = f"Event Analytics Report - {report_title}"
@@ -547,9 +519,7 @@ class AdminReportService:
                 total_revenue = summary.get('total_revenue', 0.0)
                 number_of_attendees = summary.get('total_attendees', 0)
 
-            # Calculate attendance rate
             attendance_rate = (number_of_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
-
             html_body = f"""
             <!DOCTYPE html>
             <html>
@@ -578,7 +548,7 @@ class AdminReportService:
                 </div>
                 <div class="content">
                     <div class="currency-info">
-                        <strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol}) | 
+                        <strong>Currency:</strong> {currency_name} ({currency_code} - {currency_symbol}) |
                         <strong>Data Source:</strong> Live database metrics
                     </div>
                     <div class="summary-box">
@@ -600,7 +570,7 @@ class AdminReportService:
                             <div class="metric-label">Attendance Rate</div>
                         </div>
                     </div>
-                    
+
                     <div class="download-section">
                         <h3>📥 Download Full Report</h3>
                         <p>Click the links below to download the complete report in your preferred format:</p>
@@ -613,7 +583,7 @@ class AdminReportService:
                             The downloads include detailed breakdowns and additional metrics not shown in this email summary.
                         </p>
                     </div>
-                    
+
                     <div class="insights">
                         <h3>💡 Key Insights</h3>
                         <ul>
@@ -622,7 +592,7 @@ class AdminReportService:
                             <li><strong>Attendees:</strong> Count of tickets with SCANNED status</li>
                             <li><strong>Currency:</strong> All amounts displayed in {currency_name} ({currency_code})</li>
             """
-            
+
             if attendance_rate > 90:
                 html_body += "<li><strong>Excellent attendance rate!</strong> Most ticket holders attended the event.</li>"
             elif attendance_rate > 70:
@@ -631,11 +601,11 @@ class AdminReportService:
                 html_body += "<li><strong>Low attendance rate</strong> suggests potential areas for improvement.</li>"
             else:
                 html_body += "<li><strong>No attendance recorded</strong> - check scanning process.</li>"
-            
+
             html_body += f"""
                         </ul>
                     </div>
-                    
+
                     <div class="summary-box">
                         <h3>📋 Report Details</h3>
                         <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
@@ -652,34 +622,31 @@ class AdminReportService:
             </html>
             """
 
-            # Send email without attachments
             success = send_email_with_attachment(
                 recipient=recipient_email,
                 subject=subject,
                 body=html_body,
                 is_html=True,
-                attachments=[]  # No attachments - users will download via browser
+                attachments=[]
             )
             return success
-            
+
         except Exception as e:
             logger.error(f"Error sending report email with download guide: {e}")
             return False
 
 class AdminReportResource(Resource):
     """Admin report API resource with enhanced AdminReportService integration"""
-    
+
     @jwt_required()
     def get(self):
         """Get admin reports with various filtering options"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-        
-        # Use AdminReportService for validation
+
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
 
-        # Parse query parameters
         organizer_id = request.args.get('organizer_id', type=int)
         event_id = request.args.get('event_id', type=int)
         format_type = request.args.get('format', 'json')
@@ -688,15 +655,13 @@ class AdminReportResource(Resource):
         include_charts = request.args.get('include_charts', 'true').lower() == 'true'
         use_latest_rates = request.args.get('use_latest_rates', 'true').lower() == 'true'
         send_email = request.args.get('send_email', 'false').lower() == 'true'
-        
-        # Use user's registered email if no recipient email is specified
+
         recipient_email = request.args.get('recipient_email')
         if not recipient_email:
             recipient_email = user.email
-            
+
         group_by_organizer = request.args.get('group_by_organizer', 'true').lower() == 'true'
 
-        # Create config using AdminReportConfig
         config = AdminReportConfig(
             include_charts=include_charts,
             include_email=send_email,
@@ -707,29 +672,23 @@ class AdminReportResource(Resource):
             group_by_organizer=group_by_organizer,
             use_latest_rates=use_latest_rates
         )
-
         try:
-            # Generate report using AdminReportService
             if organizer_id and event_id:
-                # Single event report
                 report_data = AdminReportService.generate_event_admin_report(
                     event_id, organizer_id, config
                 )
             elif organizer_id:
-                # Organizer summary report
                 report_data = AdminReportService.generate_organizer_summary_report(
                     organizer_id, config
                 )
             else:
                 return {"message": "Please specify 'organizer_id' or both 'organizer_id' and 'event_id'"}, 400
 
-            # Handle service errors
             if "error" in report_data:
                 return {"message": report_data["error"]}, report_data.get("status", 500)
 
-            # Send email if requested, *before* formatting the response for file downloads
             if send_email:
-                email_success = self._send_report_email_with_download_guide(report_data, recipient_email, organizer_id, event_id)
+                email_success = AdminReportService.send_report_email_with_download_guide(report_data, recipient_email, organizer_id, event_id)
                 if not email_success:
                     logger.warning(f"Failed to send email to {recipient_email}")
                     if format_type.lower() == 'json':
@@ -738,12 +697,10 @@ class AdminReportResource(Resource):
                     if format_type.lower() == 'json':
                         report_data['email_status'] = 'sent'
                         report_data['email_recipient'] = recipient_email
-            
-            # Format response based on requested format
-            response = self._format_response(report_data, format_type, organizer_id, event_id)
-            
-            return response
 
+            response = self._format_response(report_data, format_type, organizer_id, event_id)
+
+            return response
         except Exception as e:
             logger.error(f"Admin report generation failed: {e}")
             return {"message": "Report generation failed", "error": str(e)}, 500
@@ -754,7 +711,6 @@ class AdminReportResource(Resource):
             filename_prefix = f"admin_report_org{organizer_id}"
             if event_id:
                 filename_prefix += f"_event{event_id}"
-
             if format_type.lower() == 'csv':
                 csv_content = AdminReportService.generate_csv_report(report_data)
                 return Response(
@@ -777,7 +733,6 @@ class AdminReportResource(Resource):
                 else:
                     return {"message": "PDF generation failed"}, 500
             else:
-                # JSON response (default)
                 return jsonify(report_data)
         except Exception as e:
             logger.error(f"Response formatting failed for format {format_type}: {e}")
@@ -785,18 +740,16 @@ class AdminReportResource(Resource):
 
 class AdminOrganizerListResource(Resource):
     """Resource for listing all organizers for admin with enhanced metrics"""
-    
+
     @jwt_required()
     def get(self):
         """Get list of all organizers with comprehensive metrics"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-        
+
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
-
         try:
-            # Get currency parameter for revenue calculation
             target_currency_id = request.args.get('currency_id', type=int)
             target_currency_code = None
             target_currency_symbol = 'KSh'
@@ -806,7 +759,6 @@ class AdminOrganizerListResource(Resource):
                     target_currency_code = currency_obj.code.value
                     target_currency_symbol = currency_obj.symbol
 
-            # Get basic organizer info with event counts
             organizers_query = db.session.query(
                 User.id,
                 User.full_name,
@@ -819,21 +771,17 @@ class AdminOrganizerListResource(Resource):
             .filter(User.role == 'ORGANIZER')\
             .group_by(User.id, User.full_name, User.email, User.phone_number)\
             .all()
-
             organizer_list = []
             for org_user_record in organizers_query:
-                # Get metrics in KSH first
                 metrics_ksh = AdminReportService.aggregate_organizer_reports(org_user_record.id)
-                
+
                 if "error" in metrics_ksh:
                     logger.error(f"Error aggregating KSH metrics for organizer {org_user_record.id}: {metrics_ksh['error']}")
-                    continue 
+                    continue
 
-                # Perform final conversion for the aggregated total revenue
                 final_total_revenue = metrics_ksh.get('total_revenue_ksh', 0.0)
                 current_currency_code = 'KES'
                 current_currency_symbol = 'KSh'
-
                 if target_currency_code and target_currency_code.upper() != 'KES':
                     conversion_result = AdminReportService.convert_revenue_to_currency(
                         final_total_revenue, target_currency_code
@@ -841,7 +789,6 @@ class AdminOrganizerListResource(Resource):
                     final_total_revenue = conversion_result['converted_amount']
                     current_currency_code = conversion_result['currency_code']
                     current_currency_symbol = conversion_result['currency_symbol']
-
                 organizer_data = {
                     "organizer_id": org_user_record.id,
                     "name": org_user_record.full_name,
@@ -850,17 +797,14 @@ class AdminOrganizerListResource(Resource):
                     "event_count": org_user_record.event_count,
                     "metrics": {
                         "total_tickets_sold": metrics_ksh.get('total_tickets_sold', 0),
-                        "total_revenue": final_total_revenue, # Use the converted revenue
+                        "total_revenue": final_total_revenue,
                         "total_attendees": metrics_ksh.get('total_attendees', 0),
                         "currency": current_currency_code,
                         "currency_symbol": current_currency_symbol
                     }
                 }
                 organizer_list.append(organizer_data)
-
-            # Sort by total revenue (descending) for better insights
             organizer_list.sort(key=lambda x: x['metrics']['total_revenue'], reverse=True)
-
             return {
                 "organizers": organizer_list,
                 "total_count": len(organizer_list),
@@ -870,30 +814,26 @@ class AdminOrganizerListResource(Resource):
                     "target_currency_symbol": target_currency_symbol or 'KSh'
                 }
             }
-
         except Exception as e:
             logger.error(f"Error fetching organizer list: {e}")
             return {"message": "Failed to fetch organizer list", "error": str(e)}, 500
 
 class AdminEventListResource(Resource):
     """Resource for listing events by organizer with enhanced metrics"""
-    
+
     @jwt_required()
-    def get(self, organizer_id): # This organizer_id refers to User.id for the organizer
+    def get(self, organizer_id):
         """Get list of events for a specific organizer with detailed metrics"""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
-        
+
         if not AdminReportService.validate_admin_access(user):
             return {"message": "Admin access required"}, 403
-
         try:
-            # Validate organizer exists (using the user ID passed in the URL)
             organizer_user = AdminReportService.get_organizer_by_id(organizer_id)
             if not organizer_user:
                 return {"message": "Organizer not found"}, 404
 
-            # Get currency parameter
             target_currency_id = request.args.get('currency_id', type=int)
             target_currency_code = None
             target_currency_symbol = 'KSh'
@@ -903,23 +843,19 @@ class AdminEventListResource(Resource):
                     target_currency_code = currency_obj.code.value
                     target_currency_symbol = currency_obj.symbol
 
-            # Get events using AdminReportService (passing the organizer's user ID)
             events = AdminReportService.get_events_by_organizer(organizer_id)
-            
+
             event_list = []
             for event in events:
-                # Get detailed metrics for each event in KSH first
                 event_metrics_ksh = AdminReportService.aggregate_event_reports(event)
-                
+
                 if "error" in event_metrics_ksh:
                     logger.error(f"Error aggregating KSH metrics for event {event.id}: {event_metrics_ksh['error']}")
                     continue
 
-                # Perform final conversion for each event's revenue
                 final_event_revenue = event_metrics_ksh.get('revenue_ksh', 0.0)
                 current_currency_code = 'KES'
                 current_currency_symbol = 'KSh'
-
                 if target_currency_code and target_currency_code.upper() != 'KES':
                     conversion_result = AdminReportService.convert_revenue_to_currency(
                         final_event_revenue, target_currency_code
@@ -927,7 +863,7 @@ class AdminEventListResource(Resource):
                     final_event_revenue = conversion_result['converted_amount']
                     current_currency_code = conversion_result['currency_code']
                     current_currency_symbol = conversion_result['currency_symbol']
-                
+
                 event_data = {
                     "event_id": event.id,
                     "name": event.name,
@@ -936,7 +872,7 @@ class AdminEventListResource(Resource):
                     "status": event.status.value if hasattr(event, 'status') else 'ACTIVE',
                     "metrics": {
                         "tickets_sold": event_metrics_ksh.get('tickets_sold', 0),
-                        "revenue": final_event_revenue, # Use the converted revenue
+                        "revenue": final_event_revenue,
                         "attendees": event_metrics_ksh.get('attendees', 0),
                         "currency": current_currency_code,
                         "currency_symbol": current_currency_symbol
@@ -944,14 +880,11 @@ class AdminEventListResource(Resource):
                 }
                 event_list.append(event_data)
 
-            # Sort by event date (most recent first)
             event_list.sort(key=lambda x: x['event_date'] or '', reverse=True)
 
-            # Calculate totals based on the converted revenues
             total_tickets_sold = sum(event['metrics']['tickets_sold'] for event in event_list)
             total_revenue = sum(event['metrics']['revenue'] for event in event_list)
             total_attendees = sum(event['metrics']['attendees'] for event in event_list)
-
             return {
                 "organizer_id": organizer_id,
                 "organizer_name": organizer_user.full_name,
@@ -970,11 +903,9 @@ class AdminEventListResource(Resource):
                     "target_currency_symbol": target_currency_symbol or 'KSh'
                 }
             }
-
         except Exception as e:
             logger.error(f"Error fetching event list for organizer {organizer_id}: {e}")
             return {"message": "Failed to fetch event list", "error": str(e)}, 500
-
 
 def register_admin_report_resources(api):
     """Register admin report resources with the Flask-RESTful API"""
