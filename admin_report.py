@@ -504,7 +504,7 @@ class AdminReportService:
             # Return empty bytes if PDF generation fails
             return b""
 
-    @staticmethod
+    
     def _send_report_email_with_download_guide(self, report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
         """Send report email with download guide instead of attachments"""
         try:
