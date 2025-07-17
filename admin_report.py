@@ -455,29 +455,59 @@ class AdminReportService:
     def generate_pdf_report(report_data: Dict[str, Any]) -> bytes:
         """Generate PDF content from report data"""
         try:
+            # Format the report data to match what your PDFReportGenerator expects
+            formatted_data = {
+                'event_id': report_data.get('event_id', 0),
+                'event_name': report_data.get('event_name', 'Event Management System Report'),
+                'event_date': report_data.get('event_date', datetime.now().strftime('%Y-%m-%d')),
+                'event_location': report_data.get('event_location', 'Not specified'),
+                'event_description': report_data.get('event_description', 'Generated admin report'),
+                'total_tickets_sold': report_data.get('total_tickets_sold', 0),
+                'total_revenue': report_data.get('total_revenue', 0.0),
+                'number_of_attendees': report_data.get('number_of_attendees', 0),
+                'revenue_by_ticket_type': report_data.get('revenue_by_ticket_type', {}),
+                'ticket_sales_by_type': report_data.get('ticket_sales_by_type', {}),
+                'filter_start_date': report_data.get('filter_start_date', ''),
+                'filter_end_date': report_data.get('filter_end_date', ''),
+                # Add currency info if available
+                'currency_settings': report_data.get('currency_settings', {}),
+                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+            # Create temporary file for PDF generation
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                pdf_generator = PDFReportGenerator()
+                tmp_pdf_path = tmp_file.name
 
-                formatted_data = {
-                    'title': 'Event Management System Report',
-                    'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'currency_info': report_data.get('currency_settings', {}),
-                    'report_data': report_data
-                }
-
-                pdf_generator.generate_admin_report(formatted_data, tmp_file.name)
-
-                with open(tmp_file.name, 'rb') as pdf_file:
-                    pdf_content = pdf_file.read()
-
-                os.unlink(tmp_file.name)
-
-                return pdf_content
+            try:
+                # Use the correct method name from your PDFReportGenerator class
+                pdf_path = PDFReportGenerator.generate_pdf_report(formatted_data)
+                
+                # If generation was successful and file exists
+                if pdf_path and os.path.exists(pdf_path):
+                    with open(pdf_path, 'rb') as pdf_file:
+                        pdf_content = pdf_file.read()
+                    
+                    # Clean up the generated file
+                    try:
+                        os.unlink(pdf_path)
+                    except OSError:
+                        pass
+                    
+                    return pdf_content
+                else:
+                    logger.error("PDF generation failed - no file was created")
+                    return b""
+                    
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(tmp_pdf_path)
+                except OSError:
+                    pass
 
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}")
             return b""
-
 @staticmethod
 def send_report_email_with_download_guide(report_data: Dict[str, Any], recipient_email: str, organizer_id: int, event_id: Optional[int] = None) -> bool:
     """Send report email with download guide for admin dashboard instead of direct links"""
