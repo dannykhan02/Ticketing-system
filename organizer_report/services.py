@@ -295,6 +295,7 @@ class ReportDataProcessor:
         
         return report_data
 
+# Rest of the ReportService class remains the same...
 class ReportService:
     def __init__(self, config):
         self.config = config
@@ -343,6 +344,7 @@ class ReportService:
             return []
         chart_paths = []
         try:
+            # Update chart generation to use the new data structure
             if report_data.get('tickets_by_type'):
                 tickets_chart = self.chart_generator.create_pie_chart(
                     data=report_data['tickets_by_type'],
@@ -350,7 +352,7 @@ class ReportService:
                 )
                 if tickets_chart:
                     chart_paths.append(tickets_chart)
-
+            
             if report_data.get('revenue_by_type'):
                 revenue_chart = self.chart_generator.create_bar_chart(
                     data=report_data['revenue_by_type'],
@@ -360,7 +362,7 @@ class ReportService:
                 )
                 if revenue_chart:
                     chart_paths.append(revenue_chart)
-
+            
             if report_data.get('payment_method_usage'):
                 payment_chart = self.chart_generator.create_pie_chart(
                     data=report_data['payment_method_usage'],
@@ -368,7 +370,7 @@ class ReportService:
                 )
                 if payment_chart:
                     chart_paths.append(payment_chart)
-
+            
             if report_data.get('attendees_by_type'):
                 attendees_chart = self.chart_generator.create_bar_chart(
                     data=report_data['attendees_by_type'],
@@ -378,7 +380,7 @@ class ReportService:
                 )
                 if attendees_chart:
                     chart_paths.append(attendees_chart)
-
+            
             logger.info(f"Generated {len(chart_paths)} charts for event {report_data['event_id']}")
             return chart_paths
         except Exception as e:
@@ -390,7 +392,7 @@ class ReportService:
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
         """
         Create comprehensive report data with enhanced currency conversion
-
+        
         Args:
             event_id: The event ID
             start_date: Report start date
@@ -401,11 +403,11 @@ class ReportService:
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
-
+        
         # Get base currency from event or default to KES
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
-
+        
         # Get currency information
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
@@ -426,6 +428,7 @@ class ReportService:
         total_revenue_display = self.currency_converter.convert_amount(
             total_revenue_base, base_currency_code, display_currency_code
         )
+
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
             converted_revenue = self.currency_converter.convert_amount(
@@ -447,29 +450,29 @@ class ReportService:
             'event_name': event.name,
             'event_date': event.event_date.isoformat() if hasattr(event, 'event_date') and event.event_date else 'N/A',
             'event_location': getattr(event, 'location', 'N/A'),
-
+            
             # Date filters
             'filter_start_date': start_date.strftime('%Y-%m-%d'),
             'filter_end_date': end_date.strftime('%Y-%m-%d'),
-
+            
             # Core metrics
             'total_tickets_sold': total_tickets_sold,
             'total_revenue': float(total_revenue_display),
             'number_of_attendees': total_attendees,
             'attendance_rate': round(attendance_rate, 2),
-
+            
             # Detailed breakdowns (updated naming for consistency)
-            'tickets_by_type': tickets_sold_by_type,
-            'revenue_by_type': revenue_by_ticket_type,
-            'attendees_by_type': attendees_by_ticket_type,
+            'tickets_by_type': tickets_sold_by_type,  # Updated key name
+            'revenue_by_type': revenue_by_ticket_type,  # Updated key name
+            'attendees_by_type': attendees_by_ticket_type,  # Updated key name
             'payment_method_usage': payment_method_usage,
-
+            
             # Currency information
             'currency': display_currency_info['code'],
             'currency_symbol': display_currency_info['symbol'],
             'base_currency': base_currency_info['code'],
             'base_currency_symbol': base_currency_info['symbol'],
-
+            
             # Currency conversion metadata
             'currency_conversion_source': 'currencyapi.com (with fallback)',
             'conversion_cache_entries': len(rate_cache.cache),
@@ -502,7 +505,7 @@ class ReportService:
         try:
             base_currency = Currency.query.filter_by(code=report_data.get('base_currency', 'KES')).first()
             base_currency_id = base_currency.id if base_currency else None
-
+            
             # If no base currency found, create or use default
             if not base_currency_id:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
@@ -510,7 +513,7 @@ class ReportService:
                 base_currency_id = base_currency.id if base_currency else 1
 
             sanitized_report_data = self._sanitize_report_data(report_data)
-
+            
             report = Report(
                 organizer_id=organizer_id,
                 event_id=report_data['event_id'],
@@ -523,12 +526,12 @@ class ReportService:
                 report_data=sanitized_report_data,
                 report_date=datetime.now().date()
             )
-
+            
             db.session.add(report)
             db.session.commit()
             logger.info(f"Report saved to database with ID: {report.id}")
             return report
-
+            
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error saving report to database: {e}")
@@ -540,12 +543,12 @@ class ReportService:
                                 send_email: bool = False, recipient_email: str = None) -> Dict[str, Any]:
         """
         Generate a complete report with enhanced currency conversion capabilities
-
+        
         Args:
             event_id: Event ID
             organizer_id: Organizer ID
             start_date: Report start date
-            end_date: Report end date
+            end_date: Report end date  
             ticket_type_id: Optional ticket type filter
             target_currency_code: Target currency code (e.g., 'USD', 'EUR')
             send_email: Whether to send report via email
@@ -554,13 +557,13 @@ class ReportService:
         chart_paths = []
         pdf_path = None
         csv_path = None
-
+        
         try:
             # Create report data with currency conversion
             report_data = self.create_report_data(
                 event_id, start_date, end_date, ticket_type_id, target_currency_code
             )
-
+            
             # Save to database
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
@@ -599,7 +602,7 @@ class ReportService:
                     'cache_entries': report_data.get('conversion_cache_entries', 0)
                 }
             }
-
+            
         except Exception as e:
             logger.error(f"Error generating complete report: {e}")
             return {
@@ -615,6 +618,7 @@ class ReportService:
             # Cleanup temporary chart files
             if chart_paths:
                 FileManager.cleanup_files(chart_paths)
+    
 
     def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
                       csv_path: str, recipient_email: str) -> bool:
@@ -631,11 +635,11 @@ class ReportService:
         event_name = report_data.get('event_name', 'Unknown Event')
         currency_symbol = report_data.get('currency_symbol', '$')
         subject = f"Event Analytics Report - {event_name}"
-
+        
         # Fix the date field names to match the actual report_data structure
         start_date = report_data.get('filter_start_date', 'N/A')
         end_date = report_data.get('filter_end_date', 'N/A')
-
+        
         body = f"""
         <!DOCTYPE html>
         <html>
@@ -689,13 +693,13 @@ class ReportService:
                     </div>
                 </div>
         """
-
+        
         # Add currency conversion information if applicable
         if report_data.get('base_currency') != report_data.get('currency'):
             base_currency_symbol = report_data.get('base_currency_symbol', report_data.get('base_currency', ''))
             original_revenue = report_data.get('original_revenue', 0)
             conversion_rate = report_data.get('conversion_rate_used', 1)
-
+            
             body += f"""
                 <div class="currency-info">
                     <h4>💱 Currency Conversion Information</h4>
@@ -705,7 +709,7 @@ class ReportService:
                     <p><small>Exchange rates provided by {report_data.get('currency_conversion_source', 'external service')}</small></p>
                 </div>
             """
-
+        
         # Ticket Sales Breakdown
         if report_data.get('tickets_by_type'):
             body += """
@@ -717,7 +721,7 @@ class ReportService:
             tickets_by_type = report_data.get('tickets_by_type', {})
             revenue_by_type = report_data.get('revenue_by_type', {})
             attendees_by_type = report_data.get('attendees_by_type', {})
-
+            
             for ticket_type in tickets_by_type.keys():
                 tickets = tickets_by_type.get(ticket_type, 0)
                 revenue = revenue_by_type.get(ticket_type, 0)
@@ -749,7 +753,7 @@ class ReportService:
                     <h3>💡 Key Insights</h3>
                     <ul>
         """
-
+        
         # Attendance insights
         attendance_rate = report_data.get('attendance_rate', 0)
         if attendance_rate > 90:
@@ -758,38 +762,38 @@ class ReportService:
             body += "<li>✅ Good attendance rate with room for improvement in no-show reduction.</li>"
         elif attendance_rate > 0:
             body += "<li>⚠️ Low attendance rate suggests potential areas for improvement in engagement.</li>"
-
+        
         # Revenue insights
         revenue_by_type = report_data.get('revenue_by_type', {})
         if revenue_by_type:
             max_revenue_type = max(revenue_by_type.items(), key=lambda x: x[1])[0]
             body += f"<li>💰 {max_revenue_type} tickets generated the highest revenue for this event.</li>"
-
+        
         # Ticket sales insights
         tickets_by_type = report_data.get('tickets_by_type', {})
         if tickets_by_type:
             max_sold_type = max(tickets_by_type.items(), key=lambda x: x[1])[0]
             body += f"<li>🎫 {max_sold_type} was the most popular ticket type with {tickets_by_type[max_sold_type]} tickets sold.</li>"
-
+        
         # Payment method insights
         payment_methods = report_data.get('payment_method_usage', {})
         if payment_methods:
             preferred_method = max(payment_methods.items(), key=lambda x: x[1])[0]
             body += f"<li>💳 {preferred_method} was the preferred payment method for this event.</li>"
-
+        
         # Total metrics insight
         total_tickets = report_data.get('total_tickets_sold', 0)
         total_attendees = report_data.get('number_of_attendees', 0)
         if total_tickets > 0:
             body += f"<li>📊 Out of {total_tickets} tickets sold, {total_attendees} attendees showed up to the event.</li>"
-
+        
         # Currency insights if conversion was performed
         if report_data.get('base_currency') != report_data.get('currency'):
             cache_entries = report_data.get('conversion_cache_entries', 0)
             body += f"<li>💱 Revenue converted from {report_data.get('base_currency')} to {report_data.get('currency')} using live exchange rates.</li>"
             if cache_entries > 0:
                 body += f"<li>⚡ Exchange rate data cached ({cache_entries} rates) for improved performance.</li>"
-
+        
         body += """
                     </ul>
                 </div>
@@ -828,7 +832,7 @@ class ReportService:
         </body>
         </html>
         """
-
+        
         try:
             success = send_email_with_attachment(
                 recipient=recipient_email,
@@ -837,14 +841,14 @@ class ReportService:
                 attachments=[],  # Files are downloaded from dashboard, not attached
                 is_html=True
             )
-
+            
             if success:
                 logger.info(f"Report email sent successfully to {recipient_email} for event {event_name}")
             else:
                 logger.error(f"Failed to send report email to {recipient_email} for event {event_name}")
-
+            
             return success
-
+            
         except Exception as e:
             logger.error(f"Exception while sending report email: {e}")
             return False
