@@ -171,7 +171,7 @@ class DatabaseQueryService:
 
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
-
+    
     @staticmethod
     def get_currency_info(currency_code: str) -> Dict[str, str]:
         """Get currency information from database or return defaults"""
@@ -185,12 +185,14 @@ class EnhancedCurrencyConverter:
                 }
         except Exception as e:
             logger.warning(f"Error fetching currency info for {currency_code}: {e}")
-
+        
+        # Fallback currency info
         currency_symbols = {
             'KES': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
             'TZS': 'TSh', 'NGN': '₦', 'GHS': '₵', 'ZAR': 'R', 'JPY': '¥',
             'CAD': 'C$', 'AUD': 'A$'
         }
+        
         return {
             'code': currency_code,
             'symbol': currency_symbols.get(currency_code, currency_code),
@@ -202,27 +204,42 @@ class EnhancedCurrencyConverter:
         """Convert amount using the integrated currency exchange service"""
         if from_currency == to_currency:
             return amount
-
+        
         try:
             amount = Decimal(str(amount))
+            
+            # Handle KES conversions directly
             if from_currency == 'KES':
                 if to_currency == 'KES':
                     return amount
+                
+                # Use the convert_ksh_to_target_currency function
                 converted_amount, _, _ = convert_ksh_to_target_currency(amount, to_currency)
                 return converted_amount
+            
+            # For non-KES base currencies, convert to KES first, then to target
             elif to_currency == 'KES':
+                # Get rate from source currency to KES (reverse of KES to source)
                 rate = get_exchange_rate('KES', from_currency)
-                kes_amount = amount / rate
+                kes_amount = amount / rate  # Reverse conversion
                 return kes_amount
+            
             else:
+                # Convert: source -> KES -> target
+                # Step 1: Convert from source currency to KES
                 source_to_kes_rate = get_exchange_rate('KES', from_currency)
                 kes_amount = amount / source_to_kes_rate
+                
+                # Step 2: Convert from KES to target currency
                 converted_amount, _, _ = convert_ksh_to_target_currency(kes_amount, to_currency)
                 return converted_amount
+                
         except Exception as e:
             logger.error(f"Currency conversion error from {from_currency} to {to_currency}: {e}")
+            # Return original amount if conversion fails
             return amount
 
+            
 class ReportDataProcessor:
     @staticmethod
     def process_report_data(report_data: Dict[str, Any], event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:

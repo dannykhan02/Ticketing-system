@@ -1,3 +1,4 @@
+
 import matplotlib
 matplotlib.use('Agg')
 from reportlab.lib import colors
@@ -15,7 +16,7 @@ from decimal import Decimal
 from io import StringIO, BytesIO
 import tempfile
 from typing import Dict, List, Optional, Tuple, Any, Union
-from model import Ticket, Transaction, Scan, PaymentStatus, Currency, CurrencyCode, Event
+from model import Ticket, Transaction, Scan, PaymentStatus, Currency, CurrencyCode,Event
 from contextlib import contextmanager
 from .config import ReportConfig
 import logging
@@ -137,19 +138,19 @@ class ReportDataProcessor:
         try:
             # Get target currency info from database
             currency_obj = session.query(Currency).filter_by(
-                code=CurrencyCode(target_currency),
+                code=CurrencyCode(target_currency), 
                 is_active=True
             ).first()
-
+            
             if not currency_obj:
                 logger.warning(f"Target currency {target_currency} not found in database. Keeping original KES values.")
                 return report_data
-
+            
             # Store original currency info
             report_data['original_currency'] = "KES"
             report_data['currency'] = target_currency
             report_data['currency_symbol'] = currency_obj.symbol
-
+            
             # Convert total revenue
             if 'total_revenue' in report_data and report_data['total_revenue']:
                 try:
@@ -159,21 +160,21 @@ class ReportDataProcessor:
                     )
                     report_data['converted_revenue'] = float(converted_amount)
                     report_data['total_revenue'] = float(converted_amount)  # Update main revenue field
-
+                    
                     # Store conversion rates for transparency
                     report_data['conversion_rates'] = {
                         'ksh_to_usd': float(ksh_to_usd_rate),
                         'usd_to_target': float(usd_to_target_rate),
                         'overall_rate': float(ksh_to_usd_rate * usd_to_target_rate)
                     }
-
+                    
                     logger.info(f"Converted total revenue from KES {ksh_amount} to {target_currency} {converted_amount}")
-
+                    
                 except Exception as e:
                     logger.error(f"Error converting total revenue to {target_currency}: {e}")
                     # Keep original values if conversion fails
                     report_data['conversion_error'] = str(e)
-
+            
             # Convert revenue by ticket type
             if 'revenue_by_ticket_type' in report_data and report_data['revenue_by_ticket_type']:
                 converted_revenue_by_type = {}
@@ -185,9 +186,9 @@ class ReportDataProcessor:
                     except Exception as e:
                         logger.warning(f"Error converting revenue for ticket type {ticket_type}: {e}")
                         converted_revenue_by_type[ticket_type] = float(ksh_revenue)  # Keep original
-
+                
                 report_data['revenue_by_ticket_type'] = converted_revenue_by_type
-
+            
             # Convert daily revenue if present
             if 'daily_revenue' in report_data and report_data['daily_revenue']:
                 converted_daily_revenue = {}
@@ -205,18 +206,18 @@ class ReportDataProcessor:
                             converted_daily_revenue[date_str] = daily_data  # Keep original
                     else:
                         converted_daily_revenue[date_str] = daily_data
-
+                
                 report_data['daily_revenue'] = converted_daily_revenue
-
+            
             logger.info(f"Successfully converted report data to {target_currency}")
-
+            
         except Exception as e:
             logger.error(f"Error in currency conversion process: {e}")
             # Add error info but don't fail the report
             report_data['conversion_error'] = str(e)
             report_data['currency'] = "KES"  # Fallback to original
             report_data['currency_symbol'] = "KSh"
-
+        
         return report_data
 
     @staticmethod
@@ -376,8 +377,8 @@ class ChartGenerator:
 
     def create_all_charts(self, report_data: dict) -> List[str]:
         chart_paths = []
-        currency_symbol = report_data.get('currency_symbol', 'KSh')
-
+        currency_symbol = report_data.get('currency_symbol', 'KSh')  # Default to KSh instead of $
+        
         if 'tickets_by_type' in report_data:
             path = self.create_pie_chart(report_data['tickets_by_type'], title="Tickets Sold by Type")
             if path: chart_paths.append(path)
@@ -511,11 +512,8 @@ class PDFReportGenerator:
                 insights.append("• Good attendance rate. Consider strategies to reduce no-shows and further boost attendance for future events.")
             else:
                 insights.append("• A lower attendance rate suggests potential areas for improvement. Analyze attendee feedback for insights.")
-        
-        # Updated to use the new field name
-        tickets_sold_by_type = report_data.get('tickets_by_type', {})
+        tickets_sold_by_type = report_data.get('tickets_sold_by_type', {})
         revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
-        
         if tickets_sold_by_type:
             max_sold_type = max(tickets_sold_by_type.items(), key=lambda x: x[1])[0]
             insights.append(f"• The **{max_sold_type}** ticket type was the most popular by volume, indicating strong demand for this option.")
@@ -535,13 +533,11 @@ class PDFReportGenerator:
     def _create_breakdown_tables(self, report_data: Dict[str, Any]) -> List[Tuple[str, Table]]:
         tables = []
         currency_symbol = report_data.get('currency_symbol', '$')
-        
-        # Updated to use the new field name
-        if report_data.get('tickets_by_type'):
-            tickets_by_type = report_data['tickets_by_type']
+        if report_data.get('tickets_sold_by_type'):
+            tickets_sold_by_type = report_data['tickets_sold_by_type']
             data = [['Ticket Type', 'Tickets Sold', 'Percentage']]
-            total_tickets = sum(tickets_by_type.values())
-            for ticket_type, count in tickets_by_type.items():
+            total_tickets = sum(tickets_sold_by_type.values())
+            for ticket_type, count in tickets_sold_by_type.items():
                 percentage = (float(count) / total_tickets * 100) if total_tickets > 0 else 0.0
                 data.append([str(ticket_type), str(count), f"{percentage:.1f}%"])
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
@@ -646,34 +642,20 @@ class PDFReportGenerator:
                     logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
 
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
-        """
-        Generate PDF report from already-processed report data.
-        
-        Args:
-            report_data: Pre-processed report data dictionary
-            chart_paths: List of chart file paths to include
-            output_path: Output file path for the PDF
-            
-        Returns:
-            Output path if successful, None if failed
-        """
         try:
-            # Data is already processed - no need to call ReportDataProcessor again
+            processed_data = ReportDataProcessor.process_report_data(report_data)
             pagesize = self._get_pagesize()
             doc = SimpleDocTemplate(output_path, pagesize=pagesize, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
             story = []
-            
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
-            
-            event_name = report_data.get('event_name', 'N/A')
-            event_date = report_data.get('event_date', 'N/A')
-            event_location = report_data.get('event_location', 'N/A')
-            filter_start_date = report_data.get('filter_start_date', 'N/A')
-            filter_end_date = report_data.get('filter_end_date', 'N/A')
-            currency = report_data.get('currency', 'USD')
-            currency_symbol = report_data.get('currency_symbol', '$')
-            
+            event_name = processed_data.get('event_name', 'N/A')
+            event_date = processed_data.get('event_date', 'N/A')
+            event_location = processed_data.get('event_location', 'N/A')
+            filter_start_date = processed_data.get('filter_start_date', 'N/A')
+            filter_end_date = processed_data.get('filter_end_date', 'N/A')
+            currency = processed_data.get('currency', 'USD')
+            currency_symbol = processed_data.get('currency_symbol', '$')
             event_info = f"""
             <para fontSize=14>
             <b>Event:</b> {event_name}<br/>
@@ -686,32 +668,26 @@ class PDFReportGenerator:
             """
             story.append(Paragraph(event_info, self.normal_style))
             story.append(Spacer(1, 30))
-            
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
-            story.append(self._create_summary_table(report_data))
+            story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
-            
-            insights = self._generate_insights(report_data)
+            insights = self._generate_insights(processed_data)
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
                 for insight in insights:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
-            
             if len(story) > 5:
                 story.append(PageBreak())
-            
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
-            
             story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
-            tables = self._create_breakdown_tables(report_data)
+            tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
                 story.append(Paragraph(table_title, self.header_style))
                 story.append(table)
                 story.append(Spacer(1, 20))
-            
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
             This report was automatically generated by the Event Management System<br/>
@@ -720,11 +696,9 @@ class PDFReportGenerator:
             """
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
-            
             doc.build(story)
             self._cleanup_chart_files(chart_paths)
             return output_path
-            
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
             self._cleanup_chart_files(chart_paths)
@@ -733,16 +707,10 @@ class PDFReportGenerator:
 class CSVReportGenerator:
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
-        """Generate CSV report from already processed report data"""
         try:
-            # Remove the ReportDataProcessor.process_report_data call since 
-            # report_data should already be processed when passed in
-            processed_data = report_data  # Use data as-is
-            
+            processed_data = ReportDataProcessor.process_report_data(report_data)
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
-                
-                # Write report summary
                 writer.writerow(['Report Summary'])
                 writer.writerow(['Metric', 'Value'])
                 writer.writerow(['Event Name', processed_data.get('event_name', 'N/A')])
@@ -751,38 +719,30 @@ class CSVReportGenerator:
                 writer.writerow(['Total Tickets Sold', processed_data.get('total_tickets_sold', 0)])
                 writer.writerow(['Total Revenue', f"{processed_data.get('currency_symbol', '$')}{processed_data.get('total_revenue', 0.0):.2f}"])
                 writer.writerow(['Total Attendees', processed_data.get('number_of_attendees', 0)])
-                
-                # Calculate attendance rate
                 total_tickets_sold = processed_data.get('total_tickets_sold', 0)
                 number_of_attendees = processed_data.get('number_of_attendees', 0)
                 attendance_rate = (float(number_of_attendees) / total_tickets_sold * 100) if total_tickets_sold > 0 else 0.0
                 writer.writerow(['Attendance Rate', f"{attendance_rate:.1f}%"])
                 writer.writerow(['Currency', f"{processed_data.get('currency', 'USD')} ({processed_data.get('currency_symbol', '$')})"])
                 writer.writerow([])
-
-                # Write ticket sales breakdown
-                if processed_data.get('tickets_by_type'):  # Note: using 'tickets_by_type' from your new structure
+                if processed_data.get('tickets_sold_by_type'):
                     writer.writerow(['Ticket Sales Breakdown'])
                     writer.writerow(['Ticket Type', 'Tickets Sold', 'Percentage'])
-                    tickets_sold_by_type = processed_data['tickets_by_type']
+                    tickets_sold_by_type = processed_data['tickets_sold_by_type']
                     total_tickets_breakdown = sum(tickets_sold_by_type.values())
                     for ticket_type, count in tickets_sold_by_type.items():
                         percentage = (float(count) / total_tickets_breakdown * 100) if total_tickets_breakdown > 0 else 0.0
                         writer.writerow([ticket_type, count, f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write revenue breakdown
-                if processed_data.get('revenue_by_type'):
+                if processed_data.get('revenue_by_ticket_type'):
                     writer.writerow(['Revenue Breakdown'])
                     writer.writerow(['Ticket Type', 'Revenue', 'Percentage'])
-                    revenue_by_ticket_type = processed_data['revenue_by_type']
+                    revenue_by_ticket_type = processed_data['revenue_by_ticket_type']
                     total_revenue_breakdown = sum(revenue_by_ticket_type.values())
                     for ticket_type, revenue in revenue_by_ticket_type.items():
                         percentage = (revenue / total_revenue_breakdown * 100) if total_revenue_breakdown > 0 else 0.0
                         writer.writerow([ticket_type, f"{processed_data.get('currency_symbol', '$')}{revenue:.2f}", f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write payment method usage
                 if processed_data.get('payment_method_usage'):
                     writer.writerow(['Payment Method Usage'])
                     writer.writerow(['Payment Method', 'Transactions', 'Percentage'])
@@ -792,8 +752,6 @@ class CSVReportGenerator:
                         percentage = (float(count) / total_transactions_usage * 100) if total_transactions_usage > 0 else 0.0
                         writer.writerow([method, count, f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write daily revenue if available
                 if processed_data.get('daily_revenue'):
                     writer.writerow(['Daily Revenue'])
                     writer.writerow(['Date', 'Revenue', 'Tickets Sold'])
@@ -802,9 +760,7 @@ class CSVReportGenerator:
                         daily_tickets = int(daily_data.get('tickets_sold', 0))
                         writer.writerow([date_str, f"{processed_data.get('currency_symbol', '$')}{daily_revenue:.2f}", daily_tickets])
                     writer.writerow([])
-
             return output_path
-            
         except Exception as e:
             logger.error(f"Error generating CSV report: {e}", exc_info=True)
             return None
