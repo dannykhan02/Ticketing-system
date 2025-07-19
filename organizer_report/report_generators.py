@@ -15,10 +15,16 @@ from decimal import Decimal
 from io import StringIO, BytesIO
 import tempfile
 from typing import Dict, List, Optional, Tuple, Any, Union
+from model import Ticket, Transaction, Scan, PaymentStatus, Currency, CurrencyCode,Event
 from contextlib import contextmanager
 from .config import ReportConfig
 import logging
 import time
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+# Import currency conversion functions from the currency module
+from currency_routes import convert_ksh_to_target_currency, get_exchange_rate
 
 # Optional: Import psutil for memory logging
 try:
@@ -31,14 +37,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 class ReportDataProcessor:
-    """
-    Utility class to handle Enum key conversion and type casting in report data.
-    """
     @staticmethod
     def convert_enum_keys_to_strings(data: Dict[Any, Any]) -> Dict[str, Any]:
-        """
-        Convert Enum keys to their string values for JSON serialization.
-        """
         if not isinstance(data, dict):
             return data
         converted = {}
@@ -60,10 +60,6 @@ class ReportDataProcessor:
 
     @staticmethod
     def _ensure_numeric_types(data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Ensures that specific numeric fields within the report_data are cast to
-        appropriate numeric types (float or int).
-        """
         if not isinstance(data, dict):
             return data
         processed_data = data.copy()
@@ -111,28 +107,140 @@ class ReportDataProcessor:
         return processed_data
 
     @staticmethod
-    def process_report_data(report_data: Dict[str, Any]) -> Dict[str, Any]:
+    def process_report_data(report_data: Dict[str, Any], session: Session, event_id: int, target_currency: str = "KES") -> Dict[str, Any]:
         """
-        Process report data to ensure all Enum keys are converted to strings
-        and numeric fields are correctly typed.
+        Enhanced process_report_data with currency conversion support
         """
         processed_data = ReportDataProcessor.convert_enum_keys_to_strings(report_data)
         processed_data = ReportDataProcessor._ensure_numeric_types(processed_data)
+
+        # Calculate total_ticket_sold and attendees
+        processed_data['total_tickets_sold'] = ReportDataProcessor.calculate_total_tickets_sold(session, event_id)
+        processed_data['number_of_attendees'] = ReportDataProcessor.calculate_attendees(session, event_id)
+
+        # Add currency conversion if needed
+        if target_currency and target_currency != "KES":
+            processed_data = ReportDataProcessor.convert_report_currency(processed_data, target_currency, session)
+        else:
+            # Ensure currency info is set for KES
+            processed_data['original_currency'] = "KES"
+            processed_data['currency'] = "KES"
+            processed_data['currency_symbol'] = "KSh"
+
         return processed_data
 
+    @staticmethod
+    def convert_report_currency(report_data: Dict[str, Any], target_currency: str, session: Session) -> Dict[str, Any]:
+        """
+        Convert all monetary values in report from KES to target currency
+        """
+        try:
+            # Get target currency info from database
+            currency_obj = session.query(Currency).filter_by(
+                code=CurrencyCode(target_currency), 
+                is_active=True
+            ).first()
+            
+            if not currency_obj:
+                logger.warning(f"Target currency {target_currency} not found in database. Keeping original KES values.")
+                return report_data
+            
+            # Store original currency info
+            report_data['original_currency'] = "KES"
+            report_data['currency'] = target_currency
+            report_data['currency_symbol'] = currency_obj.symbol
+            
+            # Convert total revenue
+            if 'total_revenue' in report_data and report_data['total_revenue']:
+                try:
+                    ksh_amount = Decimal(str(report_data['total_revenue']))
+                    converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
+                        ksh_amount, target_currency
+                    )
+                    report_data['converted_revenue'] = float(converted_amount)
+                    report_data['total_revenue'] = float(converted_amount)  # Update main revenue field
+                    
+                    # Store conversion rates for transparency
+                    report_data['conversion_rates'] = {
+                        'ksh_to_usd': float(ksh_to_usd_rate),
+                        'usd_to_target': float(usd_to_target_rate),
+                        'overall_rate': float(ksh_to_usd_rate * usd_to_target_rate)
+                    }
+                    
+                    logger.info(f"Converted total revenue from KES {ksh_amount} to {target_currency} {converted_amount}")
+                    
+                except Exception as e:
+                    logger.error(f"Error converting total revenue to {target_currency}: {e}")
+                    # Keep original values if conversion fails
+                    report_data['conversion_error'] = str(e)
+            
+            # Convert revenue by ticket type
+            if 'revenue_by_ticket_type' in report_data and report_data['revenue_by_ticket_type']:
+                converted_revenue_by_type = {}
+                for ticket_type, ksh_revenue in report_data['revenue_by_ticket_type'].items():
+                    try:
+                        ksh_amount = Decimal(str(ksh_revenue))
+                        converted_amount, _, _ = convert_ksh_to_target_currency(ksh_amount, target_currency)
+                        converted_revenue_by_type[ticket_type] = float(converted_amount)
+                    except Exception as e:
+                        logger.warning(f"Error converting revenue for ticket type {ticket_type}: {e}")
+                        converted_revenue_by_type[ticket_type] = float(ksh_revenue)  # Keep original
+                
+                report_data['revenue_by_ticket_type'] = converted_revenue_by_type
+            
+            # Convert daily revenue if present
+            if 'daily_revenue' in report_data and report_data['daily_revenue']:
+                converted_daily_revenue = {}
+                for date_str, daily_data in report_data['daily_revenue'].items():
+                    if isinstance(daily_data, dict) and 'revenue' in daily_data:
+                        try:
+                            ksh_amount = Decimal(str(daily_data['revenue']))
+                            converted_amount, _, _ = convert_ksh_to_target_currency(ksh_amount, target_currency)
+                            converted_daily_revenue[date_str] = {
+                                **daily_data,
+                                'revenue': float(converted_amount)
+                            }
+                        except Exception as e:
+                            logger.warning(f"Error converting daily revenue for {date_str}: {e}")
+                            converted_daily_revenue[date_str] = daily_data  # Keep original
+                    else:
+                        converted_daily_revenue[date_str] = daily_data
+                
+                report_data['daily_revenue'] = converted_daily_revenue
+            
+            logger.info(f"Successfully converted report data to {target_currency}")
+            
+        except Exception as e:
+            logger.error(f"Error in currency conversion process: {e}")
+            # Add error info but don't fail the report
+            report_data['conversion_error'] = str(e)
+            report_data['currency'] = "KES"  # Fallback to original
+            report_data['currency_symbol'] = "KSh"
+        
+        return report_data
+
+    @staticmethod
+    def calculate_total_tickets_sold(session: Session, event_id: int) -> int:
+        total_tickets_sold = session.query(func.sum(Ticket.quantity)).join(Transaction).filter(
+            Ticket.event_id == event_id,
+            Transaction.payment_status == PaymentStatus.PAID
+        ).scalar()
+        return total_tickets_sold if total_tickets_sold is not None else 0
+
+    @staticmethod
+    def calculate_attendees(session: Session, event_id: int) -> int:
+        attendees = session.query(Ticket).join(Scan).filter(
+            Ticket.event_id == event_id,
+            Ticket.scanned == True
+        ).count()
+        return attendees
+
 class ChartGenerator:
-    """
-    Generates various types of charts (pie, bar, comparison) using Matplotlib,
-    saving them as temporary image files.
-    """
     def __init__(self, config: ReportConfig):
         self.config = config
         self._setup_matplotlib()
 
     def _setup_matplotlib(self):
-        """
-        Sets up Matplotlib style based on configuration.
-        """
         try:
             plt.style.use(self.config.chart_style if self.config.chart_style else 'default')
         except Exception as e:
@@ -140,10 +248,6 @@ class ChartGenerator:
 
     @contextmanager
     def _chart_context(self, figsize: Tuple[int, int] = (10, 8)):
-        """
-        Provides a context manager for creating Matplotlib figures and axes,
-        ensuring proper cleanup.
-        """
         fig, ax = plt.subplots(figsize=figsize)
         try:
             yield fig, ax
@@ -151,29 +255,21 @@ class ChartGenerator:
             plt.close(fig)
 
     def _save_chart_safely(self, fig, title: str) -> Optional[str]:
-        """
-        Safely saves a matplotlib figure to a temporary file with proper error handling.
-        """
         try:
-            # Create temporary file with a more descriptive name
             tmp_file = tempfile.NamedTemporaryFile(
                 suffix='.png',
                 prefix=f'chart_{title.replace(" ", "_")}_',
                 delete=False
             )
             tmp_filename = tmp_file.name
-            tmp_file.close()  # Close the file handle but keep the file
-            # Save the figure
+            tmp_file.close()
             fig.savefig(tmp_filename, dpi=self.config.chart_dpi, bbox_inches='tight')
-            # Force matplotlib to finish writing
             plt.close(fig)
-            # Verify the file was created and has content
             if os.path.exists(tmp_filename) and os.path.getsize(tmp_filename) > 0:
                 logger.info(f"Successfully created chart: {tmp_filename}")
                 return tmp_filename
             else:
                 logger.error(f"Failed to create chart file: {tmp_filename}")
-                # Clean up failed file
                 try:
                     os.remove(tmp_filename)
                 except:
@@ -184,9 +280,6 @@ class ChartGenerator:
             return None
 
     def create_pie_chart(self, data: Dict[str, Union[int, float]], title: str) -> Optional[str]:
-        """
-        Creates a pie chart from the given data and saves it to a temporary file.
-        """
         if not data:
             logger.info(f"No data provided for pie chart '{title}'. Skipping chart generation.")
             return None
@@ -215,10 +308,7 @@ class ChartGenerator:
             logger.error(f"Error creating pie chart '{title}': {e}", exc_info=True)
             return None
 
-    def create_bar_chart(self, data: Dict[str, Union[float, int]], title: str, xlabel: str, ylabel: str, currency_symbol: str = '$') -> Optional[str]:
-        """
-        Creates a bar chart from the given data and saves it to a temporary file.
-        """
+    def create_bar_chart(self, data: Dict[str, Union[float, int]], title: str, xlabel: str, ylabel: str, currency_symbol: str = 'KSh') -> Optional[str]:
         if not data:
             logger.info(f"No data provided for bar chart '{title}'. Skipping chart generation.")
             return None
@@ -248,9 +338,6 @@ class ChartGenerator:
             return None
 
     def create_comparison_chart(self, sold_data: Dict[str, int], attended_data: Dict[str, int], title: str) -> Optional[str]:
-        """
-        Creates a comparison bar chart showing tickets sold vs. actual attendance and saves it to a temporary file.
-        """
         if not sold_data and not attended_data:
             logger.info(f"No data provided for comparison chart '{title}'. Skipping chart generation.")
             return None
@@ -288,10 +375,9 @@ class ChartGenerator:
             return None
 
     def create_all_charts(self, report_data: dict) -> List[str]:
-        """
-        Generates all applicable charts for the report and returns their file paths.
-        """
         chart_paths = []
+        currency_symbol = report_data.get('currency_symbol', 'KSh')  # Default to KSh instead of $
+        
         if 'tickets_by_type' in report_data:
             path = self.create_pie_chart(report_data['tickets_by_type'], title="Tickets Sold by Type")
             if path: chart_paths.append(path)
@@ -301,7 +387,7 @@ class ChartGenerator:
                 title="Revenue by Ticket Type",
                 xlabel="Ticket Type",
                 ylabel="Revenue",
-                currency_symbol=self.config.currency_symbol if hasattr(self.config, 'currency_symbol') else '$'
+                currency_symbol=currency_symbol
             )
             if path: chart_paths.append(path)
         if 'payment_methods' in report_data:
@@ -317,19 +403,12 @@ class ChartGenerator:
         return chart_paths
 
 class PDFReportGenerator:
-    """
-    Generates a PDF report from event data, including summaries, insights,
-    tables, and charts.
-    """
     def __init__(self, config: ReportConfig):
         self.config = config
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
 
     def _setup_custom_styles(self):
-        """
-        Configures custom paragraph styles for the PDF report.
-        """
         self.title_style = ParagraphStyle(
             'CustomTitle',
             parent=self.styles['Heading1'],
@@ -361,11 +440,6 @@ class PDFReportGenerator:
         )
 
     def _get_pagesize(self) -> Tuple[float, float]:
-        """
-        Converts the pagesize configuration to a proper tuple format.
-        Returns:
-            Tuple[float, float]: A tuple of (width, height) in points.
-        """
         try:
             if hasattr(self.config, 'pdf_pagesize'):
                 pagesize = self.config.pdf_pagesize
@@ -390,9 +464,6 @@ class PDFReportGenerator:
             return letter
 
     def _create_summary_table(self, report_data: Dict[str, Any]) -> Table:
-        """
-        Creates a summary table for the PDF report.
-        """
         total_tickets_sold = report_data.get('total_tickets_sold', 0)
         number_of_attendees = report_data.get('number_of_attendees', 0)
         total_revenue = report_data.get('total_revenue', 0.0)
@@ -429,9 +500,6 @@ class PDFReportGenerator:
         return table
 
     def _generate_insights(self, report_data: Dict[str, Any]) -> List[str]:
-        """
-        Generates key insights based on the report data.
-        """
         insights = []
         total_tickets_sold = report_data.get('total_tickets_sold', 0)
         number_of_attendees = report_data.get('number_of_attendees', 0)
@@ -462,9 +530,6 @@ class PDFReportGenerator:
         return insights
 
     def _create_breakdown_tables(self, report_data: Dict[str, Any]) -> List[Tuple[str, Table]]:
-        """
-        Creates detailed breakdown tables for the PDF report.
-        """
         tables = []
         currency_symbol = report_data.get('currency_symbol', '$')
         if report_data.get('tickets_sold_by_type'):
@@ -533,42 +598,33 @@ class PDFReportGenerator:
         return tables
 
     def _add_charts_to_story(self, story, chart_paths):
-        """
-        Safely adds charts to the PDF story with proper error handling.
-        """
         if not chart_paths or not self.config.include_charts:
             return
         story.append(Paragraph("VISUAL ANALYTICS", self.subtitle_style))
         for i, chart_path in enumerate(chart_paths):
             if not chart_path:
                 continue
-            # Wait a bit to ensure file is fully written
             max_retries = 3
             retry_count = 0
             while retry_count < max_retries:
                 if os.path.exists(chart_path) and os.path.getsize(chart_path) > 0:
                     try:
-                        # Try to open and verify the file
                         with open(chart_path, 'rb') as f:
-                            # Read first few bytes to verify it's a valid image
                             header = f.read(8)
                             if header.startswith(b'\x89PNG\r\n\x1a\n'):
-                                # Valid PNG file
                                 break
                     except Exception as e:
                         logger.warning(f"File verification failed for {chart_path}: {e}")
                 retry_count += 1
                 if retry_count < max_retries:
-                    time.sleep(0.1)  # Wait 100ms before retry
+                    time.sleep(0.1)
             if retry_count >= max_retries:
                 logger.error(f"Could not verify chart file after {max_retries} attempts: {chart_path}")
                 continue
             try:
-                # Create the image with explicit error handling
                 img = Image(chart_path, width=6*inch, height=4.5*inch)
                 story.append(img)
                 story.append(Spacer(1, 20))
-                # Add page break after every 2 charts
                 if (i + 1) % 2 == 0 and i < len(chart_paths) - 1:
                     story.append(PageBreak())
                 logger.info(f"Successfully added chart to PDF: {chart_path}")
@@ -576,9 +632,6 @@ class PDFReportGenerator:
                 logger.error(f"Error adding image {chart_path} to PDF: {img_e}", exc_info=True)
 
     def _cleanup_chart_files(self, chart_paths):
-        """
-        Safely cleanup chart files after PDF generation.
-        """
         for chart_path in chart_paths:
             if chart_path and os.path.exists(chart_path):
                 try:
@@ -588,9 +641,6 @@ class PDFReportGenerator:
                     logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
 
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
-        """
-        Generates the complete PDF report with improved error handling.
-        """
         try:
             processed_data = ReportDataProcessor.process_report_data(report_data)
             pagesize = self._get_pagesize()
@@ -628,7 +678,6 @@ class PDFReportGenerator:
                 story.append(Spacer(1, 20))
             if len(story) > 5:
                 story.append(PageBreak())
-            # Add charts with improved error handling
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
             story.append(PageBreak())
@@ -647,24 +696,16 @@ class PDFReportGenerator:
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
             doc.build(story)
-            # Cleanup chart files after successful PDF generation
             self._cleanup_chart_files(chart_paths)
             return output_path
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
-            # Cleanup chart files on error
             self._cleanup_chart_files(chart_paths)
             return None
 
 class CSVReportGenerator:
-    """
-    Generates a CSV report from event data.
-    """
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
-        """
-        Generates a CSV report from the provided report data.
-        """
         try:
             processed_data = ReportDataProcessor.process_report_data(report_data)
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:

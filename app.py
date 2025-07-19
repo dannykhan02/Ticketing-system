@@ -30,7 +30,7 @@ from admin_report import register_admin_report_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
-# from organizer_report.organizer_report import ReportResourceRegistry
+from organizer_report.organizer_report import ReportResourceRegistry
 
 # ✅ Normalize and validate DATABASE_URL
 DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
@@ -108,7 +108,7 @@ register_ticket_type_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
 register_currency_resources(api)
-# ReportResourceRegistry.register_organizer_report_resources(api)
+ReportResourceRegistry.register_organizer_report_resources(api)
 
 # ✅ Run app locally and seed currencies
 if __name__ == "__main__":
