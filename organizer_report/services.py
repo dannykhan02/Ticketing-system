@@ -304,6 +304,7 @@ class ReportService:
             return []
         chart_paths = []
         try:
+            # Use consistent field name 'tickets_by_type' (matches PDFReportGenerator)
             if report_data.get('tickets_by_type'):
                 tickets_chart = self.chart_generator.create_pie_chart(
                     data=report_data['tickets_by_type'],
@@ -311,15 +312,18 @@ class ReportService:
                 )
                 if tickets_chart:
                     chart_paths.append(tickets_chart)
-            if report_data.get('revenue_by_type'):
+            
+            # Use consistent field name 'revenue_by_ticket_type' (matches PDFReportGenerator)
+            if report_data.get('revenue_by_ticket_type'):
                 revenue_chart = self.chart_generator.create_bar_chart(
-                    data=report_data['revenue_by_type'],
+                    data=report_data['revenue_by_ticket_type'],
                     title="Revenue by Ticket Type",
                     xlabel="Ticket Type",
                     ylabel=f"Revenue ({report_data.get('currency_symbol', '$')})"
                 )
                 if revenue_chart:
                     chart_paths.append(revenue_chart)
+            
             if report_data.get('payment_method_usage'):
                 payment_chart = self.chart_generator.create_pie_chart(
                     data=report_data['payment_method_usage'],
@@ -327,6 +331,7 @@ class ReportService:
                 )
                 if payment_chart:
                     chart_paths.append(payment_chart)
+            
             if report_data.get('attendees_by_type'):
                 attendees_chart = self.chart_generator.create_bar_chart(
                     data=report_data['attendees_by_type'],
@@ -336,6 +341,7 @@ class ReportService:
                 )
                 if attendees_chart:
                     chart_paths.append(attendees_chart)
+            
             logger.info(f"Generated {len(chart_paths)} charts for event {report_data['event_id']}")
             return chart_paths
         except Exception as e:
@@ -368,6 +374,7 @@ class ReportService:
             initial_report_data, event_id, start_date, end_date
         )
 
+        # Currency conversion for total revenue
         if base_currency_code != display_currency_code:
             if 'total_revenue' in processed_data:
                 original_revenue = processed_data['total_revenue']
@@ -380,14 +387,15 @@ class ReportService:
                     self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
                 )
 
-            if 'revenue_by_type' in processed_data:
+            # Convert revenue_by_ticket_type (consistent with PDFReportGenerator)
+            if 'revenue_by_ticket_type' in processed_data:
                 converted_revenue_by_type = {}
-                for ticket_type, revenue in processed_data['revenue_by_type'].items():
+                for ticket_type, revenue in processed_data['revenue_by_ticket_type'].items():
                     converted_amount = self.currency_converter.convert_amount(
                         Decimal(str(revenue)), base_currency_code, display_currency_code
                     )
                     converted_revenue_by_type[ticket_type] = float(converted_amount)
-                processed_data['revenue_by_type'] = converted_revenue_by_type
+                processed_data['revenue_by_ticket_type'] = converted_revenue_by_type
 
         processed_data.update({
             'currency': display_currency_info['code'],
@@ -463,8 +471,9 @@ class ReportService:
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
 
+            # Updated method signature to match PDFReportGenerator.generate_pdf
             pdf_path = self.pdf_generator.generate_pdf(
-                report_data, chart_paths, pdf_path, session, event_id
+                report_data, chart_paths, pdf_path
             )
 
             csv_path = CSVReportGenerator.generate_csv(report_data, csv_path)
@@ -571,7 +580,7 @@ class ReportService:
                         <div class="metric-label">Attendees</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-value">{report_data.get('attendance_rate', 0)}%</div>
+                        <div class="metric-value">{self._calculate_attendance_rate(report_data):.1f}%</div>
                         <div class="metric-label">Attendance Rate</div>
                     </div>
                 </div>
@@ -591,6 +600,7 @@ class ReportService:
                 </div>
             """
 
+        # Use consistent field names for email content
         if report_data.get('tickets_by_type'):
             body += """
                 <div class="summary-box">
@@ -599,7 +609,7 @@ class ReportService:
                         <tr><th>Ticket Type</th><th>Tickets Sold</th><th>Revenue</th><th>Attendees</th></tr>
             """
             tickets_by_type = report_data.get('tickets_by_type', {})
-            revenue_by_type = report_data.get('revenue_by_type', {})
+            revenue_by_type = report_data.get('revenue_by_ticket_type', {})  # Updated to match PDFReportGenerator
             attendees_by_type = report_data.get('attendees_by_type', {})
             for ticket_type in tickets_by_type.keys():
                 tickets = tickets_by_type.get(ticket_type, 0)
@@ -625,7 +635,10 @@ class ReportService:
                 </div>
             """
 
-        attendance_rate = report_data.get('attendance_rate', 0)
+        # Add insights section
+        body += '<div class="insights"><h3>💡 Key Insights</h3><ul>'
+        
+        attendance_rate = self._calculate_attendance_rate(report_data)
         if attendance_rate > 90:
             body += "<li>🎉 Excellent attendance rate! Most ticket holders attended the event.</li>"
         elif attendance_rate > 70:
@@ -633,7 +646,8 @@ class ReportService:
         elif attendance_rate > 0:
             body += "<li>⚠️ Low attendance rate suggests potential areas for improvement in engagement.</li>"
 
-        revenue_by_type = report_data.get('revenue_by_type', {})
+        # Use consistent field name 'revenue_by_ticket_type'
+        revenue_by_type = report_data.get('revenue_by_ticket_type', {})
         if revenue_by_type:
             max_revenue_type = max(revenue_by_type.items(), key=lambda x: x[1])[0]
             body += f"<li>💰 {max_revenue_type} tickets generated the highest revenue for this event.</li>"
@@ -714,3 +728,11 @@ class ReportService:
         except Exception as e:
             logger.error(f"Exception while sending report email: {e}")
             return False
+
+    def _calculate_attendance_rate(self, report_data: Dict[str, Any]) -> float:
+        """Helper method to calculate attendance rate consistently"""
+        total_tickets_sold = report_data.get('total_tickets_sold', 0)
+        number_of_attendees = report_data.get('number_of_attendees', 0)
+        if total_tickets_sold > 0:
+            return (float(number_of_attendees) / total_tickets_sold) * 100
+        return 0.0
