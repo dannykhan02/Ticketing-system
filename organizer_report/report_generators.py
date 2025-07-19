@@ -235,6 +235,173 @@ class ReportDataProcessor:
         ).count()
         return attendees
 
+class ChartGenerator:
+    def __init__(self, config: ReportConfig):
+        self.config = config
+        self._setup_matplotlib()
+
+    def _setup_matplotlib(self):
+        try:
+            plt.style.use(self.config.chart_style if self.config.chart_style else 'default')
+        except Exception as e:
+            logger.warning(f"Failed to apply matplotlib style: {e}")
+
+    @contextmanager
+    def _chart_context(self, figsize: Tuple[int, int] = (10, 8)):
+        fig, ax = plt.subplots(figsize=figsize)
+        try:
+            yield fig, ax
+        finally:
+            plt.close(fig)
+
+    def _save_chart_safely(self, fig, title: str) -> Optional[str]:
+        try:
+            tmp_file = tempfile.NamedTemporaryFile(
+                suffix='.png',
+                prefix=f'chart_{title.replace(" ", "_")}_',
+                delete=False
+            )
+            tmp_filename = tmp_file.name
+            tmp_file.close()
+            fig.savefig(tmp_filename, dpi=self.config.chart_dpi, bbox_inches='tight')
+            plt.close(fig)
+            if os.path.exists(tmp_filename) and os.path.getsize(tmp_filename) > 0:
+                logger.info(f"Successfully created chart: {tmp_filename}")
+                return tmp_filename
+            else:
+                logger.error(f"Failed to create chart file: {tmp_filename}")
+                try:
+                    os.remove(tmp_filename)
+                except:
+                    pass
+                return None
+        except Exception as e:
+            logger.error(f"Error saving chart '{title}': {e}", exc_info=True)
+            return None
+
+    def create_pie_chart(self, data: Dict[str, Union[int, float]], title: str) -> Optional[str]:
+        if not data:
+            logger.info(f"No data provided for pie chart '{title}'. Skipping chart generation.")
+            return None
+        try:
+            labels = list(data.keys())
+            sizes = [float(v) for v in data.values()]
+            filtered_labels_sizes = [(lbl, sz) for lbl, sz in zip(labels, sizes) if sz > 0]
+            if not filtered_labels_sizes:
+                logger.info(f"All data values are zero for pie chart '{title}'. Skipping chart generation.")
+                return None
+            labels, sizes = zip(*filtered_labels_sizes)
+            with self._chart_context() as (fig, ax):
+                colors_list = plt.cm.Set3(range(len(labels)))
+                wedges, texts, autotexts = ax.pie(
+                    sizes, labels=labels, autopct='%1.1f%%',
+                    colors=colors_list, startangle=90,
+                    explode=[0.05] * len(labels) if labels else None
+                )
+                for autotext in autotexts:
+                    autotext.set_color('white')
+                    autotext.set_fontweight('bold')
+                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+                plt.tight_layout()
+                return self._save_chart_safely(fig, title)
+        except Exception as e:
+            logger.error(f"Error creating pie chart '{title}': {e}", exc_info=True)
+            return None
+
+    def create_bar_chart(self, data: Dict[str, Union[float, int]], title: str, xlabel: str, ylabel: str, currency_symbol: str = 'KSh') -> Optional[str]:
+        if not data:
+            logger.info(f"No data provided for bar chart '{title}'. Skipping chart generation.")
+            return None
+        try:
+            categories = list(data.keys())
+            values = [float(v) for v in data.values()]
+            with self._chart_context((12, 8)) as (fig, ax):
+                bars = ax.bar(categories, values, color=plt.cm.viridis(range(len(categories))))
+                for bar in bars:
+                    height = bar.get_height()
+                    if 'Revenue' in ylabel:
+                        ax.text(bar.get_x() + bar.get_width()/2., height,
+                                f'{currency_symbol}{height:.2f}',
+                                ha='center', va='bottom', fontweight='bold')
+                    else:
+                        ax.text(bar.get_x() + bar.get_width()/2., height,
+                                f'{height:.0f}',
+                                ha='center', va='bottom', fontweight='bold')
+                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+                ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
+                ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+                plt.xticks(rotation=45, ha='right')
+                plt.tight_layout()
+                return self._save_chart_safely(fig, title)
+        except Exception as e:
+            logger.error(f"Error creating bar chart '{title}': {e}", exc_info=True)
+            return None
+
+    def create_comparison_chart(self, sold_data: Dict[str, int], attended_data: Dict[str, int], title: str) -> Optional[str]:
+        if not sold_data and not attended_data:
+            logger.info(f"No data provided for comparison chart '{title}'. Skipping chart generation.")
+            return None
+        try:
+            all_ticket_types = sorted(list(set(sold_data.keys()) | set(attended_data.keys())))
+            categories = all_ticket_types
+            sold_counts = [int(sold_data.get(t, 0)) for t in categories]
+            attended_counts = [int(attended_data.get(t, 0)) for t in categories]
+            if not categories or (sum(sold_counts) == 0 and sum(attended_counts) == 0):
+                logger.info(f"No valid data to plot for comparison chart '{title}'. Skipping.")
+                return None
+            with self._chart_context((12, 8)) as (fig, ax):
+                x = range(len(categories))
+                width = 0.35
+                bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
+                             label='Tickets Sold', color='skyblue', alpha=0.8)
+                bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
+                             label='Attendees', color='lightcoral', alpha=0.8)
+                for bars in [bars1, bars2]:
+                    for bar in bars:
+                        height = bar.get_height()
+                        if height > 0:
+                            ax.text(bar.get_x() + bar.get_width()/2., height,
+                                    f'{int(height)}', ha='center', va='bottom', fontweight='bold')
+                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+                ax.set_xlabel('Ticket Type', fontsize=12, fontweight='bold')
+                ax.set_ylabel('Count', fontsize=12, fontweight='bold')
+                ax.set_xticks(x)
+                ax.set_xticklabels(categories, rotation=45, ha='right')
+                ax.legend()
+                plt.tight_layout()
+                return self._save_chart_safely(fig, title)
+        except Exception as e:
+            logger.error(f"Error creating comparison chart '{title}': {e}", exc_info=True)
+            return None
+
+    def create_all_charts(self, report_data: dict) -> List[str]:
+        chart_paths = []
+        currency_symbol = report_data.get('currency_symbol', 'KSh')  # Default to KSh instead of $
+        
+        if 'tickets_by_type' in report_data:
+            path = self.create_pie_chart(report_data['tickets_by_type'], title="Tickets Sold by Type")
+            if path: chart_paths.append(path)
+        if 'revenue_by_ticket_type' in report_data:
+            path = self.create_bar_chart(
+                report_data['revenue_by_ticket_type'],
+                title="Revenue by Ticket Type",
+                xlabel="Ticket Type",
+                ylabel="Revenue",
+                currency_symbol=currency_symbol
+            )
+            if path: chart_paths.append(path)
+        if 'payment_methods' in report_data:
+            path = self.create_pie_chart(report_data['payment_methods'], title="Payment Method Usage")
+            if path: chart_paths.append(path)
+        if 'attendees_by_ticket_type' in report_data and 'tickets_by_type' in report_data:
+            path = self.create_comparison_chart(
+                sold_data=report_data['tickets_by_type'],
+                attended_data=report_data['attendees_by_ticket_type'],
+                title="Tickets Sold vs Attendees"
+            )
+            if path: chart_paths.append(path)
+        return chart_paths
+
 class PDFReportGenerator:
     def __init__(self, config: ReportConfig):
         self.config = config
@@ -344,11 +511,8 @@ class PDFReportGenerator:
                 insights.append("• Good attendance rate. Consider strategies to reduce no-shows and further boost attendance for future events.")
             else:
                 insights.append("• A lower attendance rate suggests potential areas for improvement. Analyze attendee feedback for insights.")
-        
-        # Updated to use the new field name
-        tickets_sold_by_type = report_data.get('tickets_by_type', {})
+        tickets_sold_by_type = report_data.get('tickets_sold_by_type', {})
         revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
-        
         if tickets_sold_by_type:
             max_sold_type = max(tickets_sold_by_type.items(), key=lambda x: x[1])[0]
             insights.append(f"• The **{max_sold_type}** ticket type was the most popular by volume, indicating strong demand for this option.")
@@ -368,13 +532,11 @@ class PDFReportGenerator:
     def _create_breakdown_tables(self, report_data: Dict[str, Any]) -> List[Tuple[str, Table]]:
         tables = []
         currency_symbol = report_data.get('currency_symbol', '$')
-        
-        # Updated to use the new field name
-        if report_data.get('tickets_by_type'):
-            tickets_by_type = report_data['tickets_by_type']
+        if report_data.get('tickets_sold_by_type'):
+            tickets_sold_by_type = report_data['tickets_sold_by_type']
             data = [['Ticket Type', 'Tickets Sold', 'Percentage']]
-            total_tickets = sum(tickets_by_type.values())
-            for ticket_type, count in tickets_by_type.items():
+            total_tickets = sum(tickets_sold_by_type.values())
+            for ticket_type, count in tickets_sold_by_type.items():
                 percentage = (float(count) / total_tickets * 100) if total_tickets > 0 else 0.0
                 data.append([str(ticket_type), str(count), f"{percentage:.1f}%"])
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
@@ -479,34 +641,20 @@ class PDFReportGenerator:
                     logger.warning(f"Failed to cleanup chart file {chart_path}: {cleanup_error}")
 
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str) -> Optional[str]:
-        """
-        Generate PDF report from already-processed report data.
-        
-        Args:
-            report_data: Pre-processed report data dictionary
-            chart_paths: List of chart file paths to include
-            output_path: Output file path for the PDF
-            
-        Returns:
-            Output path if successful, None if failed
-        """
         try:
-            # Data is already processed - no need to call ReportDataProcessor again
+            processed_data = ReportDataProcessor.process_report_data(report_data)
             pagesize = self._get_pagesize()
             doc = SimpleDocTemplate(output_path, pagesize=pagesize, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
             story = []
-            
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
-            
-            event_name = report_data.get('event_name', 'N/A')
-            event_date = report_data.get('event_date', 'N/A')
-            event_location = report_data.get('event_location', 'N/A')
-            filter_start_date = report_data.get('filter_start_date', 'N/A')
-            filter_end_date = report_data.get('filter_end_date', 'N/A')
-            currency = report_data.get('currency', 'USD')
-            currency_symbol = report_data.get('currency_symbol', '$')
-            
+            event_name = processed_data.get('event_name', 'N/A')
+            event_date = processed_data.get('event_date', 'N/A')
+            event_location = processed_data.get('event_location', 'N/A')
+            filter_start_date = processed_data.get('filter_start_date', 'N/A')
+            filter_end_date = processed_data.get('filter_end_date', 'N/A')
+            currency = processed_data.get('currency', 'USD')
+            currency_symbol = processed_data.get('currency_symbol', '$')
             event_info = f"""
             <para fontSize=14>
             <b>Event:</b> {event_name}<br/>
@@ -519,32 +667,26 @@ class PDFReportGenerator:
             """
             story.append(Paragraph(event_info, self.normal_style))
             story.append(Spacer(1, 30))
-            
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
-            story.append(self._create_summary_table(report_data))
+            story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
-            
-            insights = self._generate_insights(report_data)
+            insights = self._generate_insights(processed_data)
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
                 for insight in insights:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
-            
             if len(story) > 5:
                 story.append(PageBreak())
-            
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
-            
             story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
-            tables = self._create_breakdown_tables(report_data)
+            tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
                 story.append(Paragraph(table_title, self.header_style))
                 story.append(table)
                 story.append(Spacer(1, 20))
-            
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
             This report was automatically generated by the Event Management System<br/>
@@ -553,11 +695,9 @@ class PDFReportGenerator:
             """
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
-            
             doc.build(story)
             self._cleanup_chart_files(chart_paths)
             return output_path
-            
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
             self._cleanup_chart_files(chart_paths)
@@ -566,16 +706,10 @@ class PDFReportGenerator:
 class CSVReportGenerator:
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str) -> Optional[str]:
-        """Generate CSV report from already processed report data"""
         try:
-            # Remove the ReportDataProcessor.process_report_data call since 
-            # report_data should already be processed when passed in
-            processed_data = report_data  # Use data as-is
-            
+            processed_data = ReportDataProcessor.process_report_data(report_data)
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
-                
-                # Write report summary
                 writer.writerow(['Report Summary'])
                 writer.writerow(['Metric', 'Value'])
                 writer.writerow(['Event Name', processed_data.get('event_name', 'N/A')])
@@ -584,38 +718,30 @@ class CSVReportGenerator:
                 writer.writerow(['Total Tickets Sold', processed_data.get('total_tickets_sold', 0)])
                 writer.writerow(['Total Revenue', f"{processed_data.get('currency_symbol', '$')}{processed_data.get('total_revenue', 0.0):.2f}"])
                 writer.writerow(['Total Attendees', processed_data.get('number_of_attendees', 0)])
-                
-                # Calculate attendance rate
                 total_tickets_sold = processed_data.get('total_tickets_sold', 0)
                 number_of_attendees = processed_data.get('number_of_attendees', 0)
                 attendance_rate = (float(number_of_attendees) / total_tickets_sold * 100) if total_tickets_sold > 0 else 0.0
                 writer.writerow(['Attendance Rate', f"{attendance_rate:.1f}%"])
                 writer.writerow(['Currency', f"{processed_data.get('currency', 'USD')} ({processed_data.get('currency_symbol', '$')})"])
                 writer.writerow([])
-
-                # Write ticket sales breakdown
-                if processed_data.get('tickets_by_type'):  # Note: using 'tickets_by_type' from your new structure
+                if processed_data.get('tickets_sold_by_type'):
                     writer.writerow(['Ticket Sales Breakdown'])
                     writer.writerow(['Ticket Type', 'Tickets Sold', 'Percentage'])
-                    tickets_sold_by_type = processed_data['tickets_by_type']
+                    tickets_sold_by_type = processed_data['tickets_sold_by_type']
                     total_tickets_breakdown = sum(tickets_sold_by_type.values())
                     for ticket_type, count in tickets_sold_by_type.items():
                         percentage = (float(count) / total_tickets_breakdown * 100) if total_tickets_breakdown > 0 else 0.0
                         writer.writerow([ticket_type, count, f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write revenue breakdown
-                if processed_data.get('revenue_by_type'):
+                if processed_data.get('revenue_by_ticket_type'):
                     writer.writerow(['Revenue Breakdown'])
                     writer.writerow(['Ticket Type', 'Revenue', 'Percentage'])
-                    revenue_by_ticket_type = processed_data['revenue_by_type']
+                    revenue_by_ticket_type = processed_data['revenue_by_ticket_type']
                     total_revenue_breakdown = sum(revenue_by_ticket_type.values())
                     for ticket_type, revenue in revenue_by_ticket_type.items():
                         percentage = (revenue / total_revenue_breakdown * 100) if total_revenue_breakdown > 0 else 0.0
                         writer.writerow([ticket_type, f"{processed_data.get('currency_symbol', '$')}{revenue:.2f}", f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write payment method usage
                 if processed_data.get('payment_method_usage'):
                     writer.writerow(['Payment Method Usage'])
                     writer.writerow(['Payment Method', 'Transactions', 'Percentage'])
@@ -625,8 +751,6 @@ class CSVReportGenerator:
                         percentage = (float(count) / total_transactions_usage * 100) if total_transactions_usage > 0 else 0.0
                         writer.writerow([method, count, f"{percentage:.1f}%"])
                     writer.writerow([])
-
-                # Write daily revenue if available
                 if processed_data.get('daily_revenue'):
                     writer.writerow(['Daily Revenue'])
                     writer.writerow(['Date', 'Revenue', 'Tickets Sold'])
@@ -635,9 +759,7 @@ class CSVReportGenerator:
                         daily_tickets = int(daily_data.get('tickets_sold', 0))
                         writer.writerow([date_str, f"{processed_data.get('currency_symbol', '$')}{daily_revenue:.2f}", daily_tickets])
                     writer.writerow([])
-
             return output_path
-            
         except Exception as e:
             logger.error(f"Error generating CSV report: {e}", exc_info=True)
             return None
