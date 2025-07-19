@@ -27,112 +27,150 @@ class DatabaseQueryService:
     @staticmethod
     def get_tickets_sold_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get tickets sold by type for PAID tickets only"""
-        query = (db.session.query(TicketType.type_name, func.count(Ticket.id))
-                .join(Ticket, Ticket.ticket_type_id == TicketType.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Ticket.payment_status == PaymentStatus.PAID,
-                    Ticket.purchase_date >= start_date,
-                    Ticket.purchase_date <= end_date
-                )
-                .group_by(TicketType.type_name)
-                .all())
-        return [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
+        try:
+            query = (db.session.query(TicketType.type_name, func.count(Ticket.id))
+                    .select_from(Ticket)
+                    .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Ticket.payment_status == PaymentStatus.PAID,
+                        Ticket.purchase_date >= start_date,
+                        Ticket.purchase_date <= end_date
+                    )
+                    .group_by(TicketType.type_name)
+                    .all())
+            return [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
+        except Exception as e:
+            logger.error(f"Error in get_tickets_sold_by_type: {e}")
+            return []
 
     @staticmethod
     def get_revenue_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, Decimal]]:
         """Get revenue by type for PAID tickets only - sum of ticket prices"""
-        query = (db.session.query(TicketType.type_name, func.sum(TicketType.price * Ticket.quantity))
-                .join(Ticket, Ticket.ticket_type_id == TicketType.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Ticket.payment_status == PaymentStatus.PAID,
-                    Ticket.purchase_date >= start_date,
-                    Ticket.purchase_date <= end_date
-                )
-                .group_by(TicketType.type_name)
-                .all())
-        return [(DatabaseQueryService._convert_enum_to_string(type_name),
-                Decimal(str(revenue)) if revenue else Decimal('0')) for type_name, revenue in query]
+        try:
+            query = (db.session.query(TicketType.type_name, func.sum(TicketType.price * Ticket.quantity))
+                    .select_from(Ticket)
+                    .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Ticket.payment_status == PaymentStatus.PAID,
+                        Ticket.purchase_date >= start_date,
+                        Ticket.purchase_date <= end_date
+                    )
+                    .group_by(TicketType.type_name)
+                    .all())
+            return [(DatabaseQueryService._convert_enum_to_string(type_name),
+                    Decimal(str(revenue)) if revenue else Decimal('0')) for type_name, revenue in query]
+        except Exception as e:
+            logger.error(f"Error in get_revenue_by_type: {e}")
+            return []
 
     @staticmethod
     def get_attendees_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get attendees by type - tickets that have been scanned"""
-        query = (db.session.query(TicketType.type_name, func.count(func.distinct(Scan.ticket_id)))
-                .join(Ticket, Scan.ticket_id == Ticket.id)
-                .join(TicketType, Ticket.ticket_type_id == TicketType.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Scan.scanned_at >= start_date,
-                    Scan.scanned_at <= end_date
-                )
-                .group_by(TicketType.type_name)
-                .all())
-        return [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
+        try:
+            query = (db.session.query(TicketType.type_name, func.count(func.distinct(Scan.ticket_id)))
+                    .select_from(Scan)
+                    .join(Ticket, Scan.ticket_id == Ticket.id)
+                    .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Scan.scanned_at >= start_date,
+                        Scan.scanned_at <= end_date
+                    )
+                    .group_by(TicketType.type_name)
+                    .all())
+            return [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
+        except Exception as e:
+            logger.error(f"Error in get_attendees_by_type: {e}")
+            return []
 
     @staticmethod
     def get_payment_method_usage(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get payment method usage for PAID tickets only"""
-        query = (db.session.query(Transaction.payment_method, func.count(Transaction.id))
-                .join(Ticket, Ticket.transaction_id == Transaction.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Ticket.payment_status == PaymentStatus.PAID,
-                    Ticket.purchase_date >= start_date,
-                    Ticket.purchase_date <= end_date
-                )
-                .group_by(Transaction.payment_method)
-                .all())
-        return [(DatabaseQueryService._convert_enum_to_string(method), count) for method, count in query]
+        try:
+            query = (db.session.query(Transaction.payment_method, func.count(Transaction.id))
+                    .select_from(Ticket)
+                    .join(Transaction, Ticket.transaction_id == Transaction.id)
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Ticket.payment_status == PaymentStatus.PAID,
+                        Ticket.purchase_date >= start_date,
+                        Ticket.purchase_date <= end_date
+                    )
+                    .group_by(Transaction.payment_method)
+                    .all())
+            return [(DatabaseQueryService._convert_enum_to_string(method), count) for method, count in query]
+        except Exception as e:
+            logger.error(f"Error in get_payment_method_usage: {e}")
+            return []
 
     @staticmethod
     def get_total_revenue(event_id: int, start_date: datetime, end_date: datetime) -> Decimal:
         """Get total revenue for PAID tickets only - sum of ticket prices"""
-        result = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
-                 .join(TicketType, Ticket.ticket_type_id == TicketType.id)
-                 .filter(
-                     Ticket.event_id == event_id,
-                     Ticket.payment_status == PaymentStatus.PAID,
-                     Ticket.purchase_date >= start_date,
-                     Ticket.purchase_date <= end_date
-                 )
-                 .scalar())
-        return Decimal(str(result)) if result else Decimal('0')
+        try:
+            result = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
+                     .select_from(Ticket)
+                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                     .filter(
+                         Ticket.event_id == event_id,
+                         Ticket.payment_status == PaymentStatus.PAID,
+                         Ticket.purchase_date >= start_date,
+                         Ticket.purchase_date <= end_date
+                     )
+                     .scalar())
+            return Decimal(str(result)) if result else Decimal('0')
+        except Exception as e:
+            logger.error(f"Error in get_total_revenue: {e}")
+            return Decimal('0')
 
     @staticmethod
     def get_total_tickets_sold(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Calculate total_ticket_sold: Sum of tickets that have payment status marked as PAID"""
-        result = (db.session.query(func.sum(Ticket.quantity))
-                .filter(
-                    Ticket.event_id == event_id,
-                    Ticket.payment_status == PaymentStatus.PAID,
-                    Ticket.purchase_date >= start_date,
-                    Ticket.purchase_date <= end_date
-                )
-                .scalar())
-        return result if result else 0
+        try:
+            result = (db.session.query(func.sum(Ticket.quantity))
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Ticket.payment_status == PaymentStatus.PAID,
+                        Ticket.purchase_date >= start_date,
+                        Ticket.purchase_date <= end_date
+                    )
+                    .scalar())
+            return result if result else 0
+        except Exception as e:
+            logger.error(f"Error in get_total_tickets_sold: {e}")
+            return 0
 
     @staticmethod
     def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Calculate attendees: Number of tickets that have been scanned for the event"""
-        result = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
-                .join(Ticket, Scan.ticket_id == Ticket.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Scan.scanned_at >= start_date,
-                    Scan.scanned_at <= end_date
-                )
-                .scalar())
-        return result if result else 0
+        try:
+            result = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
+                    .select_from(Scan)
+                    .join(Ticket, Scan.ticket_id == Ticket.id)
+                    .filter(
+                        Ticket.event_id == event_id,
+                        Scan.scanned_at >= start_date,
+                        Scan.scanned_at <= end_date
+                    )
+                    .scalar())
+            return result if result else 0
+        except Exception as e:
+            logger.error(f"Error in get_total_attendees: {e}")
+            return 0
 
     @staticmethod
     def get_event_base_currency(event_id: int) -> str:
         """Get event's base currency code, defaulting to KES"""
-        event = Event.query.get(event_id)
-        if event and hasattr(event, 'base_currency_id') and event.base_currency_id:
-            currency = Currency.query.get(event.base_currency_id)
-            return currency.code if currency else 'KES'
-        return 'KES'  # Default to KES as per currency service
+        try:
+            event = Event.query.get(event_id)
+            if event and hasattr(event, 'base_currency_id') and event.base_currency_id:
+                currency = Currency.query.get(event.base_currency_id)
+                return currency.code if currency else 'KES'
+            return 'KES'  # Default to KES as per currency service
+        except Exception as e:
+            logger.error(f"Error in get_event_base_currency: {e}")
+            return 'KES'
 
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
@@ -257,6 +295,7 @@ class ReportDataProcessor:
         
         return report_data
 
+# Rest of the ReportService class remains the same...
 class ReportService:
     def __init__(self, config):
         self.config = config
@@ -579,7 +618,6 @@ class ReportService:
             # Cleanup temporary chart files
             if chart_paths:
                 FileManager.cleanup_files(chart_paths)
-
     
 
     def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
