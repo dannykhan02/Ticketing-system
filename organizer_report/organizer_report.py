@@ -1,7 +1,7 @@
 from flask import request, jsonify, send_file, current_app, after_this_request
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction,CurrencyCode
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator
@@ -78,7 +78,6 @@ class GenerateReportResource(Resource):
 
             if target_currency_code:
                 try:
-                    from model import CurrencyCode
                     target_currency = Currency.query.filter_by(
                         code=CurrencyCode(target_currency_code),
                         is_active=True
@@ -101,7 +100,6 @@ class GenerateReportResource(Resource):
             report_service = ReportService(config)
 
             result = report_service.generate_complete_report(
-                session=db.session,
                 event_id=event_id,
                 organizer_id=current_user_id,
                 start_date=start_date,
@@ -188,7 +186,8 @@ class GenerateReportResource(Resource):
             if send_email:
                 def async_send_email():
                     try:
-                        from app import app
+                        # Ensure app context for database operations within the thread
+                        from app import app # Import app here to avoid circular dependency at top
                         with app.app_context():
                             report_data = {
                                 'event_name': event.name,
@@ -218,8 +217,6 @@ class GenerateReportResource(Resource):
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
-
-# The rest of your code remains unchanged...
 
 
 class GetReportsResource(Resource, AuthorizationMixin):
