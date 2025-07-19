@@ -40,7 +40,7 @@ class GenerateReportResource(Resource):
             end_date_str = data.get('end_date')
             specific_date_str = data.get('specific_date')
             ticket_type_id = data.get('ticket_type_id')
-            target_currency_code = data.get('target_currency')  # Changed to accept currency code directly
+            target_currency_code = data.get('target_currency')
             send_email = data.get('send_email', False)
             recipient_email = data.get('recipient_email', current_user.email)
 
@@ -59,7 +59,6 @@ class GenerateReportResource(Resource):
                     logger.warning(f"GenerateReportResource: User {current_user_id} unauthorized to generate report for event {event_id}.")
                     return {'error': 'Unauthorized to generate report for this event'}, 403
 
-            # Handle date parsing
             if specific_date_str:
                 try:
                     specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
@@ -77,41 +76,38 @@ class GenerateReportResource(Resource):
                     end_date = datetime.now()
                 end_date = DateUtils.adjust_end_date(end_date)
 
-            # Validate target currency if provided
             if target_currency_code:
                 try:
-                    # Verify currency exists and is active in the system
                     from model import CurrencyCode
                     target_currency = Currency.query.filter_by(
-                        code=CurrencyCode(target_currency_code), 
+                        code=CurrencyCode(target_currency_code),
                         is_active=True
                     ).first()
-                    
+
                     if not target_currency:
                         logger.warning(f"GenerateReportResource: Target currency '{target_currency_code}' not found or not active.")
                         return {'error': f'Target currency "{target_currency_code}" not found or not active'}, 400
-                        
                 except ValueError:
                     logger.warning(f"GenerateReportResource: Invalid target currency code '{target_currency_code}'.")
                     return {'error': f'Invalid target currency code "{target_currency_code}"'}, 400
             else:
-                # Default to KES if no target currency specified
                 target_currency_code = 'KES'
                 target_currency = Currency.query.filter_by(
-                    code=CurrencyCode('KES'), 
+                    code=CurrencyCode('KES'),
                     is_active=True
                 ).first()
 
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
 
-            # Generate report data
             result = report_service.generate_complete_report(
+                session=db.session,
                 event_id=event_id,
                 organizer_id=current_user_id,
                 start_date=start_date,
                 end_date=end_date,
                 ticket_type_id=ticket_type_id,
+                target_currency_code=target_currency_code,
                 send_email=False,
                 recipient_email=recipient_email
             )
@@ -125,35 +121,30 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            # Get original revenue data (assuming it's in KES)
             total_revenue_ksh = result['report_data'].get('total_revenue', 0)
             base_currency = result['report_data'].get('currency', 'KES')
-            
-            # Convert currency using the imported function
-            converted_amount = total_revenue_ksh  # Default to original amount
+
+            converted_amount = total_revenue_ksh
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
             overall_conversion_rate = Decimal('1')
-            
+
             try:
                 if target_currency_code != 'KES' and total_revenue_ksh > 0:
                     logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KSH to {target_currency_code}")
                     converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
-                        total_revenue_ksh, 
+                        total_revenue_ksh,
                         target_currency_code
                     )
                     overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
                     logger.info(f"GenerateReportResource: Conversion successful - {total_revenue_ksh} KSH = {converted_amount} {target_currency_code}")
                 else:
                     converted_amount = Decimal(str(total_revenue_ksh))
-                    
             except Exception as e:
                 logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
-                # Fallback to original amount if conversion fails
                 converted_amount = Decimal(str(total_revenue_ksh))
-                target_currency_code = 'KES'  # Fallback to KES
+                target_currency_code = 'KES'
 
-            # Generate download URLs
             base_url = request.url_root.rstrip('/')
             pdf_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
             csv_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=csv&currency={target_currency_code}"
@@ -194,7 +185,6 @@ class GenerateReportResource(Resource):
                 'email_sent': False
             }
 
-            # Handle email sending in background if requested
             if send_email:
                 def async_send_email():
                     try:
@@ -209,10 +199,9 @@ class GenerateReportResource(Resource):
                                 'report_period_end': end_date.strftime('%Y-%m-%d'),
                                 'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None
                             }
-
                             report_service.send_report_email(
                                 report_data=report_data,
-                                pdf_path='',  # Optional: set if actual file paths available
+                                pdf_path='',
                                 csv_path='',
                                 recipient_email=recipient_email
                             )
@@ -226,7 +215,6 @@ class GenerateReportResource(Resource):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
             return response_data, 200
-
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
