@@ -105,15 +105,15 @@ class GenerateReportResource(Resource):
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
 
-            # FIXED: Generate report data with all required parameters including session and target_currency_code
+            # FIXED: Always generate report data in KES to avoid double conversion
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
                 start_date=start_date,
                 end_date=end_date,
-                session=db.session,  # ADDED: Required session parameter
+                session=db.session,
                 ticket_type_id=ticket_type_id,
-                target_currency_code=target_currency_code,  # ADDED: Missing target_currency_code parameter
+                target_currency_code='KES',  # FIXED: Always get data in KES first
                 send_email=False,  # Keep as False since we handle email separately below
                 recipient_email=recipient_email
             )
@@ -127,27 +127,29 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            # Get original revenue data (assuming it's in KES)
+            # FIXED: Get raw KES revenue data (no double conversion)
             total_revenue_ksh = result['report_data'].get('total_revenue', 0)
-            base_currency = result['report_data'].get('currency', 'KES')
+            base_currency = 'KES'  # We know it's always KES now
             
-            # Convert currency using the imported function
-            converted_amount = total_revenue_ksh  # Default to original amount
+            # Convert currency using the imported function only when needed
+            converted_amount = Decimal(str(total_revenue_ksh))  # Default to original amount
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
             overall_conversion_rate = Decimal('1')
             
             try:
                 if target_currency_code != 'KES' and total_revenue_ksh > 0:
-                    logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KSH to {target_currency_code}")
+                    logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KES to {target_currency_code}")
                     converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
                         total_revenue_ksh, 
                         target_currency_code
                     )
                     overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
-                    logger.info(f"GenerateReportResource: Conversion successful - {total_revenue_ksh} KSH = {converted_amount} {target_currency_code}")
+                    logger.info(f"GenerateReportResource: Conversion successful - {total_revenue_ksh} KES = {converted_amount} {target_currency_code}")
                 else:
+                    # No conversion needed (staying in KES)
                     converted_amount = Decimal(str(total_revenue_ksh))
+                    logger.info(f"GenerateReportResource: No conversion needed - amount stays {total_revenue_ksh} KES")
                     
             except Exception as e:
                 logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
@@ -165,7 +167,7 @@ class GenerateReportResource(Resource):
                 'report_id': report_id,
                 'report_data_summary': {
                     'total_tickets_sold': result['report_data'].get('total_tickets_sold'),
-                    'total_revenue_original': float(total_revenue_ksh),
+                    'total_revenue_original': float(total_revenue_ksh),  # FIXED: Always show original KES amount
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
                     'number_of_attendees': result['report_data'].get('number_of_attendees'),
                     'original_currency': 'KES',
@@ -178,7 +180,7 @@ class GenerateReportResource(Resource):
                     'is_single_day': bool(specific_date_str)
                 },
                 'currency_conversion': {
-                    'original_amount': float(total_revenue_ksh),
+                    'original_amount': float(total_revenue_ksh),  # FIXED: Always original KES amount
                     'original_currency': 'KES',
                     'converted_amount': float(converted_amount.quantize(Decimal('0.01'))),
                     'converted_currency': target_currency_code,

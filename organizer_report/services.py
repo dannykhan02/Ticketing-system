@@ -46,7 +46,7 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_revenue_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, Decimal]]:
-        """Get revenue by type for PAID tickets only - sum of ticket prices"""
+        """Get revenue by type for PAID tickets only - sum of ticket prices (always in KES)"""
         try:
             query = (db.session.query(TicketType.type_name, func.sum(TicketType.price * Ticket.quantity))
                     .select_from(Ticket)
@@ -107,7 +107,7 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_total_revenue(event_id: int, start_date: datetime, end_date: datetime) -> Decimal:
-        """Get total revenue for PAID tickets only - sum of ticket prices"""
+        """Get total revenue for PAID tickets only - sum of ticket prices (always returns KES amount)"""
         try:
             result = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
                      .select_from(Ticket)
@@ -119,7 +119,9 @@ class DatabaseQueryService:
                          Ticket.purchase_date <= end_date
                      )
                      .scalar())
-            return Decimal(str(result)) if result else Decimal('0')
+            revenue = Decimal(str(result)) if result else Decimal('0')
+            logger.info(f"DatabaseQueryService: Total revenue for event {event_id}: {revenue} KES")
+            return revenue
         except Exception as e:
             logger.error(f"Error in get_total_revenue: {e}")
             return Decimal('0')
@@ -191,7 +193,7 @@ class EnhancedCurrencyConverter:
         
         # Fallback currency info
         currency_symbols = {
-            'KES': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
+            'KES': 'KSh', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
             'TZS': 'TSh', 'NGN': '₦', 'GHS': '₵', 'ZAR': 'R', 'JPY': '¥',
             'CAD': 'C$', 'AUD': 'A$'
         }
@@ -204,12 +206,17 @@ class EnhancedCurrencyConverter:
 
     @staticmethod
     def convert_amount(amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        """Convert amount using the integrated currency exchange service"""
+        """
+        Convert amount using the integrated currency exchange service.
+        FIXED: Prevents double conversion by ensuring proper currency handling.
+        """
         if from_currency == to_currency:
+            logger.info(f"EnhancedCurrencyConverter: No conversion needed - same currency {from_currency}")
             return amount
         
         try:
             amount = Decimal(str(amount))
+            logger.info(f"EnhancedCurrencyConverter: Converting {amount} {from_currency} to {to_currency}")
             
             # Handle KES conversions directly
             if from_currency == 'KES':
@@ -217,7 +224,8 @@ class EnhancedCurrencyConverter:
                     return amount
                 
                 # Use the convert_ksh_to_target_currency function
-                converted_amount, _, _ = convert_ksh_to_target_currency(amount, to_currency)
+                converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(amount, to_currency)
+                logger.info(f"EnhancedCurrencyConverter: KES conversion successful - {amount} KES = {converted_amount} {to_currency}")
                 return converted_amount
             
             # For non-KES base currencies, convert to KES first, then to target
@@ -225,6 +233,7 @@ class EnhancedCurrencyConverter:
                 # Get rate from source currency to KES (reverse of KES to source)
                 rate = get_exchange_rate('KES', from_currency)
                 kes_amount = amount / rate  # Reverse conversion
+                logger.info(f"EnhancedCurrencyConverter: Reverse conversion - {amount} {from_currency} = {kes_amount} KES")
                 return kes_amount
             
             else:
@@ -232,14 +241,17 @@ class EnhancedCurrencyConverter:
                 # Step 1: Convert from source currency to KES
                 source_to_kes_rate = get_exchange_rate('KES', from_currency)
                 kes_amount = amount / source_to_kes_rate
+                logger.info(f"EnhancedCurrencyConverter: Step 1 - {amount} {from_currency} = {kes_amount} KES")
                 
                 # Step 2: Convert from KES to target currency
-                converted_amount, _, _ = convert_ksh_to_target_currency(kes_amount, to_currency)
+                converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(kes_amount, to_currency)
+                logger.info(f"EnhancedCurrencyConverter: Step 2 - {kes_amount} KES = {converted_amount} {to_currency}")
                 return converted_amount
                 
         except Exception as e:
             logger.error(f"Currency conversion error from {from_currency} to {to_currency}: {e}")
             # Return original amount if conversion fails
+            logger.warning(f"EnhancedCurrencyConverter: Conversion failed, returning original amount {amount}")
             return amount
 
 class ReportDataProcessor:
