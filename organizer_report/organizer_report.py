@@ -105,14 +105,16 @@ class GenerateReportResource(Resource):
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
 
-            # Generate report data
+            # FIXED: Generate report data with all required parameters including session and target_currency_code
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
                 start_date=start_date,
                 end_date=end_date,
+                session=db.session,  # ADDED: Required session parameter
                 ticket_type_id=ticket_type_id,
-                send_email=False,
+                target_currency_code=target_currency_code,  # ADDED: Missing target_currency_code parameter
+                send_email=False,  # Keep as False since we handle email separately below
                 recipient_email=recipient_email
             )
 
