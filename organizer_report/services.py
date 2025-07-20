@@ -538,7 +538,7 @@ class ReportService:
             raise
 
     def generate_complete_report(self, event_id: int, organizer_id: int, start_date: datetime,
-                                end_date: datetime, ticket_type_id: Optional[int] = None,
+                                end_date: datetime, session, ticket_type_id: Optional[int] = None,
                                 target_currency_code: Optional[str] = None,
                                 send_email: bool = False, recipient_email: str = None) -> Dict[str, Any]:
         """
@@ -548,7 +548,8 @@ class ReportService:
             event_id: Event ID
             organizer_id: Organizer ID
             start_date: Report start date
-            end_date: Report end date  
+            end_date: Report end date
+            session: Database session object
             ticket_type_id: Optional ticket type filter
             target_currency_code: Target currency code (e.g., 'USD', 'EUR')
             send_email: Whether to send report via email
@@ -576,9 +577,23 @@ class ReportService:
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
 
-            # Generate PDF and CSV
-            pdf_path = self.pdf_generator.generate_pdf(report_data, chart_paths, pdf_path)
-            csv_path = CSVReportGenerator.generate_csv(report_data, csv_path)
+            # Generate PDF with all required parameters
+            pdf_path = self.pdf_generator.generate_pdf(
+                report_data=report_data, 
+                chart_paths=chart_paths, 
+                output_path=pdf_path,
+                session=session,
+                event_id=event_id,
+                target_currency=target_currency_code or "KES"
+            )
+
+            # Generate CSV with all required parameters
+            csv_path = CSVReportGenerator.generate_csv(
+                report_data=report_data, 
+                output_path=csv_path,
+                session=session,
+                event_id=event_id
+            )
 
             # Send email if requested
             email_sent = False
@@ -618,7 +633,6 @@ class ReportService:
             # Cleanup temporary chart files
             if chart_paths:
                 FileManager.cleanup_files(chart_paths)
-    
 
     def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
                       csv_path: str, recipient_email: str) -> bool:

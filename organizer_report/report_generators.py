@@ -522,11 +522,9 @@ class PDFReportGenerator:
 
         tickets_sold_by_type = report_data.get('tickets_sold_by_type', {})
         revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
-
         if tickets_sold_by_type:
             max_sold_type = max(tickets_sold_by_type.items(), key=lambda x: x[1])[0]
             insights.append(f"• The **{max_sold_type}** ticket type was the most popular by volume, indicating strong demand for this option.")
-
         if revenue_by_ticket_type:
             max_revenue_type = max(revenue_by_ticket_type.items(), key=lambda x: x[1])[0]
             insights.append(f"• **{max_revenue_type}** tickets generated the highest revenue, highlighting its significant contribution to overall earnings.")
@@ -540,6 +538,7 @@ class PDFReportGenerator:
 
         if not insights:
             insights.append("• No specific insights could be generated due to insufficient or incomplete data. Ensure all relevant data points are provided.")
+
         return insights
 
     def _create_breakdown_tables(self, report_data: Dict[str, Any]) -> List[Tuple[str, Table]]:
@@ -553,6 +552,7 @@ class PDFReportGenerator:
             for ticket_type, count in tickets_sold_by_type.items():
                 percentage = (float(count) / total_tickets * 100) if total_tickets > 0 else 0.0
                 data.append([str(ticket_type), str(count), f"{percentage:.1f}%"])
+
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
@@ -575,6 +575,7 @@ class PDFReportGenerator:
             for ticket_type, revenue in revenue_by_ticket_type.items():
                 percentage = (revenue / total_revenue * 100) if total_revenue > 0 else 0.0
                 data.append([str(ticket_type), f"{currency_symbol}{revenue:.2f}", f"{percentage:.1f}%"])
+
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
@@ -597,6 +598,7 @@ class PDFReportGenerator:
             for method, count in payment_method_usage.items():
                 percentage = (float(count) / total_transactions * 100) if total_transactions > 0 else 0.0
                 data.append([str(method), str(count), f"{percentage:.1f}%"])
+
             table = Table(data, colWidths=[2*inch, 1.5*inch, 1*inch])
             table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F18F01')),
@@ -611,6 +613,7 @@ class PDFReportGenerator:
                 ('FONTSIZE', (0, 1), (-1, -1), 10),
             ]))
             tables.append(("Payment Method Usage", table))
+
         return tables
 
     def _add_charts_to_story(self, story, chart_paths):
@@ -662,19 +665,18 @@ class PDFReportGenerator:
 
     def generate_pdf(self, report_data: Dict[str, Any], chart_paths: List[str], output_path: str, session: Session, event_id: int, target_currency: str = "KES") -> Optional[str]:
         try:
-            # FIXED: Call process_report_data with correct parameter order
             processed_data = ReportDataProcessor.process_report_data(
-                report_data=report_data, 
-                session=session, 
-                event_id=event_id, 
+                report_data=report_data,
+                session=session,
+                event_id=event_id,
                 target_currency=target_currency
             )
-            
+
             pagesize = self._get_pagesize()
             doc = SimpleDocTemplate(output_path, pagesize=pagesize, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
             story = []
 
-            # --- Title and Event Information ---
+            # Title and Event Information
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
 
@@ -699,12 +701,12 @@ class PDFReportGenerator:
             story.append(Paragraph(event_info, self.normal_style))
             story.append(Spacer(1, 30))
 
-            # --- Executive Summary ---
+            # Executive Summary
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
             story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
 
-            # --- Key Insights ---
+            # Key Insights
             insights = self._generate_insights(processed_data)
             if insights:
                 story.append(Paragraph("KEY INSIGHTS", self.header_style))
@@ -712,15 +714,15 @@ class PDFReportGenerator:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
 
-            if len(story) > 5: # Add a page break if content is getting long before charts
+            if len(story) > 5:
                 story.append(PageBreak())
 
-            # --- Visual Analytics (Charts) ---
+            # Visual Analytics (Charts)
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
 
-            # --- Detailed Breakdown (Tables) ---
-            story.append(PageBreak()) # Start detailed breakdown on a new page for clarity
+            # Detailed Breakdown (Tables)
+            story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
             tables = self._create_breakdown_tables(processed_data)
             for table_title, table in tables:
@@ -728,7 +730,7 @@ class PDFReportGenerator:
                 story.append(table)
                 story.append(Spacer(1, 20))
 
-            # --- Footer ---
+            # Footer
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
             This report was automatically generated by the Event Management System<br/>
@@ -748,15 +750,18 @@ class PDFReportGenerator:
 
 class CSVReportGenerator:
     @staticmethod
-    def generate_csv(report_data: Dict[str, Any], output_path: str, session, event_id: int) -> Optional[str]:
+    def generate_csv(report_data: Dict[str, Any], output_path: str, session: Session, event_id: int) -> Optional[str]:
         try:
-            # Pass session and event_id to process_report_data
-            processed_data = ReportDataProcessor.process_report_data(session=session, event_id=event_id, report_data=report_data)
+            processed_data = ReportDataProcessor.process_report_data(
+                session=session,
+                event_id=event_id,
+                report_data=report_data
+            )
 
             with open(output_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.writer(csvfile)
 
-                # --- Report Summary ---
+                # Report Summary
                 writer.writerow(['Report Summary'])
                 writer.writerow(['Metric', 'Value'])
                 writer.writerow(['Event Name', processed_data.get('event_name', 'N/A')])
@@ -774,7 +779,7 @@ class CSVReportGenerator:
                 writer.writerow(['Currency', f"{processed_data.get('currency', 'USD')} ({currency_symbol})"])
                 writer.writerow([])
 
-                # --- Ticket Sales Breakdown ---
+                # Ticket Sales Breakdown
                 if processed_data.get('tickets_sold_by_type'):
                     writer.writerow(['Ticket Sales Breakdown'])
                     writer.writerow(['Ticket Type', 'Tickets Sold', 'Percentage'])
@@ -785,7 +790,7 @@ class CSVReportGenerator:
                         writer.writerow([ticket_type, count, f"{percentage:.1f}%"])
                     writer.writerow([])
 
-                # --- Revenue Breakdown ---
+                # Revenue Breakdown
                 if processed_data.get('revenue_by_ticket_type'):
                     writer.writerow(['Revenue Breakdown'])
                     writer.writerow(['Ticket Type', 'Revenue', 'Percentage'])
@@ -796,7 +801,7 @@ class CSVReportGenerator:
                         writer.writerow([ticket_type, f"{currency_symbol}{revenue:.2f}", f"{percentage:.1f}%"])
                     writer.writerow([])
 
-                # --- Payment Method Usage ---
+                # Payment Method Usage
                 if processed_data.get('payment_method_usage'):
                     writer.writerow(['Payment Method Usage'])
                     writer.writerow(['Payment Method', 'Transactions', 'Percentage'])
@@ -807,11 +812,10 @@ class CSVReportGenerator:
                         writer.writerow([method, count, f"{percentage:.1f}%"])
                     writer.writerow([])
 
-                # --- Daily Revenue (if available) ---
+                # Daily Revenue
                 if processed_data.get('daily_revenue'):
                     writer.writerow(['Daily Revenue'])
                     writer.writerow(['Date', 'Revenue', 'Tickets Sold'])
-                    # Sort daily revenue by date for better readability in CSV
                     sorted_daily_revenue = sorted(processed_data['daily_revenue'].items())
                     for date_str, daily_data in sorted_daily_revenue:
                         daily_revenue = float(daily_data.get('revenue', 0.0))
