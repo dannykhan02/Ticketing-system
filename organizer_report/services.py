@@ -7,7 +7,7 @@ from email_utils import send_email_with_attachment
 from .report_generators import ChartGenerator
 from .report_generators import PDFReportGenerator
 from .report_generators import CSVReportGenerator
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, cast, String
 import logging
 import os
 import json
@@ -34,7 +34,7 @@ class DatabaseQueryService:
                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                     .filter(
                         Ticket.event_id == event_id,
-                        Ticket.payment_status.ilike("paid"),
+                        cast(Ticket.payment_status, String).ilike("paid"),
                         Ticket.purchase_date >= start_date,
                         Ticket.purchase_date <= end_date
                     )
@@ -56,7 +56,7 @@ class DatabaseQueryService:
                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                     .filter(
                         Ticket.event_id == event_id,
-                        Ticket.payment_status.ilike("paid"),
+                        cast(Ticket.payment_status, String).ilike("paid"),
                         Ticket.purchase_date >= start_date,
                         Ticket.purchase_date <= end_date
                     )
@@ -101,7 +101,7 @@ class DatabaseQueryService:
                     .join(Transaction, Ticket.transaction_id == Transaction.id)
                     .filter(
                         Ticket.event_id == event_id,
-                        Ticket.payment_status.ilike("paid"),
+                        cast(Ticket.payment_status, String).ilike("paid"),
                         Ticket.purchase_date >= start_date,
                         Ticket.purchase_date <= end_date
                     )
@@ -123,7 +123,7 @@ class DatabaseQueryService:
                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                      .filter(
                          Ticket.event_id == event_id,
-                         Ticket.payment_status.ilike("paid"),
+                         cast(Ticket.payment_status, String).ilike("paid"),
                          Ticket.purchase_date >= start_date,
                          Ticket.purchase_date <= end_date
                      )
@@ -142,7 +142,7 @@ class DatabaseQueryService:
             result = (db.session.query(func.sum(Ticket.quantity))
                     .filter(
                         Ticket.event_id == event_id,
-                        Ticket.payment_status.ilike("paid"),
+                        cast(Ticket.payment_status, String).ilike("paid"),
                         Ticket.purchase_date >= start_date,
                         Ticket.purchase_date <= end_date
                     )
