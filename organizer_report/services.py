@@ -623,7 +623,17 @@ class ReportService:
     def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
                           csv_path: str, recipient_email: str) -> bool:
         try:
-            validated_report_data = self._validate_and_fix_report_data(report_data.copy())
+            # CRITICAL: Do NOT re-validate if the data is already properly formatted
+            # Check if this is already processed data (has conversion info)
+            if report_data.get('conversion_rate_used') is not None or report_data.get('target_currency'):
+                # Data is already processed and converted - use as-is
+                logger.info("Using pre-processed report data for email (skipping validation)")
+                validated_report_data = report_data
+            else:
+                # Only apply validation to raw data
+                logger.info("Applying validation to raw report data")
+                validated_report_data = self._validate_and_fix_report_data(report_data.copy())
+
             return self._send_report_email(validated_report_data, pdf_path, csv_path, recipient_email)
         except Exception as e:
             logger.error(f"Error sending report email: {e}")

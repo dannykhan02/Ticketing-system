@@ -188,25 +188,62 @@ class GenerateReportResource(Resource):
                     try:
                         from app import app
                         with app.app_context():
-                            report_data = result['report_data']
-                            report_data.update({
+                            # CRITICAL FIX: Use the SAME data structure for both API and email
+                            # Create a complete, consistent report_data object that includes
+                            # all the currency conversion and metadata from the API response
+
+                            email_report_data = result['report_data'].copy()  # Start with original data
+
+                            # Apply the SAME conversions that were used for the API response
+                            email_report_data.update({
                                 'event_name': event.name,
                                 'currency_symbol': target_currency.symbol if target_currency else 'KSh',
-                                'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),
+                                'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),  # Use converted amount
+                                'currency': target_currency_code,  # Set display currency
                                 'target_currency': target_currency_code,
                                 'report_period_start': start_date.strftime('%Y-%m-%d'),
                                 'report_period_end': end_date.strftime('%Y-%m-%d'),
-                                'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None
+                                'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
+
+                                # Add original currency info for email display
+                                'base_currency': 'KES',
+                                'base_currency_symbol': 'KSh',
+                                'original_revenue': float(total_revenue_ksh) if target_currency_code != 'KES' else None,
+                                'original_currency': 'KES' if target_currency_code != 'KES' else None,
+                                'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
+                                'currency_conversion_source': 'currencyapi.com (with fallback)',
                             })
-                            report_service.send_report_email(
-                                report_data=report_data,
+
+                            # IMPORTANT: Apply currency conversion to revenue breakdown if needed
+                            if target_currency_code != 'KES' and email_report_data.get('revenue_by_type'):
+                                converted_revenue_by_type = {}
+                                for ticket_type, original_revenue in email_report_data['revenue_by_type'].items():
+                                    try:
+                                        converted_revenue, _, _ = convert_ksh_to_target_currency(
+                                            float(original_revenue), target_currency_code
+                                        )
+                                        converted_revenue_by_type[ticket_type] = float(converted_revenue.quantize(Decimal('0.01')))
+                                    except Exception as e:
+                                        logger.warning(f"Failed to convert revenue for {ticket_type}: {e}")
+                                        converted_revenue_by_type[ticket_type] = float(original_revenue)
+                                email_report_data['revenue_by_type'] = converted_revenue_by_type
+
+                            # Send email with the SAME data used in API response
+                            email_sent = report_service.send_report_email(
+                                report_data=email_report_data,
                                 pdf_path='',
                                 csv_path='',
                                 recipient_email=recipient_email
                             )
-                            logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
+
+                            if email_sent:
+                                logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
+                            else:
+                                logger.error(f"GenerateReportResource: Email sending failed for report {report_id}")
+
                     except Exception as e:
                         logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
+
                 threading.Thread(target=async_send_email).start()
                 response_data['email_sent'] = True
 
@@ -216,6 +253,7 @@ class GenerateReportResource(Resource):
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
+
 
 
 class GetReportsResource(Resource, AuthorizationMixin):
