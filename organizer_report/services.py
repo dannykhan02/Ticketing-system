@@ -413,6 +413,13 @@ class ReportDataProcessor:
 
 
 
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+from decimal import Decimal
+import logging
+
+# Assuming necessary imports and other class definitions are already present
+
 class ReportService:
     def __init__(self, config):
         self.config = config
@@ -502,7 +509,7 @@ class ReportService:
     def _validate_and_fix_report_data(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
         """Enhanced validation and fixing of inconsistencies in report data before sending email."""
         try:
-            logger.debug(f"=== VALIDATING REPORT DATA ===")
+            logger.debug("=== VALIDATING REPORT DATA ===")
             logger.debug(f"Report data keys: {list(report_data.keys())}")
 
             total_revenue = float(report_data.get('total_revenue', 0))
@@ -517,12 +524,21 @@ class ReportService:
                         total_tickets_sold = reconstructed_tickets
                         report_data['total_tickets_sold'] = total_tickets_sold
                         logger.info(f"✅ Reconstructed total_tickets_sold from breakdown: {total_tickets_sold}")
-                if report_data.get('attendees_by_type'):
-                    reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
-                    if reconstructed_attendees > 0:
-                        number_of_attendees = reconstructed_attendees
-                        report_data['number_of_attendees'] = number_of_attendees
-                        logger.info(f"✅ Reconstructed number_of_attendees from breakdown: {number_of_attendees}")
+
+            if report_data.get('attendees_by_type'):
+                reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
+                logger.debug(f"Attendees from breakdown: {reconstructed_attendees}")
+
+                if reconstructed_attendees > number_of_attendees:
+                    number_of_attendees = reconstructed_attendees
+                    report_data['number_of_attendees'] = number_of_attendees
+                    logger.info(f"✅ Updated number_of_attendees from breakdown: {number_of_attendees}")
+                elif number_of_attendees > 0 and reconstructed_attendees == 0:
+                    report_data['attendees_by_type'] = {'General': number_of_attendees}
+                    logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
+            elif number_of_attendees > 0:
+                report_data['attendees_by_type'] = {'General': number_of_attendees}
+                logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
 
             if total_tickets_sold > 0 and not report_data.get('tickets_by_type'):
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
@@ -532,21 +548,19 @@ class ReportService:
                 report_data['revenue_by_type'] = {'General': total_revenue}
                 logger.info("🔧 Created default revenue breakdown")
 
-            if number_of_attendees > 0 and not report_data.get('attendees_by_type'):
-                report_data['attendees_by_type'] = {'General': number_of_attendees}
-                logger.info("🔧 Created default attendees breakdown")
-
             if total_tickets_sold > 0:
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
                 report_data['attendance_rate'] = attendance_rate
+                logger.debug(f"Recalculated attendance rate: {attendance_rate}%")
+            else:
+                report_data['attendance_rate'] = 0.0
 
             report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
             report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
             report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
 
             logger.info(f"=== FINAL VALIDATED DATA ===")
-            logger.info(f"Tickets: {report_data['total_tickets_sold']}, Attendees: {report_data['number_of_attendees']}, Revenue: {report_data['total_revenue']}, Rate: {report_data['attendance_rate']}%")
-
+            logger.info(f"Tickets: {report_data['total_tickets_sold']}, Attendees: {report_data['number_of_attendees']}, Revenue: {report_data['total_revenue']}, Rate: {report_data.get('attendance_rate', 0)}%")
             return report_data
         except Exception as e:
             logger.error(f"Error in data validation: {e}")
@@ -557,30 +571,41 @@ class ReportService:
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"=== CREATING REPORT DATA ===")
         logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
+
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
 
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
-
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
 
         logger.debug("Fetching raw database data...")
+
         tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
+        logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
+
         revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
+        logger.debug(f"Raw revenue_data: {revenue_data}")
+
         attendees_data = self.db_service.get_attendees_by_type(event_id, start_date, end_date)
+        logger.debug(f"Raw attendees_data: {attendees_data}")
+
         payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
+        logger.debug(f"Raw payment_methods: {payment_methods}")
 
         tickets_sold_by_type = dict(tickets_sold_data)
         attendees_by_ticket_type = dict(attendees_data)
         payment_method_usage = dict(payment_methods)
 
         total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
+        logger.debug(f"Total revenue (base currency): {total_revenue_base}")
+
         total_revenue_display = self.currency_converter.convert_amount(
             total_revenue_base, base_currency_code, display_currency_code
         )
+        logger.debug(f"Total revenue (display currency): {total_revenue_display}")
 
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
@@ -590,9 +615,25 @@ class ReportService:
             revenue_by_ticket_type[ticket_type] = float(converted_revenue)
 
         total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
-        total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
+        logger.debug(f"Total tickets sold: {total_tickets_sold}")
 
-        attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
+        total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
+        logger.debug(f"Total attendees: {total_attendees}")
+
+        attendance_rate = 0.0
+        if total_tickets_sold > 0:
+            attendance_rate = (total_attendees / total_tickets_sold * 100)
+            logger.debug(f"Calculated attendance rate: {attendance_rate}%")
+        else:
+            logger.warning("Cannot calculate attendance rate: no tickets sold")
+
+        if total_attendees > 0 and not attendees_by_ticket_type:
+            logger.warning("Have total attendees but no breakdown - creating default breakdown")
+            attendees_by_ticket_type = {'General': total_attendees}
+
+        if total_tickets_sold > 0 and not tickets_sold_by_type:
+            logger.warning("Have total tickets but no breakdown - creating default breakdown")
+            tickets_sold_by_type = {'General': total_tickets_sold}
 
         report_data = {
             'event_id': event_id,
@@ -635,13 +676,17 @@ class ReportService:
         else:
             report_data['report_scope'] = 'event_summary'
 
+        logger.info(f"=== REPORT DATA CREATED ===")
+        logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
+        logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
+        logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
+
         return self._sanitize_report_data(report_data)
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
         try:
             base_currency = Currency.query.filter_by(code=report_data.get('base_currency', 'KES')).first()
             base_currency_id = base_currency.id if base_currency else None
-
             if not base_currency_id:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
@@ -680,13 +725,11 @@ class ReportService:
             report_data = self.create_report_data(
                 event_id, start_date, end_date, ticket_type_id, target_currency_code
             )
-
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
 
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
-
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
 
@@ -698,7 +741,6 @@ class ReportService:
                 event_id=event_id,
                 target_currency=target_currency_code or "KES"
             )
-
             csv_path = CSVReportGenerator.generate_csv(
                 report_data=report_data,
                 output_path=csv_path,
@@ -745,17 +787,12 @@ class ReportService:
     def send_report_email(self, report_data: Dict[str, Any], pdf_path: str,
                           csv_path: str, recipient_email: str) -> bool:
         try:
-            # CRITICAL: Do NOT re-validate if the data is already properly formatted
-            # Check if this is already processed data (has conversion info)
             if report_data.get('conversion_rate_used') is not None or report_data.get('target_currency'):
-                # Data is already processed and converted - use as-is
                 logger.info("Using pre-processed report data for email (skipping validation)")
                 validated_report_data = report_data
             else:
-                # Only apply validation to raw data
                 logger.info("Applying validation to raw report data")
                 validated_report_data = self._validate_and_fix_report_data(report_data.copy())
-
             return self._send_report_email(validated_report_data, pdf_path, csv_path, recipient_email)
         except Exception as e:
             logger.error(f"Error sending report email: {e}")
@@ -766,10 +803,8 @@ class ReportService:
         event_name = report_data.get('event_name', 'Unknown Event')
         currency_symbol = report_data.get('currency_symbol', '$')
         subject = f"Event Analytics Report - {event_name}"
-
         start_date = report_data.get('filter_start_date', 'N/A')
         end_date = report_data.get('filter_end_date', 'N/A')
-
         total_tickets_sold = max(0, int(report_data.get('total_tickets_sold', 0)))
         total_revenue = max(0.0, float(report_data.get('total_revenue', 0)))
         number_of_attendees = max(0, int(report_data.get('number_of_attendees', 0)))
@@ -890,6 +925,8 @@ class ReportService:
             body += "<li>✅ Good attendance rate with room for improvement in no-show reduction.</li>"
         elif attendance_rate > 0:
             body += "<li>⚠️ Low attendance rate suggests potential areas for improvement in engagement.</li>"
+        else:
+            body += "<li>ℹ️ No attendance data recorded for this event period.</li>"
 
         if report_data.get('revenue_by_type'):
             max_revenue_type = max(report_data['revenue_by_type'].items(), key=lambda x: x[1])[0]
