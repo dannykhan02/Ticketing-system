@@ -388,17 +388,21 @@ class ReportService:
             logger.debug(f"Tickets by type: {report_data.get('tickets_by_type', {})}")
             logger.debug(f"Revenue by type: {report_data.get('revenue_by_type', {})}")
             logger.debug(f"Attendees by type: {report_data.get('attendees_by_type', {})}")
+
             # Extract current values safely
             total_revenue = float(report_data.get('total_revenue', 0))
             total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
             number_of_attendees = int(report_data.get('number_of_attendees', 0))
+
             # Get breakdown data
             tickets_by_type = report_data.get('tickets_by_type', {})
             revenue_by_type = report_data.get('revenue_by_type', {})
             attendees_by_type = report_data.get('attendees_by_type', {})
+
             # CRITICAL FIX: If we have revenue but no tickets sold, try to reconstruct
             if total_revenue > 0 and total_tickets_sold == 0:
                 logger.warning("INCONSISTENCY DETECTED: Revenue exists but tickets sold is 0. Attempting to reconstruct from breakdown data.")
+
                 # Method 1: Try to get totals from breakdown data
                 if tickets_by_type:
                     reconstructed_tickets = sum(int(count) for count in tickets_by_type.values())
@@ -408,6 +412,7 @@ class ReportService:
                         logger.info(f"✅ Reconstructed total_tickets_sold from breakdown: {total_tickets_sold}")
                     else:
                         logger.warning("❌ Breakdown data also shows 0 tickets")
+
                 if attendees_by_type:
                     reconstructed_attendees = sum(int(count) for count in attendees_by_type.values())
                     if reconstructed_attendees > 0:
@@ -416,6 +421,7 @@ class ReportService:
                         logger.info(f"✅ Reconstructed number_of_attendees from breakdown: {number_of_attendees}")
                     else:
                         logger.warning("❌ Breakdown data also shows 0 attendees")
+
                 # Method 2: If breakdown data is empty but we have revenue, estimate tickets
                 if total_tickets_sold == 0 and revenue_by_type:
                     total_breakdown_revenue = sum(float(rev) for rev in revenue_by_type.values())
@@ -426,6 +432,7 @@ class ReportService:
                         total_tickets_sold = estimated_tickets
                         report_data['total_tickets_sold'] = total_tickets_sold
                         logger.info(f"✅ Estimated tickets from revenue breakdown: {total_tickets_sold}")
+
                 # Method 3: Last resort - if we have revenue, assume at least 1 ticket was sold
                 if total_tickets_sold == 0 and total_revenue > 0:
                     logger.warning("🔧 Last resort: Setting minimum ticket count to 1 since revenue exists")
@@ -436,36 +443,44 @@ class ReportService:
                         number_of_attendees = max(1, total_tickets_sold // 2)  # Assume 50% attendance
                         report_data['number_of_attendees'] = number_of_attendees
                         logger.info(f"🔧 Estimated attendees: {number_of_attendees}")
+
             # ADDITIONAL FIX: Ensure breakdown data consistency
             if total_tickets_sold > 0 and not tickets_by_type:
                 # Create a default breakdown if missing
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
                 logger.info("🔧 Created default tickets breakdown")
+
             if total_revenue > 0 and not revenue_by_type:
                 # Create a default revenue breakdown if missing
                 report_data['revenue_by_type'] = {'General': total_revenue}
                 logger.info("🔧 Created default revenue breakdown")
+
             if number_of_attendees > 0 and not attendees_by_type:
                 # Create a default attendees breakdown if missing
                 report_data['attendees_by_type'] = {'General': number_of_attendees}
                 logger.info("🔧 Created default attendees breakdown")
+
             # Recalculate attendance rate
             if total_tickets_sold > 0:
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
                 report_data['attendance_rate'] = attendance_rate
             else:
                 report_data['attendance_rate'] = 0.0
+
             # Ensure minimum values for display (but don't force to zero if we have real data)
             report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
             report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
             report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
+
             # Final validation log
             final_tickets = report_data['total_tickets_sold']
             final_attendees = report_data['number_of_attendees']
             final_revenue = report_data['total_revenue']
             final_rate = report_data['attendance_rate']
+
             logger.info(f"=== FINAL VALIDATED DATA ===")
             logger.info(f"Tickets: {final_tickets}, Attendees: {final_attendees}, Revenue: {final_revenue}, Rate: {final_rate}%")
+
             # CONSISTENCY CHECK: Warn if still inconsistent
             if final_revenue > 0 and final_tickets == 0:
                 logger.error("❌ CRITICAL: Revenue still exists with 0 tickets after validation!")
@@ -473,6 +488,7 @@ class ReportService:
                 logger.warning("⚠️ WARNING: Tickets exist with 0 revenue")
             else:
                 logger.info("✅ Data consistency validated successfully")
+
             return report_data
         except Exception as e:
             logger.error(f"Error in data validation: {e}")
@@ -489,12 +505,15 @@ class ReportService:
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
+
         # Get base currency from event or default to KES
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
+
         # Get currency information
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
+
         # Get raw data from database with enhanced logging
         logger.debug("Fetching raw database data...")
         tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
@@ -505,10 +524,12 @@ class ReportService:
         logger.debug(f"Raw revenue_data: {revenue_data}")
         logger.debug(f"Raw attendees_data: {attendees_data}")
         logger.debug(f"Raw payment_methods: {payment_methods}")
+
         # Process data
         tickets_sold_by_type = dict(tickets_sold_data)
         attendees_by_ticket_type = dict(attendees_data)
         payment_method_usage = dict(payment_methods)
+
         # Convert revenue data to target currency
         total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
         logger.debug(f"Total revenue in base currency ({base_currency_code}): {total_revenue_base}")
@@ -516,18 +537,22 @@ class ReportService:
             total_revenue_base, base_currency_code, display_currency_code
         )
         logger.debug(f"Total revenue in display currency ({display_currency_code}): {total_revenue_display}")
+
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
             converted_revenue = self.currency_converter.convert_amount(
                 revenue, base_currency_code, display_currency_code
             )
             revenue_by_ticket_type[ticket_type] = float(converted_revenue)
+
         # Get totals with enhanced logging
         total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
         total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
         logger.debug(f"Database totals - Tickets: {total_tickets_sold}, Attendees: {total_attendees}")
+
         # Calculate attendance rate
         attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
+
         # Build comprehensive report data
         report_data = {
             # Event information
@@ -557,6 +582,7 @@ class ReportService:
             'currency_conversion_source': 'currencyapi.com (with fallback)',
             'conversion_cache_entries': len(rate_cache.cache),
         }
+
         # Add original currency data if conversion was performed
         if base_currency_code != display_currency_code:
             report_data['original_revenue'] = float(total_revenue_base)
@@ -564,6 +590,7 @@ class ReportService:
             report_data['conversion_rate_used'] = float(
                 self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
             )
+
         # Add ticket type filtering information
         if ticket_type_id:
             ticket_type = TicketType.query.get(ticket_type_id)
@@ -575,6 +602,7 @@ class ReportService:
                 report_data['report_scope'] = 'event_summary'
         else:
             report_data['report_scope'] = 'event_summary'
+
         return self._sanitize_report_data(report_data)
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
@@ -582,11 +610,13 @@ class ReportService:
         try:
             base_currency = Currency.query.filter_by(code=report_data.get('base_currency', 'KES')).first()
             base_currency_id = base_currency.id if base_currency else None
+
             # If no base currency found, create or use default
             if not base_currency_id:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
                 base_currency_id = base_currency.id if base_currency else 1
+
             sanitized_report_data = self._sanitize_report_data(report_data)
             report = Report(
                 organizer_id=organizer_id,
@@ -634,15 +664,19 @@ class ReportService:
             report_data = self.create_report_data(
                 event_id, start_date, end_date, ticket_type_id, target_currency_code
             )
+
             # Save to database
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
+
             # Generate file paths
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
+
             # Generate charts if enabled
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
+
             # Generate PDF with all required parameters
             pdf_path = self.pdf_generator.generate_pdf(
                 report_data=report_data,
@@ -652,6 +686,7 @@ class ReportService:
                 event_id=event_id,
                 target_currency=target_currency_code or "KES"
             )
+
             # Generate CSV with all required parameters
             csv_path = CSVReportGenerator.generate_csv(
                 report_data=report_data,
@@ -659,12 +694,14 @@ class ReportService:
                 session=session,
                 event_id=event_id
             )
+
             # Send email if requested
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
                 email_sent = self.send_report_email(
                     report_data, pdf_path, csv_path, recipient_email
                 )
+
             return {
                 'success': True,
                 'report_data': report_data,
