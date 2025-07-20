@@ -72,7 +72,7 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_attendees_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
-        """Get attendees by type - tickets that have been scanned"""
+        """Get attendees by type - tickets that have been scanned AND are paid"""
         try:
             query = (db.session.query(TicketType.type_name, func.count(func.distinct(Scan.ticket_id)))
                     .select_from(Scan)
@@ -80,6 +80,7 @@ class DatabaseQueryService:
                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                     .filter(
                         Ticket.event_id == event_id,
+                        cast(Ticket.payment_status, String).ilike("paid"),  # 🔒 ADDED: Only count paid tickets
                         Scan.scanned_at >= start_date,
                         Scan.scanned_at <= end_date
                     )
@@ -156,13 +157,14 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
-        """Calculate attendees: Number of tickets that have been scanned for the event"""
+        """Calculate attendees: Number of PAID tickets that have been scanned for the event"""
         try:
             result = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                     .select_from(Scan)
                     .join(Ticket, Scan.ticket_id == Ticket.id)
                     .filter(
                         Ticket.event_id == event_id,
+                        cast(Ticket.payment_status, String).ilike("paid"),  # 🔒 ADDED: Only count paid tickets
                         Scan.scanned_at >= start_date,
                         Scan.scanned_at <= end_date
                     )
@@ -187,6 +189,100 @@ class DatabaseQueryService:
             logger.error(f"Error in get_event_base_currency: {e}")
             return 'KES'
 
+    # 🆕 ADDITIONAL UTILITY METHODS FOR BETTER INSIGHTS
+    
+    @staticmethod
+    def get_attendance_rate(event_id: int, start_date: datetime, end_date: datetime) -> float:
+        """Calculate attendance rate: (attendees / tickets_sold) * 100"""
+        try:
+            total_tickets = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
+            total_attendees = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
+            
+            if total_tickets == 0:
+                return 0.0
+                
+            rate = (total_attendees / total_tickets) * 100
+            return round(rate, 2)
+        except Exception as e:
+            logger.error(f"Error calculating attendance rate: {e}")
+            return 0.0
+
+    @staticmethod
+    def get_scan_validation_stats(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, int]:
+        """Get scan validation statistics - useful for identifying scanning issues"""
+        try:
+            # Total scans (including duplicates)
+            total_scans = (db.session.query(func.count(Scan.id))
+                         .select_from(Scan)
+                         .join(Ticket, Scan.ticket_id == Ticket.id)
+                         .filter(
+                             Ticket.event_id == event_id,
+                             Scan.scanned_at >= start_date,
+                             Scan.scanned_at <= end_date
+                         )
+                         .scalar()) or 0
+
+            # Unique tickets scanned (actual attendees)
+            unique_tickets_scanned = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
+            
+            # Scans of unpaid tickets
+            unpaid_scans = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
+                          .select_from(Scan)
+                          .join(Ticket, Scan.ticket_id == Ticket.id)
+                          .filter(
+                              Ticket.event_id == event_id,
+                              cast(Ticket.payment_status, String).not_(cast(Ticket.payment_status, String).ilike("paid")),
+                              Scan.scanned_at >= start_date,
+                              Scan.scanned_at <= end_date
+                          )
+                          .scalar()) or 0
+            
+            duplicate_scans = total_scans - unique_tickets_scanned
+            
+            return {
+                'total_scans': total_scans,
+                'unique_attendees': unique_tickets_scanned,
+                'duplicate_scans': duplicate_scans,
+                'unpaid_ticket_scans': unpaid_scans
+            }
+        except Exception as e:
+            logger.error(f"Error in get_scan_validation_stats: {e}")
+            return {'total_scans': 0, 'unique_attendees': 0, 'duplicate_scans': 0, 'unpaid_ticket_scans': 0}
+
+    @staticmethod
+    def validate_scan_integrity(event_id: int) -> Dict[str, Any]:
+        """Validate scan data integrity and provide recommendations"""
+        try:
+            event = Event.query.get(event_id)
+            if not event:
+                return {'valid': False, 'error': 'Event not found'}
+            
+            # Check for scans outside event timeframe (if event has start/end times)
+            issues = []
+            recommendations = []
+            
+            # Get scan stats
+            stats = DatabaseQueryService.get_scan_validation_stats(event_id, event.start_date, event.end_date)
+            
+            if stats['unpaid_ticket_scans'] > 0:
+                issues.append(f"{stats['unpaid_ticket_scans']} unpaid tickets were scanned")
+                recommendations.append("Review scanning procedures to prevent unpaid ticket access")
+            
+            if stats['duplicate_scans'] > stats['unique_attendees'] * 0.1:  # More than 10% duplicates
+                issues.append(f"High duplicate scan rate: {stats['duplicate_scans']} duplicates")
+                recommendations.append("Consider implementing scan limits or better UI feedback")
+            
+            return {
+                'valid': len(issues) == 0,
+                'issues': issues,
+                'recommendations': recommendations,
+                'stats': stats
+            }
+        except Exception as e:
+            logger.error(f"Error in validate_scan_integrity: {e}")
+            return {'valid': False, 'error': str(e)}
+
+
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
     @staticmethod
@@ -202,6 +298,7 @@ class EnhancedCurrencyConverter:
                 }
         except Exception as e:
             logger.warning(f"Error fetching currency info for {currency_code}: {e}")
+        
         # Fallback currency info
         currency_symbols = {
             'KES': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
@@ -219,6 +316,7 @@ class EnhancedCurrencyConverter:
         """Convert amount using the integrated currency exchange service"""
         if from_currency == to_currency:
             return amount
+
         try:
             amount = Decimal(str(amount))
             # Handle KES conversions directly
@@ -228,6 +326,7 @@ class EnhancedCurrencyConverter:
                 # Use the convert_ksh_to_target_currency function
                 converted_amount, _, _ = convert_ksh_to_target_currency(amount, to_currency)
                 return converted_amount
+
             # For non-KES base currencies, convert to KES first, then to target
             elif to_currency == 'KES':
                 # Get rate from source currency to KES (reverse of KES to source)
@@ -242,49 +341,72 @@ class EnhancedCurrencyConverter:
                 # Step 2: Convert from KES to target currency
                 converted_amount, _, _ = convert_ksh_to_target_currency(kes_amount, to_currency)
                 return converted_amount
+
         except Exception as e:
             logger.error(f"Currency conversion error from {from_currency} to {to_currency}: {e}")
             # Return original amount if conversion fails
             return amount
 
+
 class ReportDataProcessor:
     @staticmethod
     def process_report_data(report_data: Dict[str, Any], event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """Process comprehensive report data using all available DatabaseQueryService methods."""
+        
         # Core metrics
         total_tickets_sold = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
         total_attendees = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
         total_revenue = DatabaseQueryService.get_total_revenue(event_id, start_date, end_date)
+        attendance_rate = DatabaseQueryService.get_attendance_rate(event_id, start_date, end_date)
+
         # Detailed breakdowns
         tickets_by_type = DatabaseQueryService.get_tickets_sold_by_type(event_id, start_date, end_date)
         revenue_by_type = DatabaseQueryService.get_revenue_by_type(event_id, start_date, end_date)
         attendees_by_type = DatabaseQueryService.get_attendees_by_type(event_id, start_date, end_date)
         payment_methods = DatabaseQueryService.get_payment_method_usage(event_id, start_date, end_date)
+
         # Event configuration - get currency code instead of ID
         base_currency_code = DatabaseQueryService.get_event_base_currency(event_id)
-        # Calculate attendance rate
-        attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
+        
+        # Data quality insights
+        scan_stats = DatabaseQueryService.get_scan_validation_stats(event_id, start_date, end_date)
+        integrity_check = DatabaseQueryService.validate_scan_integrity(event_id)
+
         # Build comprehensive report data
         processed_data = {
             # Core totals
             'total_tickets_sold': total_tickets_sold,
             'number_of_attendees': total_attendees,
             'total_revenue': total_revenue,
-            'attendance_rate': round(attendance_rate, 2),
+            'attendance_rate': attendance_rate,
+
             # Detailed breakdowns
             'tickets_by_type': dict(tickets_by_type),
             'revenue_by_type': {k: float(v) for k, v in revenue_by_type},
             'attendees_by_type': dict(attendees_by_type),
             'payment_method_usage': dict(payment_methods),
+
             # Configuration
             'base_currency_code': base_currency_code,
+
             # Date range for reference
             'report_start_date': start_date.isoformat(),
             'report_end_date': end_date.isoformat(),
+
             # Currency conversion metadata
             'currency_conversion_source': 'currencyapi.com',
-            'conversion_cache_status': f"{len(rate_cache.cache)} rates cached"
+            'conversion_cache_status': f"{len(rate_cache.cache)} rates cached",
+            
+            # 🆕 Data quality and integrity insights
+            'scan_statistics': scan_stats,
+            'data_integrity': integrity_check,
+            
+            # 🆕 Additional computed metrics
+            'no_show_rate': round(100 - attendance_rate, 2),
+            'revenue_per_attendee': float(total_revenue / total_attendees) if total_attendees > 0 else 0,
+            'average_ticket_price': float(total_revenue / total_tickets_sold) if total_tickets_sold > 0 else 0
         }
+
         # Merge with existing report_data
         report_data.update(processed_data)
         return report_data
