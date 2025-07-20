@@ -46,7 +46,7 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_revenue_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, Decimal]]:
-        """Get revenue by type for PAID tickets only - sum of ticket prices (always in KES)"""
+        """Get revenue by type for PAID tickets only - sum of ticket prices"""
         try:
             query = (db.session.query(TicketType.type_name, func.sum(TicketType.price * Ticket.quantity))
                     .select_from(Ticket)
@@ -107,7 +107,7 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_total_revenue(event_id: int, start_date: datetime, end_date: datetime) -> Decimal:
-        """Get total revenue for PAID tickets only - sum of ticket prices (always returns KES amount)"""
+        """Get total revenue for PAID tickets only - sum of ticket prices"""
         try:
             result = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
                      .select_from(Ticket)
@@ -119,9 +119,7 @@ class DatabaseQueryService:
                          Ticket.purchase_date <= end_date
                      )
                      .scalar())
-            revenue = Decimal(str(result)) if result else Decimal('0')
-            logger.info(f"DatabaseQueryService: Total revenue for event {event_id}: {revenue} KES")
-            return revenue
+            return Decimal(str(result)) if result else Decimal('0')
         except Exception as e:
             logger.error(f"Error in get_total_revenue: {e}")
             return Decimal('0')
@@ -193,7 +191,7 @@ class EnhancedCurrencyConverter:
         
         # Fallback currency info
         currency_symbols = {
-            'KES': 'KSh', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
+            'KES': '₹', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
             'TZS': 'TSh', 'NGN': '₦', 'GHS': '₵', 'ZAR': 'R', 'JPY': '¥',
             'CAD': 'C$', 'AUD': 'A$'
         }
@@ -206,17 +204,12 @@ class EnhancedCurrencyConverter:
 
     @staticmethod
     def convert_amount(amount: Decimal, from_currency: str, to_currency: str) -> Decimal:
-        """
-        Convert amount using the integrated currency exchange service.
-        FIXED: Prevents double conversion by ensuring proper currency handling.
-        """
+        """Convert amount using the integrated currency exchange service"""
         if from_currency == to_currency:
-            logger.info(f"EnhancedCurrencyConverter: No conversion needed - same currency {from_currency}")
             return amount
         
         try:
             amount = Decimal(str(amount))
-            logger.info(f"EnhancedCurrencyConverter: Converting {amount} {from_currency} to {to_currency}")
             
             # Handle KES conversions directly
             if from_currency == 'KES':
@@ -224,8 +217,7 @@ class EnhancedCurrencyConverter:
                     return amount
                 
                 # Use the convert_ksh_to_target_currency function
-                converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(amount, to_currency)
-                logger.info(f"EnhancedCurrencyConverter: KES conversion successful - {amount} KES = {converted_amount} {to_currency}")
+                converted_amount, _, _ = convert_ksh_to_target_currency(amount, to_currency)
                 return converted_amount
             
             # For non-KES base currencies, convert to KES first, then to target
@@ -233,7 +225,6 @@ class EnhancedCurrencyConverter:
                 # Get rate from source currency to KES (reverse of KES to source)
                 rate = get_exchange_rate('KES', from_currency)
                 kes_amount = amount / rate  # Reverse conversion
-                logger.info(f"EnhancedCurrencyConverter: Reverse conversion - {amount} {from_currency} = {kes_amount} KES")
                 return kes_amount
             
             else:
@@ -241,17 +232,14 @@ class EnhancedCurrencyConverter:
                 # Step 1: Convert from source currency to KES
                 source_to_kes_rate = get_exchange_rate('KES', from_currency)
                 kes_amount = amount / source_to_kes_rate
-                logger.info(f"EnhancedCurrencyConverter: Step 1 - {amount} {from_currency} = {kes_amount} KES")
                 
                 # Step 2: Convert from KES to target currency
-                converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(kes_amount, to_currency)
-                logger.info(f"EnhancedCurrencyConverter: Step 2 - {kes_amount} KES = {converted_amount} {to_currency}")
+                converted_amount, _, _ = convert_ksh_to_target_currency(kes_amount, to_currency)
                 return converted_amount
                 
         except Exception as e:
             logger.error(f"Currency conversion error from {from_currency} to {to_currency}: {e}")
             # Return original amount if conversion fails
-            logger.warning(f"EnhancedCurrencyConverter: Conversion failed, returning original amount {amount}")
             return amount
 
 class ReportDataProcessor:
@@ -398,6 +386,61 @@ class ReportService:
         except Exception as e:
             logger.error(f"Error generating charts: {e}")
             return []
+
+    def _validate_and_fix_report_data(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and fix inconsistencies in report data before sending email."""
+        try:
+            # Debug: Log the original report data
+            logger.debug(f"Original report data keys: {list(report_data.keys())}")
+            logger.debug(f"Total revenue: {report_data.get('total_revenue', 'MISSING')}")
+            logger.debug(f"Total tickets sold: {report_data.get('total_tickets_sold', 'MISSING')}")
+            logger.debug(f"Number of attendees: {report_data.get('number_of_attendees', 'MISSING')}")
+            
+            # Ensure we have the required data
+            total_revenue = float(report_data.get('total_revenue', 0))
+            total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
+            number_of_attendees = int(report_data.get('number_of_attendees', 0))
+            
+            # If we have revenue but no tickets sold, try to reconstruct from breakdown data
+            if total_revenue > 0 and total_tickets_sold == 0:
+                logger.warning("Revenue exists but tickets sold is 0. Attempting to reconstruct from breakdown data.")
+                
+                # Try to get totals from breakdown data
+                tickets_by_type = report_data.get('tickets_by_type', {})
+                if tickets_by_type:
+                    total_tickets_sold = sum(int(count) for count in tickets_by_type.values())
+                    report_data['total_tickets_sold'] = total_tickets_sold
+                    logger.info(f"Reconstructed total_tickets_sold: {total_tickets_sold}")
+                
+                attendees_by_type = report_data.get('attendees_by_type', {})
+                if attendees_by_type:
+                    number_of_attendees = sum(int(count) for count in attendees_by_type.values())
+                    report_data['number_of_attendees'] = number_of_attendees
+                    logger.info(f"Reconstructed number_of_attendees: {number_of_attendees}")
+            
+            # Recalculate attendance rate
+            if total_tickets_sold > 0:
+                attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
+                report_data['attendance_rate'] = attendance_rate
+            else:
+                report_data['attendance_rate'] = 0.0
+            
+            # Ensure minimum values for display
+            report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
+            report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
+            report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
+            
+            # Log final values
+            logger.info(f"Final validated data - Tickets: {report_data['total_tickets_sold']}, "
+                       f"Attendees: {report_data['number_of_attendees']}, "
+                       f"Revenue: {report_data['total_revenue']}, "
+                       f"Attendance Rate: {report_data['attendance_rate']}%")
+            
+            return report_data
+            
+        except Exception as e:
+            logger.error(f"Error validating report data: {e}")
+            return report_data
 
     def create_report_data(self, event_id: int, start_date: datetime, end_date: datetime,
                           ticket_type_id: Optional[int] = None,
@@ -650,7 +693,9 @@ class ReportService:
                       csv_path: str, recipient_email: str) -> bool:
         """Public method to send report email - delegates to private implementation"""
         try:
-            return self._send_report_email(report_data, pdf_path, csv_path, recipient_email)
+            # Validate and fix report data before sending email
+            validated_report_data = self._validate_and_fix_report_data(report_data.copy())
+            return self._send_report_email(validated_report_data, pdf_path, csv_path, recipient_email)
         except Exception as e:
             logger.error(f"Error sending report email: {e}")
             return False
@@ -665,6 +710,12 @@ class ReportService:
         # Fix the date field names to match the actual report_data structure
         start_date = report_data.get('filter_start_date', 'N/A')
         end_date = report_data.get('filter_end_date', 'N/A')
+        
+        # Ensure we have safe values for display
+        total_tickets_sold = max(0, int(report_data.get('total_tickets_sold', 0)))
+        total_revenue = max(0.0, float(report_data.get('total_revenue', 0)))
+        number_of_attendees = max(0, int(report_data.get('number_of_attendees', 0)))
+        attendance_rate = max(0.0, float(report_data.get('attendance_rate', 0)))
         
         body = f"""
         <!DOCTYPE html>
@@ -690,6 +741,7 @@ class ReportService:
                 .download-step {{ background: #f8f9fa; padding: 12px; border-left: 3px solid #007bff; margin: 10px 0; }}
                 .important-note {{ background: #d4edda; border: 1px solid #c3e6cb; padding: 15px; border-radius: 4px; margin: 20px 0; color: #155724; }}
                 .currency-info {{ background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #1976d2; }}
+                .warning {{ background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 20px 0; color: #856404; }}
             </style>
         </head>
         <body>
@@ -702,19 +754,19 @@ class ReportService:
                 <div class="summary-box">
                     <h3>📈 Executive Summary</h3>
                     <div class="metric">
-                        <div class="metric-value">{report_data.get('total_tickets_sold', 0)}</div>
+                        <div class="metric-value">{total_tickets_sold:,}</div>
                         <div class="metric-label">Tickets Sold</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-value">{currency_symbol}{report_data.get('total_revenue', 0):,.2f}</div>
+                        <div class="metric-value">{currency_symbol}{total_revenue:,.2f}</div>
                         <div class="metric-label">Total Revenue</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-value">{report_data.get('number_of_attendees', 0)}</div>
+                        <div class="metric-value">{number_of_attendees:,}</div>
                         <div class="metric-label">Attendees</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-value">{report_data.get('attendance_rate', 0)}%</div>
+                        <div class="metric-value">{attendance_rate:.1f}%</div>
                         <div class="metric-label">Attendance Rate</div>
                     </div>
                 </div>
