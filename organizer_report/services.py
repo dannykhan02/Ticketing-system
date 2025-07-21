@@ -80,7 +80,7 @@ class DatabaseQueryService:
                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                      .filter(
                          Ticket.event_id == event_id,
-                         cast(Ticket.payment_status, String).ilike("paid"),  # 🔒 ADDED: Only count paid tickets
+                         cast(Ticket.payment_status, String).ilike("paid"),
                          Scan.scanned_at >= start_date,
                          Scan.scanned_at <= end_date
                      )
@@ -164,7 +164,7 @@ class DatabaseQueryService:
                       .join(Ticket, Scan.ticket_id == Ticket.id)
                       .filter(
                           Ticket.event_id == event_id,
-                          cast(Ticket.payment_status, String).ilike("paid"),  # 🔒 ADDED: Only count paid tickets
+                          cast(Ticket.payment_status, String).ilike("paid"),
                           Scan.scanned_at >= start_date,
                           Scan.scanned_at <= end_date
                       )
@@ -183,24 +183,22 @@ class DatabaseQueryService:
             event = Event.query.get(event_id)
             if event and hasattr(event, 'base_currency_id') and event.base_currency_id:
                 currency = Currency.query.get(event.base_currency_id)
-                return currency.code.value if currency and currency.code else 'KES' # Ensure enum value is extracted
-            return 'KES'  # Default to KES as per currency service
+                return currency.code.value if currency and currency.code else 'KES'
+            return 'KES'
         except Exception as e:
             logger.error(f"Error in get_event_base_currency: {e}")
             return 'KES'
 
-    # 🆕 ADDITIONAL UTILITY METHODS FOR BETTER INSIGHTS
-    
     @staticmethod
     def get_attendance_rate(event_id: int, start_date: datetime, end_date: datetime) -> float:
         """Calculate attendance rate: (attendees / tickets_sold) * 100"""
         try:
             total_tickets = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
             total_attendees = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
-            
+
             if total_tickets == 0:
                 return 0.0
-                
+
             rate = (total_attendees / total_tickets) * 100
             return round(rate, 2)
         except Exception as e:
@@ -211,7 +209,6 @@ class DatabaseQueryService:
     def get_scan_validation_stats(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, int]:
         """Get scan validation statistics - useful for identifying scanning issues"""
         try:
-            # Total scans (including duplicates)
             total_scans = (db.session.query(func.count(Scan.id))
                            .select_from(Scan)
                            .join(Ticket, Scan.ticket_id == Ticket.id)
@@ -221,11 +218,8 @@ class DatabaseQueryService:
                                Scan.scanned_at <= end_date
                            )
                            .scalar()) or 0
-
-            # Unique tickets scanned (actual attendees)
             unique_tickets_scanned = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
-            
-            # Scans of unpaid tickets
+
             unpaid_scans = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                             .select_from(Scan)
                             .join(Ticket, Scan.ticket_id == Ticket.id)
@@ -236,9 +230,9 @@ class DatabaseQueryService:
                                 Scan.scanned_at <= end_date
                             )
                             .scalar()) or 0
-            
+
             duplicate_scans = total_scans - unique_tickets_scanned
-            
+
             return {
                 'total_scans': total_scans,
                 'unique_attendees': unique_tickets_scanned,
@@ -256,27 +250,22 @@ class DatabaseQueryService:
             event = Event.query.get(event_id)
             if not event:
                 return {'valid': False, 'error': 'Event not found'}
-            
-            # Check for scans outside event timeframe (if event has start/end times)
+
             issues = []
             recommendations = []
-            
-            # Get scan stats
-            # Use event.date if start_date and end_date are not explicitly defined in the event model
-            # Assuming event.date is a datetime, otherwise adjust accordingly
-            event_start = event.start_date if hasattr(event, 'start_date') and event.start_date else event.date
-            event_end = event.end_date if hasattr(event, 'end_date') and event.end_date else event.date # or a very late time if it's just a single day event
 
+            event_start = event.start_date if hasattr(event, 'start_date') and event.start_date else event.date
+            event_end = event.end_date if hasattr(event, 'end_date') and event.end_date else event.date
             stats = DatabaseQueryService.get_scan_validation_stats(event_id, event_start, event_end)
-            
+
             if stats['unpaid_ticket_scans'] > 0:
                 issues.append(f"{stats['unpaid_ticket_scans']} unpaid tickets were scanned")
                 recommendations.append("Review scanning procedures to prevent unpaid ticket access")
-            
-            if stats['duplicate_scans'] > stats['unique_attendees'] * 0.1:  # More than 10% duplicates
+
+            if stats['duplicate_scans'] > stats['unique_attendees'] * 0.1:
                 issues.append(f"High duplicate scan rate: {stats['duplicate_scans']} duplicates")
                 recommendations.append("Consider implementing scan limits or better UI feedback")
-            
+
             return {
                 'valid': len(issues) == 0,
                 'issues': issues,
@@ -287,7 +276,6 @@ class DatabaseQueryService:
             logger.error(f"Error in validate_scan_integrity: {e}")
             return {'valid': False, 'error': str(e)}
 
-
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
     @staticmethod
@@ -297,16 +285,15 @@ class EnhancedCurrencyConverter:
             currency = Currency.query.filter_by(code=currency_code).first()
             if currency:
                 return {
-                    'code': currency.code.value, # Ensure enum value is extracted
+                    'code': currency.code.value,
                     'symbol': getattr(currency, 'symbol', currency_code),
                     'name': getattr(currency, 'name', currency_code)
                 }
         except Exception as e:
             logger.warning(f"Error fetching currency info for {currency_code}: {e}")
-        
-        # Fallback currency info
+
         currency_symbols = {
-            'KES': 'KSh', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh', # Changed KES symbol from '₹' to 'KSh'
+            'KES': 'KSh', 'USD': '$', 'EUR': '€', 'GBP': '£', 'UGX': 'USh',
             'TZS': 'TSh', 'NGN': '₦', 'GHS': '₵', 'ZAR': 'R', 'JPY': '¥',
             'CAD': 'C$', 'AUD': 'A$'
         }
@@ -321,106 +308,71 @@ class EnhancedCurrencyConverter:
         """Convert amount using the integrated currency exchange service"""
         if from_currency == to_currency:
             return amount
-
         try:
             amount = Decimal(str(amount))
-            # Handle KES conversions directly
-            if from_currency.upper() == 'KES': # Use .upper() for robustness
+            if from_currency.upper() == 'KES':
                 if to_currency.upper() == 'KES':
                     return amount
-                # Use the convert_ksh_to_target_currency function
                 converted_amount, _, _ = convert_ksh_to_target_currency(amount, to_currency)
-                return converted_amount.quantize(Decimal('0.01')) # Quantize for 2 decimal places
-
-            # For non-KES base currencies, convert to KES first, then to target
+                return converted_amount.quantize(Decimal('0.01'))
             elif to_currency.upper() == 'KES':
-                # Get rate from source currency to KES (reverse of KES to source)
-                # Need to ensure get_exchange_rate can handle reversed conversion or adjust logic
-                # Assuming get_exchange_rate(from_currency, to_currency) returns rate to convert from_currency to to_currency
-                rate = get_exchange_rate(from_currency, 'KES') 
-                if rate == 0: # Avoid division by zero
+                rate = get_exchange_rate(from_currency, 'KES')
+                if rate == 0:
                     logger.error(f"Exchange rate for {from_currency} to KES is zero.")
                     return amount
-                kes_amount = amount * rate 
+                kes_amount = amount * rate
                 return kes_amount.quantize(Decimal('0.01'))
             else:
-                # Convert: source -> KES -> target
-                # Step 1: Convert from source currency to KES
                 source_to_kes_rate = get_exchange_rate(from_currency, 'KES')
                 if source_to_kes_rate == 0:
                     logger.error(f"Exchange rate for {from_currency} to KES is zero.")
                     return amount
                 kes_amount = amount * source_to_kes_rate
-                # Step 2: Convert from KES to target currency
                 converted_amount, _, _ = convert_ksh_to_target_currency(kes_amount, to_currency)
                 return converted_amount.quantize(Decimal('0.01'))
-
         except Exception as e:
             logger.error(f"Currency conversion error from {from_currency} to {to_currency}: {e}")
-            # Return original amount if conversion fails
             return amount.quantize(Decimal('0.01'))
-
 
 class ReportDataProcessor:
     @staticmethod
     def process_report_data(report_data: Dict[str, Any], event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """Process comprehensive report data using all available DatabaseQueryService methods."""
-        
-        # Core metrics
         total_tickets_sold = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
         total_attendees = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
         total_revenue = DatabaseQueryService.get_total_revenue(event_id, start_date, end_date)
         attendance_rate = DatabaseQueryService.get_attendance_rate(event_id, start_date, end_date)
 
-        # Detailed breakdowns
         tickets_by_type = DatabaseQueryService.get_tickets_sold_by_type(event_id, start_date, end_date)
         revenue_by_type = DatabaseQueryService.get_revenue_by_type(event_id, start_date, end_date)
         attendees_by_type = DatabaseQueryService.get_attendees_by_type(event_id, start_date, end_date)
         payment_methods = DatabaseQueryService.get_payment_method_usage(event_id, start_date, end_date)
-
-        # Event configuration - get currency code instead of ID
         base_currency_code = DatabaseQueryService.get_event_base_currency(event_id)
-        
-        # Data quality insights
+
         scan_stats = DatabaseQueryService.get_scan_validation_stats(event_id, start_date, end_date)
         integrity_check = DatabaseQueryService.validate_scan_integrity(event_id)
 
-        # Build comprehensive report data
         processed_data = {
-            # Core totals
             'total_tickets_sold': total_tickets_sold,
             'number_of_attendees': total_attendees,
             'total_revenue': total_revenue,
             'attendance_rate': attendance_rate,
-
-            # Detailed breakdowns
             'tickets_by_type': dict(tickets_by_type),
             'revenue_by_type': {k: float(v) for k, v in revenue_by_type},
             'attendees_by_type': dict(attendees_by_type),
             'payment_method_usage': dict(payment_methods),
-
-            # Configuration
             'base_currency_code': base_currency_code,
-
-            # Date range for reference
             'report_start_date': start_date.isoformat(),
             'report_end_date': end_date.isoformat(),
-
-            # Currency conversion metadata
             'currency_conversion_source': 'currencyapi.com',
             'conversion_cache_status': f"{len(rate_cache.cache)} rates cached",
-            
-            # 🆕 Data quality and integrity insights
             'scan_statistics': scan_stats,
             'data_integrity': integrity_check,
-            
-            # 🆕 Additional computed metrics
             'no_show_rate': round(100 - attendance_rate, 2) if attendance_rate is not None else 100.0,
             'revenue_per_attendee': float(total_revenue / total_attendees) if total_attendees > 0 else 0.0,
             'average_ticket_price': float(total_revenue / total_tickets_sold) if total_tickets_sold > 0 else 0.0
         }
 
-        # Merge with existing report_data
         report_data.update(processed_data)
         return report_data
 
@@ -515,11 +467,9 @@ class ReportService:
         try:
             logger.debug("=== VALIDATING REPORT DATA ===")
             logger.debug(f"Report data keys: {list(report_data.keys())}")
-
             total_revenue = float(report_data.get('total_revenue', 0))
             total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
             number_of_attendees = int(report_data.get('number_of_attendees', 0))
-
             if total_revenue > 0 and total_tickets_sold == 0:
                 logger.warning("INCONSISTENCY DETECTED: Revenue exists but tickets sold is 0. Attempting to reconstruct from breakdown data.")
                 if report_data.get('tickets_by_type'):
@@ -528,11 +478,9 @@ class ReportService:
                         total_tickets_sold = reconstructed_tickets
                         report_data['total_tickets_sold'] = total_tickets_sold
                         logger.info(f"✅ Reconstructed total_tickets_sold from breakdown: {total_tickets_sold}")
-
             if report_data.get('attendees_by_type'):
                 reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
                 logger.debug(f"Attendees from breakdown: {reconstructed_attendees}")
-
                 if reconstructed_attendees > number_of_attendees:
                     number_of_attendees = reconstructed_attendees
                     report_data['number_of_attendees'] = number_of_attendees
@@ -543,26 +491,21 @@ class ReportService:
             elif number_of_attendees > 0:
                 report_data['attendees_by_type'] = {'General': number_of_attendees}
                 logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
-
             if total_tickets_sold > 0 and not report_data.get('tickets_by_type'):
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
                 logger.info("🔧 Created default tickets breakdown")
-
             if total_revenue > 0 and not report_data.get('revenue_by_type'):
                 report_data['revenue_by_type'] = {'General': total_revenue}
                 logger.info("🔧 Created default revenue breakdown")
-
             if total_tickets_sold > 0:
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
                 report_data['attendance_rate'] = attendance_rate
                 logger.debug(f"Recalculated attendance rate: {attendance_rate}%")
             else:
                 report_data['attendance_rate'] = 0.0
-
             report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
             report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
             report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
-
             logger.info(f"=== FINAL VALIDATED DATA ===")
             logger.info(f"Tickets: {report_data['total_tickets_sold']}, Attendees: {report_data['number_of_attendees']}, Revenue: {report_data['total_revenue']}, Rate: {report_data.get('attendance_rate', 0)}%")
             return report_data
@@ -575,70 +518,53 @@ class ReportService:
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"=== CREATING REPORT DATA ===")
         logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
-
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
-
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
-
         logger.debug("Fetching raw database data...")
-
         tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
-
         revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw revenue_data: {revenue_data}")
-
         attendees_data = self.db_service.get_attendees_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw attendees_data: {attendees_data}")
-
         payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
         logger.debug(f"Raw payment_methods: {payment_methods}")
-
         tickets_sold_by_type = dict(tickets_sold_data)
         attendees_by_ticket_type = dict(attendees_data)
         payment_method_usage = dict(payment_methods)
-
         total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
         logger.debug(f"Total revenue (base currency): {total_revenue_base}")
-
         total_revenue_display = self.currency_converter.convert_amount(
             total_revenue_base, base_currency_code, display_currency_code
         )
         logger.debug(f"Total revenue (display currency): {total_revenue_display}")
-
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
             converted_revenue = self.currency_converter.convert_amount(
                 revenue, base_currency_code, display_currency_code
             )
             revenue_by_ticket_type[ticket_type] = float(converted_revenue)
-
         total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
         logger.debug(f"Total tickets sold: {total_tickets_sold}")
-
         total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
         logger.debug(f"Total attendees: {total_attendees}")
-
         attendance_rate = 0.0
         if total_tickets_sold > 0:
             attendance_rate = (total_attendees / total_tickets_sold * 100)
             logger.debug(f"Calculated attendance rate: {attendance_rate}%")
         else:
             logger.warning("Cannot calculate attendance rate: no tickets sold")
-
         if total_attendees > 0 and not attendees_by_ticket_type:
             logger.warning("Have total attendees but no breakdown - creating default breakdown")
             attendees_by_ticket_type = {'General': total_attendees}
-
         if total_tickets_sold > 0 and not tickets_sold_by_type:
             logger.warning("Have total tickets but no breakdown - creating default breakdown")
             tickets_sold_by_type = {'General': total_tickets_sold}
-
         report_data = {
             'event_id': event_id,
             'event_name': event.name,
@@ -661,14 +587,12 @@ class ReportService:
             'currency_conversion_source': 'currencyapi.com (with fallback)',
             'conversion_cache_entries': len(rate_cache.cache),
         }
-
         if base_currency_code != display_currency_code:
             report_data['original_revenue'] = float(total_revenue_base)
             report_data['original_currency'] = base_currency_info['code']
             report_data['conversion_rate_used'] = float(
                 self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
             )
-
         if ticket_type_id:
             ticket_type = TicketType.query.get(ticket_type_id)
             if ticket_type:
@@ -679,12 +603,10 @@ class ReportService:
                 report_data['report_scope'] = 'event_summary'
         else:
             report_data['report_scope'] = 'event_summary'
-
         logger.info(f"=== REPORT DATA CREATED ===")
         logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
         logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
         logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
-
         return self._sanitize_report_data(report_data)
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
@@ -695,7 +617,6 @@ class ReportService:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
                 base_currency_id = base_currency.id if base_currency else 1
-
             sanitized_report_data = self._sanitize_report_data(report_data)
             report = Report(
                 organizer_id=organizer_id,
@@ -732,11 +653,9 @@ class ReportService:
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
-
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
-
             pdf_path = self.pdf_generator.generate_pdf(
                 report_data=report_data,
                 chart_paths=chart_paths,
@@ -751,13 +670,11 @@ class ReportService:
                 session=session,
                 event_id=event_id
             )
-
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
                 email_sent = self.send_report_email(
                     report_data, pdf_path, csv_path, recipient_email
                 )
-
             return {
                 'success': True,
                 'report_data': report_data,
@@ -813,7 +730,6 @@ class ReportService:
         total_revenue = max(0.0, float(report_data.get('total_revenue', 0)))
         number_of_attendees = max(0, int(report_data.get('number_of_attendees', 0)))
         attendance_rate = max(0.0, float(report_data.get('attendance_rate', 0)))
-
         body = f"""
         <!DOCTYPE html>
         <html>
@@ -868,7 +784,6 @@ class ReportService:
                     </div>
                 </div>
         """
-
         if report_data.get('base_currency') != report_data.get('currency'):
             base_currency_symbol = report_data.get('base_currency_symbol', report_data.get('base_currency', ''))
             original_revenue = report_data.get('original_revenue', 0)
@@ -882,7 +797,6 @@ class ReportService:
                     <p><small>Exchange rates provided by {report_data.get('currency_conversion_source', 'external service')}</small></p>
                 </div>
             """
-
         if report_data.get('tickets_by_type'):
             body += """
                 <div class="summary-box">
@@ -902,7 +816,6 @@ class ReportService:
                     </table>
                 </div>
             """
-
         if report_data.get('payment_method_usage'):
             body += """
                 <div class="summary-box">
@@ -916,13 +829,11 @@ class ReportService:
                     </table>
                 </div>
             """
-
         body += f"""
                 <div class="insights">
                     <h3>💡 Key Insights</h3>
                     <ul>
         """
-
         if attendance_rate > 90:
             body += "<li>🎉 Excellent attendance rate! Most ticket holders attended the event.</li>"
         elif attendance_rate > 70:
@@ -931,30 +842,24 @@ class ReportService:
             body += "<li>⚠️ Low attendance rate suggests potential areas for improvement in engagement.</li>"
         else:
             body += "<li>ℹ️ No attendance data recorded for this event period.</li>"
-
         if report_data.get('revenue_by_type'):
             max_revenue_type = max(report_data['revenue_by_type'].items(), key=lambda x: x[1])[0]
             body += f"<li>💰 {max_revenue_type} tickets generated the highest revenue for this event.</li>"
-
         if report_data.get('tickets_by_type'):
             max_sold_type = max(report_data['tickets_by_type'].items(), key=lambda x: x[1])[0]
             body += f"<li>🎫 {max_sold_type} was the most popular ticket type with {report_data['tickets_by_type'][max_sold_type]} tickets sold.</li>"
-
         if report_data.get('payment_method_usage'):
             preferred_method = max(report_data['payment_method_usage'].items(), key=lambda x: x[1])[0]
             body += f"<li>💳 {preferred_method} was the preferred payment method for this event.</li>"
-
         total_tickets = report_data.get('total_tickets_sold', 0)
         total_attendees = report_data.get('number_of_attendees', 0)
         if total_tickets > 0:
             body += f"<li>📊 Out of {total_tickets} tickets sold, {total_attendees} attendees showed up to the event.</li>"
-
         if report_data.get('base_currency') != report_data.get('currency'):
             cache_entries = report_data.get('conversion_cache_entries', 0)
             body += f"<li>💱 Revenue converted from {report_data.get('base_currency')} to {report_data.get('currency')} using live exchange rates.</li>"
             if cache_entries > 0:
                 body += f"<li>⚡ Exchange rate data cached ({cache_entries} rates) for improved performance.</li>"
-
         body += """
                     </ul>
                 </div>
@@ -993,7 +898,6 @@ class ReportService:
         </body>
         </html>
         """
-
         try:
             success = send_email_with_attachment(
                 recipient=recipient_email,
