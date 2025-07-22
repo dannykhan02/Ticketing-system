@@ -458,6 +458,27 @@ class DatabaseQueryService:
         except Exception as e:
             logger.error(f"Error in get_event_base_currency: {e}")
             return 'KES'
+        
+    @staticmethod
+    def get_total_revenue(event_id: int, start_date: datetime, end_date: datetime) -> Decimal:
+        """Get total revenue for PAID tickets only - sum of ticket prices"""
+        try:
+            result = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
+                      .select_from(Ticket)
+                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                      .filter(
+                          Ticket.event_id == event_id,
+                          cast(Ticket.payment_status, String).ilike("paid"),
+                          Ticket.purchase_date >= start_date,
+                          Ticket.purchase_date <= end_date
+                      )
+                      .scalar())
+            total_revenue = Decimal(str(result)) if result else Decimal('0')
+            logger.debug(f"get_total_revenue for event {event_id}: {total_revenue}")
+            return total_revenue
+        except Exception as e:
+            logger.error(f"Error in get_total_revenue: {e}")
+            return Decimal('0')
 
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
