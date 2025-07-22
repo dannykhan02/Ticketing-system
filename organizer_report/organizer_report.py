@@ -54,6 +54,7 @@ class GenerateReportResource(Resource):
                     logger.warning(f"GenerateReportResource: User {current_user_id} unauthorized to generate report for event {event_id}.")
                     return {'error': 'Unauthorized to generate report for this event'}, 403
 
+            # Date parsing with improved error handling
             if specific_date_str:
                 try:
                     specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
@@ -71,6 +72,8 @@ class GenerateReportResource(Resource):
                     end_date = datetime.now()
                 end_date = DateUtils.adjust_end_date(end_date)
 
+            # Currency validation with improved error handling
+            target_currency = None
             if target_currency_code:
                 try:
                     target_currency = Currency.query.filter_by(
@@ -92,6 +95,7 @@ class GenerateReportResource(Resource):
 
             logger.info(f"GenerateReportResource: Starting report generation for event {event_id} from {start_date} to {end_date}")
 
+            # Data synchronization
             try:
                 sync_stats = AttendeeCountingService.sync_ticket_scanned_status(event_id)
                 logger.info(f"GenerateReportResource: Data sync completed for event {event_id} - {sync_stats}")
@@ -99,8 +103,11 @@ class GenerateReportResource(Resource):
                 logger.warning(f"GenerateReportResource: Data sync failed for event {event_id}: {e}")
                 sync_stats = {'synchronized': 0, 'errors': 1}
 
+            # Report generation
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
+            
+            # FIX: Use the target_currency_code from user input, not hardcoded 'KES'
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
@@ -108,7 +115,7 @@ class GenerateReportResource(Resource):
                 end_date=end_date,
                 session=db.session,
                 ticket_type_id=ticket_type_id,
-                target_currency_code='KES',
+                target_currency_code=target_currency_code,  # Use actual target currency
                 send_email=False,
                 recipient_email=recipient_email
             )
@@ -117,49 +124,56 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Failed to generate report data for event {event_id}: {result.get('error')}")
                 return {'error': result.get('error', 'Failed to generate report')}, 500
 
-            if result.get('report_data'):
-                try:
-                    enhanced_data = ReportDataProcessor.process_report_data(
-                        result['report_data'],
-                        event_id,
-                        start_date,
-                        end_date
-                    )
-                    result['report_data'].update(enhanced_data)
-                    original_attendees = result['report_data'].get('original_attendees', 0)
-                    enhanced_attendees = enhanced_data.get('number_of_attendees', 0)
-                    logger.info(f"GenerateReportResource: Enhanced attendee counting applied for event {event_id}")
-                    logger.info(f"GenerateReportResource: Attendee count - Original: {original_attendees}, Enhanced: {enhanced_attendees}")
-                except Exception as e:
-                    logger.warning(f"GenerateReportResource: Failed to enhance attendee data for event {event_id}: {e}")
-                    enhanced_data = result['report_data']
-            else:
+            if not result.get('report_data'):
                 logger.error(f"GenerateReportResource: No report data returned from ReportService for event {event_id}")
                 return {'error': 'No report data generated'}, 500
+
+            # Enhanced data processing
+            try:
+                enhanced_data = ReportDataProcessor.process_report_data(
+                    result['report_data'],
+                    event_id,
+                    start_date,
+                    end_date
+                )
+                result['report_data'].update(enhanced_data)
+                original_attendees = result['report_data'].get('original_attendees', 0)
+                enhanced_attendees = enhanced_data.get('number_of_attendees', 0)
+                logger.info(f"GenerateReportResource: Enhanced attendee counting applied for event {event_id}")
+                logger.info(f"GenerateReportResource: Attendee count - Original: {original_attendees}, Enhanced: {enhanced_attendees}")
+            except Exception as e:
+                logger.warning(f"GenerateReportResource: Failed to enhance attendee data for event {event_id}: {e}")
 
             report_id = result.get('database_id')
             if not report_id:
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
+            # Extract metrics
             total_tickets_sold = result['report_data'].get('total_tickets_sold', 0)
             total_attendees = result['report_data'].get('number_of_attendees', 0)
             total_revenue_ksh = result['report_data'].get('total_revenue', 0)
             attendance_rate = result['report_data'].get('attendance_rate', 0.0)
             data_quality_score = result['report_data'].get('data_quality_score', 100.0)
             detailed_stats = result['report_data'].get('detailed_attendance_stats', {})
-            scan_stats = detailed_stats.get('scan_statistics', {})
+            
+            # IMPROVED: Better handling of scan_statistics
+            scan_stats = self._parse_scan_statistics(
+                detailed_stats.get('scan_statistics', {}), event_id
+            )
+            
             integrity_issues = detailed_stats.get('integrity_issues', [])
 
             logger.info(f"GenerateReportResource: Enhanced metrics - Tickets: {total_tickets_sold}, Attendees: {total_attendees}, Revenue: {total_revenue_ksh} KES, Quality Score: {data_quality_score}")
 
+            # Currency conversion
             converted_amount = Decimal(str(total_revenue_ksh))
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
             overall_conversion_rate = Decimal('1')
 
-            try:
-                if target_currency_code != 'KES' and total_revenue_ksh > 0:
+            if target_currency_code != 'KES' and total_revenue_ksh > 0:
+                try:
                     logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KES to {target_currency_code}")
                     converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
                         total_revenue_ksh,
@@ -167,18 +181,20 @@ class GenerateReportResource(Resource):
                     )
                     overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
                     logger.info(f"GenerateReportResource: Conversion successful - {total_revenue_ksh} KES = {converted_amount} {target_currency_code}")
-                else:
+                except Exception as e:
+                    logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
                     converted_amount = Decimal(str(total_revenue_ksh))
-                    logger.info(f"GenerateReportResource: No conversion needed - amount stays {total_revenue_ksh} KES")
-            except Exception as e:
-                logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
-                converted_amount = Decimal(str(total_revenue_ksh))
-                target_currency_code = 'KES'
+                    target_currency_code = 'KES'
+                    target_currency = Currency.query.filter_by(code=CurrencyCode('KES'), is_active=True).first()
+            else:
+                logger.info(f"GenerateReportResource: No conversion needed - amount stays {total_revenue_ksh} KES")
 
+            # Generate download URLs
             base_url = request.url_root.rstrip('/')
             pdf_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
             csv_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=csv&currency={target_currency_code}"
 
+            # Build response
             response_data = {
                 'message': 'Report generation completed with enhanced attendee counting.',
                 'report_id': report_id,
@@ -232,59 +248,30 @@ class GenerateReportResource(Resource):
                 'email_sent': False
             }
 
+            # Email handling
             if send_email:
-                def async_send_email():
-                    try:
-                        from app import app
-                        with app.app_context():
-                            email_report_data = result['report_data'].copy()
-                            email_report_data.update({
-                                'event_name': event.name,
-                                'currency_symbol': target_currency.symbol if target_currency else 'KSh',
-                                'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),
-                                'currency': target_currency_code,
-                                'target_currency': target_currency_code,
-                                'report_period_start': start_date.strftime('%Y-%m-%d'),
-                                'report_period_end': end_date.strftime('%Y-%m-%d'),
-                                'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
-                                'base_currency': 'KES',
-                                'base_currency_symbol': 'KSh',
-                                'original_revenue': float(total_revenue_ksh) if target_currency_code != 'KES' else None,
-                                'original_currency': 'KES' if target_currency_code != 'KES' else None,
-                                'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
-                                'currency_conversion_source': 'currencyapi.com (with fallback)',
-                                'data_quality_score': data_quality_score,
-                                'integrity_issues_count': len(integrity_issues),
-                                'attendee_counting_enhanced': True,
-                                'sync_statistics': sync_stats
-                            })
-                            if target_currency_code != 'KES' and email_report_data.get('revenue_by_type'):
-                                converted_revenue_by_type = {}
-                                for ticket_type, original_revenue in email_report_data['revenue_by_type'].items():
-                                    try:
-                                        converted_revenue, _, _ = convert_ksh_to_target_currency(
-                                            float(original_revenue), target_currency_code
-                                        )
-                                        converted_revenue_by_type[ticket_type] = float(converted_revenue.quantize(Decimal('0.01')))
-                                    except Exception as e:
-                                        logger.warning(f"Failed to convert revenue for {ticket_type}: {e}")
-                                        converted_revenue_by_type[ticket_type] = float(original_revenue)
-                                email_report_data['revenue_by_type'] = converted_revenue_by_type
-                            email_sent = report_service.send_report_email(
-                                report_data=email_report_data,
-                                pdf_path='',
-                                csv_path='',
-                                recipient_email=recipient_email
-                            )
-                            if email_sent:
-                                logger.info(f"GenerateReportResource: Enhanced email sent to {recipient_email} for report {report_id}")
-                            else:
-                                logger.error(f"GenerateReportResource: Email sending failed for report {report_id}")
-                    except Exception as e:
-                        logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
-
-                threading.Thread(target=async_send_email).start()
-                response_data['email_sent'] = True
+                try:
+                    self._send_report_email_async(
+                        result['report_data'], 
+                        event, 
+                        target_currency, 
+                        target_currency_code,
+                        converted_amount,
+                        overall_conversion_rate,
+                        total_revenue_ksh,
+                        start_date,
+                        end_date,
+                        data_quality_score,
+                        integrity_issues,
+                        sync_stats,
+                        recipient_email,
+                        report_service,
+                        report_id
+                    )
+                    response_data['email_sent'] = True
+                except Exception as e:
+                    logger.error(f"GenerateReportResource: Failed to initiate email sending: {e}")
+                    response_data['email_sent'] = False
 
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Enhanced report generation completed in {duration:.2f} seconds for report {report_id}")
@@ -296,174 +283,116 @@ class GenerateReportResource(Resource):
             logger.error(f"GenerateReportResource: Unhandled error in report generation: {e}", exc_info=True)
             return {'error': 'Internal server error during report generation'}, 500
 
-
-class GetReportsResource(Resource, AuthorizationMixin):
-    """
-    API resource for retrieving a list of generated reports.
-    Includes download URLs for PDF and CSV for each report.
-    Supports date filtering, specific date queries, and flexible limiting.
-    """
-    @jwt_required()
-    def get(self):
-        try:
-            current_user_id = get_jwt_identity()
-            current_user = User.query.get(current_user_id)
-            if not current_user:
-                logger.warning(f"GetReportsResource: User with ID {current_user_id} not found.")
-                return {'error': 'User not found'}, 404
-
-            # Extract query parameters
-            event_id = request.args.get('event_id', type=int)
-            scope = request.args.get('scope')
-            start_date_str = request.args.get('start_date')
-            end_date_str = request.args.get('end_date')
-            specific_date_str = request.args.get('specific_date')
-            limit_str = request.args.get('limit')
-            get_all = request.args.get('get_all', 'false').lower() == 'true'
-            offset = request.args.get('offset', 0, type=int)
-            target_currency_id = request.args.get('target_currency_id', type=int)
-
-            # Handle date filtering
-            start_date = None
-            end_date = None
-            if specific_date_str:
+    def _parse_scan_statistics(self, scan_stats_raw, event_id):
+        """
+        Helper method to properly parse scan_statistics from various formats
+        """
+        scan_stats = {}
+        
+        if isinstance(scan_stats_raw, str):
+            try:
+                import json
+                # Try JSON first
+                scan_stats = json.loads(scan_stats_raw)
+                logger.info(f"GenerateReportResource: Successfully parsed scan_statistics from JSON string for event {event_id}")
+            except json.JSONDecodeError:
                 try:
-                    specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
-                    start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                except Exception as e:
-                    logger.error(f"GetReportsResource: Error parsing specific_date '{specific_date_str}': {e}")
-                    return {'error': 'Invalid specific date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS'}, 400
-            elif start_date_str or end_date_str:
-                start_date, end_date, error = DateValidator.validate_date_range(start_date_str, end_date_str)
-                if error:
-                    logger.warning(f"GetReportsResource: Invalid date range provided: {error}")
-                    return error, error.get('status', 400)
+                    # Fallback to ast.literal_eval for Python dict strings
+                    import ast
+                    scan_stats = ast.literal_eval(scan_stats_raw)
+                    logger.info(f"GenerateReportResource: Successfully parsed scan_statistics from Python dict string for event {event_id}")
+                except (ValueError, SyntaxError) as e:
+                    logger.warning(f"GenerateReportResource: Failed to parse scan_statistics string for event {event_id}: {e}")
+                    scan_stats = {}
+        elif isinstance(scan_stats_raw, dict):
+            scan_stats = scan_stats_raw
+        else:
+            logger.warning(f"GenerateReportResource: scan_statistics is neither string nor dict for event {event_id}: {type(scan_stats_raw)}")
+            scan_stats = {}
+            
+        # Ensure default structure
+        default_stats = {
+            'total_scan_events': 0,
+            'unique_tickets_scanned': 0,
+            'paid_tickets_scanned': 0,
+            'unpaid_tickets_scanned': 0,
+            'duplicate_scans': 0,
+            'multiple_scan_rate': 0.0
+        }
+        
+        # Merge with defaults
+        for key, default_value in default_stats.items():
+            if key not in scan_stats:
+                scan_stats[key] = default_value
+                
+        return scan_stats
 
-            # Handle limit parameter
-            limit = None
-            if not get_all:
-                if limit_str:
-                    try:
-                        limit = int(limit_str)
-                        if limit <= 0:
-                            logger.warning(f"GetReportsResource: Invalid limit value: {limit_str}")
-                            return {'error': 'Limit must be a positive integer'}, 400
-                    except ValueError:
-                        logger.warning(f"GetReportsResource: Invalid limit format: {limit_str}")
-                        return {'error': 'Limit must be a valid integer'}, 400
-                else:
-                    limit = 10  # Default to 10 most recent reports
+    def _send_report_email_async(self, report_data, event, target_currency, target_currency_code, 
+                                converted_amount, overall_conversion_rate, total_revenue_ksh,
+                                start_date, end_date, data_quality_score, integrity_issues,
+                                sync_stats, recipient_email, report_service, report_id):
+        """
+        Helper method to handle async email sending with proper error handling
+        """
+        def async_send_email():
+            try:
+                from app import app
+                with app.app_context():
+                    # Prepare email report data
+                    email_report_data = report_data.copy()
+                    email_report_data.update({
+                        'event_name': event.name,
+                        'currency_symbol': target_currency.symbol if target_currency else 'KSh',
+                        'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),
+                        'currency': target_currency_code,
+                        'target_currency': target_currency_code,
+                        'report_period_start': start_date.strftime('%Y-%m-%d'),
+                        'report_period_end': end_date.strftime('%Y-%m-%d'),
+                        'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
+                        'base_currency': 'KES',
+                        'base_currency_symbol': 'KSh',
+                        'original_revenue': float(total_revenue_ksh) if target_currency_code != 'KES' else None,
+                        'original_currency': 'KES' if target_currency_code != 'KES' else None,
+                        'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
+                        'currency_conversion_source': 'currencyapi.com (with fallback)',
+                        'data_quality_score': data_quality_score,
+                        'integrity_issues_count': len(integrity_issues),
+                        'attendee_counting_enhanced': True,
+                        'sync_statistics': sync_stats
+                    })
+                    
+                    # Convert revenue by type if needed
+                    if target_currency_code != 'KES' and email_report_data.get('revenue_by_type'):
+                        converted_revenue_by_type = {}
+                        for ticket_type, original_revenue in email_report_data['revenue_by_type'].items():
+                            try:
+                                converted_revenue, _, _ = convert_ksh_to_target_currency(
+                                    float(original_revenue), target_currency_code
+                                )
+                                converted_revenue_by_type[ticket_type] = float(converted_revenue.quantize(Decimal('0.01')))
+                            except Exception as e:
+                                logger.warning(f"Failed to convert revenue for {ticket_type}: {e}")
+                                converted_revenue_by_type[ticket_type] = float(original_revenue)
+                        email_report_data['revenue_by_type'] = converted_revenue_by_type
+                    
+                    # Send email
+                    email_sent = report_service.send_report_email(
+                        report_data=email_report_data,
+                        pdf_path='',
+                        csv_path='',
+                        recipient_email=recipient_email
+                    )
+                    
+                    if email_sent:
+                        logger.info(f"GenerateReportResource: Enhanced email sent to {recipient_email} for report {report_id}")
+                    else:
+                        logger.error(f"GenerateReportResource: Email sending failed for report {report_id}")
+                        
+            except Exception as e:
+                logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
 
-            # Build base query based on user role
-            if current_user.role == UserRole.ADMIN:
-                query = Report.query
-            else:
-                organizer = Organizer.query.filter_by(user_id=current_user_id).first()
-                if not organizer:
-                    logger.warning(f"GetReportsResource: Organizer profile not found for user {current_user_id}.")
-                    return {'error': 'Organizer profile not found for this user'}, 403
-                query = Report.query.filter_by(organizer_id=organizer.id)
-
-            # Apply event filter
-            if event_id:
-                event = Event.query.get(event_id)
-                if not event:
-                    logger.warning(f"GetReportsResource: Event with ID {event_id} not found for filtering reports.")
-                    return {'error': 'Event not found'}, 404
-                if not (event.organizer_id == (organizer.id if organizer else None) or current_user.role == UserRole.ADMIN):
-                    logger.warning(f"GetReportsResource: User {current_user_id} unauthorized to access reports for event {event_id}.")
-                    return {'error': 'Unauthorized to access reports for this event'}, 403
-                query = query.filter_by(event_id=event_id)
-
-            # Apply scope filter
-            if scope:
-                query = query.filter_by(report_scope=scope)
-
-            # Apply date filters
-            if start_date and end_date:
-                query = query.filter(Report.timestamp.between(start_date, end_date))
-
-            # Order by timestamp descending (most recent first)
-            query = query.order_by(Report.timestamp.desc())
-
-            # Get total count before applying limit/offset
-            total_count = query.count()
-
-            # Apply offset and limit
-            if offset:
-                query = query.offset(offset)
-            if limit:
-                query = query.limit(limit)
-
-            reports = query.all()
-
-            # Build response data
-            reports_data = []
-            base_url = request.url_root.rstrip('/')
-            for report in reports:
-                report_dict = report.as_dict(target_currency_id=target_currency_id)
-                report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=pdf"
-                report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=csv"
-                reports_data.append(report_dict)
-
-            # Enhanced logging with filter information
-            filter_info = []
-            if event_id:
-                filter_info.append(f"event_id={event_id}")
-            if scope:
-                filter_info.append(f"scope={scope}")
-            if specific_date_str:
-                filter_info.append(f"specific_date={specific_date_str}")
-            elif start_date_str or end_date_str:
-                filter_info.append(f"date_range={start_date_str} to {end_date_str}")
-            if limit:
-                filter_info.append(f"limit={limit}")
-            if offset:
-                filter_info.append(f"offset={offset}")
-
-            filters_applied = ", ".join(filter_info) if filter_info else "no filters"
-            logger.info(f"GetReportsResource: Retrieved {len(reports_data)} reports for user {current_user_id} with {filters_applied}.")
-
-            response_data = {
-                'reports': reports_data,
-                'total_count': total_count,
-                'total_reports_returned': len(reports_data),
-                'limit': limit,
-                'offset': offset,
-                'is_limited': bool(limit),
-                'limit_applied': limit
-            }
-
-            # Add query parameters info to response
-            query_info = {
-                'event_id': event_id,
-                'scope': scope,
-                'limit': limit,
-                'offset': offset,
-                'get_all': get_all,
-                'target_currency_id': target_currency_id
-            }
-
-            if specific_date_str:
-                query_info.update({
-                    'specific_date': specific_date_str,
-                    'is_single_day': True
-                })
-            elif start_date_str or end_date_str:
-                query_info.update({
-                    'start_date': start_date_str,
-                    'end_date': end_date_str,
-                    'is_single_day': False
-                })
-
-            response_data['query_info'] = query_info
-
-            return response_data, 200
-
-        except Exception as e:
-            logger.error(f"GetReportsResource: Error: {e}", exc_info=True)
-            return {'error': 'Internal server error'}, 500
+        # Start email sending in background thread
+        threading.Thread(target=async_send_email, daemon=True).start()
 
 
 class GetReportResource(Resource, AuthorizationMixin):
@@ -849,6 +778,56 @@ class EventReportsResource(Resource):
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error'}, 500
+class GetReportsResource(Resource, AuthorizationMixin):
+    """
+    API resource for retrieving a list of reports.
+    """
+    @jwt_required()
+    def get(self):
+        try:
+            current_user_id = get_jwt_identity()
+            current_user = User.query.get(current_user_id)
+            if not current_user:
+                logger.warning(f"GetReportsResource: User with ID {current_user_id} not found.")
+                return {'error': 'User not found'}, 404
+
+            # Optional: filter by organizer, event, or other params
+            organizer = Organizer.query.filter_by(user_id=current_user_id).first()
+            if not organizer and current_user.role != UserRole.ADMIN:
+                logger.warning(f"GetReportsResource: User {current_user_id} unauthorized to access reports list.")
+                return {'error': 'Unauthorized to access reports list'}, 403
+
+            query = Report.query
+            if current_user.role != UserRole.ADMIN and organizer:
+                query = query.filter_by(organizer_id=organizer.id)
+
+            reports = query.order_by(Report.report_date.desc()).all()
+            base_url = request.url_root.rstrip('/')
+            reports_data = []
+            for r in reports:
+                report_dict = {
+                    'report_id': r.id,
+                    'event_id': r.event_id,
+                    'total_tickets_sold': r.total_tickets_sold,
+                    'total_revenue': float(r.total_revenue),
+                    'number_of_attendees': r.number_of_attendees,
+                    'report_date': r.report_date.isoformat() if r.report_date else None,
+                    'pdf_download_url': f"{base_url}/api/v1/reports/{r.id}/export?format=pdf",
+                    'csv_download_url': f"{base_url}/api/v1/reports/{r.id}/export?format=csv"
+                }
+                reports_data.append(report_dict)
+
+            response_data = {
+                'reports': reports_data,
+                'total_reports': len(reports_data)
+            }
+            logger.info(f"GetReportsResource: Returned {len(reports_data)} reports for user {current_user_id}.")
+            return response_data, 200
+
+        except Exception as e:
+            logger.error(f"GetReportsResource: Error retrieving reports list: {e}", exc_info=True)
+            return {'error': 'Internal server error'}, 500
+
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
     @staticmethod

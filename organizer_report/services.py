@@ -127,45 +127,104 @@ class AttendeeCountingService:
             return 0
 
     @staticmethod
+
     def _get_scan_statistics(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, int]:
+
         try:
+
             total_scans = (db.session.query(func.count(Scan.id))
-                          .join(Ticket, Scan.ticket_id == Ticket.id)
-                          .filter(
-                              Ticket.event_id == event_id,
-                              Scan.scanned_at >= start_date,
-                              Scan.scanned_at <= end_date
-                          )
-                          .scalar()) or 0
+
+                        .join(Ticket, Scan.ticket_id == Ticket.id)
+
+                        .filter(
+
+                            Ticket.event_id == event_id,
+
+                            Scan.scanned_at >= start_date,
+
+                            Scan.scanned_at <= end_date
+
+                        )
+
+                        .scalar()) or 0
+
             unique_tickets = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
-                             .join(Ticket, Scan.ticket_id == Ticket.id)
-                             .filter(
-                                 Ticket.event_id == event_id,
-                                 Scan.scanned_at >= start_date,
-                                 Scan.scanned_at <= end_date
-                             )
-                             .scalar()) or 0
+
+                            .join(Ticket, Scan.ticket_id == Ticket.id)
+
+                            .filter(
+
+                                Ticket.event_id == event_id,
+
+                                Scan.scanned_at >= start_date,
+
+                                Scan.scanned_at <= end_date
+
+                            )
+
+                            .scalar()) or 0
+
             paid_tickets_scanned = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
+
             unpaid_tickets_scanned = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
-                                     .join(Ticket, Scan.ticket_id == Ticket.id)
-                                     .filter(
-                                         Ticket.event_id == event_id,
-                                         ~(Ticket.payment_status == PaymentStatus.PAID),
-                                         Scan.scanned_at >= start_date,
-                                         Scan.scanned_at <= end_date
-                                     )
-                                     .scalar()) or 0
+
+                                    .join(Ticket, Scan.ticket_id == Ticket.id)
+
+                                    .filter(
+
+                                        Ticket.event_id == event_id,
+
+                                        ~(Ticket.payment_status == PaymentStatus.PAID),
+
+                                        Scan.scanned_at >= start_date,
+
+                                        Scan.scanned_at <= end_date
+
+                                    )
+
+                                    .scalar()) or 0
+
             return {
+
                 'total_scan_events': total_scans,
+
                 'unique_tickets_scanned': unique_tickets,
+
                 'paid_tickets_scanned': paid_tickets_scanned,
+
                 'unpaid_tickets_scanned': unpaid_tickets_scanned,
+
                 'duplicate_scans': total_scans - unique_tickets,
+
                 'multiple_scan_rate': round((total_scans - unique_tickets) / max(unique_tickets, 1) * 100, 2)
+
             }
+
         except Exception as e:
+
             logger.error(f"Error getting scan statistics: {e}")
-            return {}
+
+            # Always return a dictionary, never an empty dict that might get stringified
+
+            return {
+
+                'total_scan_events': 0,
+
+                'unique_tickets_scanned': 0,
+
+                'paid_tickets_scanned': 0,
+
+                'unpaid_tickets_scanned': 0,
+
+                'duplicate_scans': 0,
+
+                'multiple_scan_rate': 0.0
+
+            }
+
+
+
+
 
     @staticmethod
     def _check_data_integrity(event_id: int, start_date: datetime, end_date: datetime) -> List[str]:
@@ -535,69 +594,195 @@ class ReportService:
         return sanitized
 
     def _validate_and_fix_report_data(self, report_data: Dict[str, Any]) -> Dict[str, Any]:
+
         try:
+
             logger.debug("=== VALIDATING REPORT DATA WITH ENHANCED ATTENDEE COUNTING ===")
+
+            
+
             total_revenue = float(report_data.get('total_revenue', 0))
+
             total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
+
             number_of_attendees = int(report_data.get('number_of_attendees', 0))
+
+            
+
             detailed_stats = report_data.get('detailed_attendance_stats', {})
+
+            
+
+            # Fix: Ensure detailed_stats is always a dictionary
+
             if isinstance(detailed_stats, str):
+
                 logger.warning(f"detailed_attendance_stats is string: {detailed_stats}")
-                detailed_stats = {}
+
+                try:
+
+                    # Try to parse if it's a JSON string
+
+                    import json
+
+                    detailed_stats = json.loads(detailed_stats)
+
+                except:
+
+                    # If parsing fails, create empty dict
+
+                    detailed_stats = {}
+
                 report_data['detailed_attendance_stats'] = detailed_stats
+
+            elif not isinstance(detailed_stats, dict):
+
+                logger.warning(f"detailed_attendance_stats is not dict type: {type(detailed_stats)}")
+
+                detailed_stats = {}
+
+                report_data['detailed_attendance_stats'] = detailed_stats
+
             integrity_issues = detailed_stats.get('integrity_issues', [])
+
             data_quality_score = detailed_stats.get('data_quality_score', 100.0)
+
             if integrity_issues:
+
                 logger.warning(f"Data integrity issues detected: {integrity_issues}")
+
             scan_stats = detailed_stats.get('scan_statistics', {})
+
+            
+
+            # Fix: Ensure scan_stats is always a dictionary
+
             if isinstance(scan_stats, str):
+
                 logger.warning(f"scan_statistics is string: {scan_stats}")
+
+                try:
+
+                    # Try to parse if it's a JSON string
+
+                    import json
+
+                    scan_stats = json.loads(scan_stats)
+
+                except:
+
+                    # If parsing fails, create empty dict
+
+                    scan_stats = {}
+
+                detailed_stats['scan_statistics'] = scan_stats
+
+            elif not isinstance(scan_stats, dict):
+
+                logger.warning(f"scan_statistics is not dict type: {type(scan_stats)}")
+
                 scan_stats = {}
+
+                detailed_stats['scan_statistics'] = scan_stats
+
+            # Continue with the rest of the validation logic...
+
             if scan_stats:
+
                 paid_scanned = scan_stats.get('paid_tickets_scanned', 0)
+
                 unpaid_scanned = scan_stats.get('unpaid_tickets_scanned', 0)
+
+                
+
                 if number_of_attendees != paid_scanned:
+
                     number_of_attendees = paid_scanned
+
                     report_data['number_of_attendees'] = number_of_attendees
+
+                
+
                 if unpaid_scanned > 0:
+
                     report_data['unpaid_attendees_warning'] = f"{unpaid_scanned} unpaid tickets scanned"
+
+            # Rest of the validation logic remains the same...
+
             if total_revenue > 0 and total_tickets_sold == 0 and report_data.get('tickets_by_type'):
+
                 reconstructed_tickets = sum(int(count) for count in report_data['tickets_by_type'].values())
+
                 if reconstructed_tickets > 0:
+
                     total_tickets_sold = reconstructed_tickets
+
                     report_data['total_tickets_sold'] = total_tickets_sold
+
             if report_data.get('attendees_by_type'):
+
                 reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
+
                 if reconstructed_attendees != number_of_attendees:
+
                     if number_of_attendees > 0 and reconstructed_attendees == 0:
+
                         report_data['attendees_by_type'] = {'General': number_of_attendees}
+
                     elif reconstructed_attendees > 0:
+
                         scale_factor = number_of_attendees / reconstructed_attendees
-                        scaled_breakdown = {ticket_type: int(count * scale_factor) for ticket_type, count in report_data['attendees_by_type'].items()}
+
+                        scaled_breakdown = {ticket_type: int(count * scale_factor) 
+
+                                        for ticket_type, count in report_data['attendees_by_type'].items()}
+
                         report_data['attendees_by_type'] = scaled_breakdown
+
             elif number_of_attendees > 0:
+
                 report_data['attendees_by_type'] = {'General': number_of_attendees}
+
             if total_tickets_sold > 0 and not report_data.get('tickets_by_type'):
+
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
+
             if total_revenue > 0 and not report_data.get('revenue_by_type'):
+
                 report_data['revenue_by_type'] = {'General': total_revenue}
+
             if total_tickets_sold > 0:
+
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
+
                 report_data['attendance_rate'] = attendance_rate
+
             report_data['data_quality_info'] = {
+
                 'score': data_quality_score,
+
                 'integrity_issues_count': len(integrity_issues),
+
                 'has_integrity_issues': len(integrity_issues) > 0,
+
                 'scan_validation_performed': bool(scan_stats)
+
             }
+
             return report_data
+
+            
+
         except Exception as e:
+
             logger.error(f"Error in enhanced data validation: {e}")
+
             return report_data
 
     def _generate_charts(self, report_data: Dict[str, Any]) -> List[str]:
         if not self.chart_generator:
             return []
+        
         chart_paths = []
         try:
             if report_data.get('tickets_by_type'):
@@ -607,6 +792,7 @@ class ReportService:
                 )
                 if tickets_chart:
                     chart_paths.append(tickets_chart)
+
             if report_data.get('revenue_by_type'):
                 revenue_chart = self.chart_generator.create_bar_chart(
                     data=report_data['revenue_by_type'],
@@ -616,6 +802,7 @@ class ReportService:
                 )
                 if revenue_chart:
                     chart_paths.append(revenue_chart)
+
             if report_data.get('payment_method_usage'):
                 payment_chart = self.chart_generator.create_pie_chart(
                     data=report_data['payment_method_usage'],
@@ -623,6 +810,7 @@ class ReportService:
                 )
                 if payment_chart:
                     chart_paths.append(payment_chart)
+
             if report_data.get('attendees_by_type'):
                 attendees_chart = self.chart_generator.create_bar_chart(
                     data=report_data['attendees_by_type'],
@@ -632,23 +820,39 @@ class ReportService:
                 )
                 if attendees_chart:
                     chart_paths.append(attendees_chart)
-            if isinstance(report_data.get('detailed_attendance_stats', {}), dict) and report_data['detailed_attendance_stats'].get('scan_statistics'):
-                scan_stats = report_data['detailed_attendance_stats']['scan_statistics']
-                scan_data = {
-                    'Paid Scanned': scan_stats.get('paid_tickets_scanned', 0),
-                    'Unpaid Scanned': scan_stats.get('unpaid_tickets_scanned', 0),
-                    'Duplicate Scans': scan_stats.get('duplicate_scans', 0)
-                }
-                if sum(scan_data.values()) > 0:
-                    scan_chart = self.chart_generator.create_bar_chart(
-                        data=scan_data,
-                        title="Scan Statistics",
-                        xlabel="Scan Type",
-                        ylabel="Count"
-                    )
-                    if scan_chart:
-                        chart_paths.append(scan_chart)
+
+            # FIX: Add proper type checking for detailed_attendance_stats
+            detailed_stats = report_data.get('detailed_attendance_stats', {})
+            
+            # Ensure detailed_stats is a dictionary, not a string
+            if isinstance(detailed_stats, str):
+                logger.warning(f"detailed_attendance_stats is string, skipping scan chart generation: {detailed_stats}")
+            elif isinstance(detailed_stats, dict):
+                scan_statistics = detailed_stats.get('scan_statistics', {})
+                
+                # Ensure scan_statistics is also a dictionary, not a string
+                if isinstance(scan_statistics, str):
+                    logger.warning(f"scan_statistics is string, skipping scan chart generation: {scan_statistics}")
+                elif isinstance(scan_statistics, dict) and scan_statistics:
+                    scan_data = {
+                        'Paid Scanned': scan_statistics.get('paid_tickets_scanned', 0),
+                        'Unpaid Scanned': scan_statistics.get('unpaid_tickets_scanned', 0),
+                        'Duplicate Scans': scan_statistics.get('duplicate_scans', 0)
+                    }
+                    
+                    # Only create chart if there's actual data
+                    if sum(scan_data.values()) > 0:
+                        scan_chart = self.chart_generator.create_bar_chart(
+                            data=scan_data,
+                            title="Scan Statistics",
+                            xlabel="Scan Type",
+                            ylabel="Count"
+                        )
+                        if scan_chart:
+                            chart_paths.append(scan_chart)
+
             return chart_paths
+            
         except Exception as e:
             logger.error(f"Error generating charts: {e}")
             return chart_paths
