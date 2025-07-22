@@ -297,6 +297,61 @@ class ReportDataProcessor:
         report_data.update(processed_data)
         return report_data
 
+class OrganizerReportService:
+    @staticmethod
+    def generate_event_metrics(event_id: int) -> Dict[str, Any]:
+        logger.info("Generating event metrics for event_id: %s", event_id)
+
+        # Tickets Sold by Type
+        tickets_by_type = dict(
+            db.session.query(Ticket.ticket_type, db.func.count(Ticket.id))
+            .filter(Ticket.event_id == event_id)
+            .group_by(Ticket.ticket_type)
+            .all()
+        )
+
+        # Revenue Calculations
+        revenue_original = (
+            db.session.query(db.func.sum(Ticket.price))
+            .filter(Ticket.event_id == event_id)
+            .scalar()
+            or 0.0
+        )
+
+        # Organizer & Currency
+        event = Event.query.get(event_id)
+        organizer = Organizer.query.get(event.organizer_id)
+        original_currency = organizer.currency if organizer else "USD"
+        target_currency = "KES"
+        converted_revenue = Currency.convert_currency(
+            amount=revenue_original,
+            from_currency=original_currency,
+            to_currency=target_currency,
+        )
+
+        # ✅ Corrected Attendees Count from Scans
+        attendees_by_type = dict(
+            db.session.query(Ticket.ticket_type, db.func.count(Scan.id))
+            .join(Scan, Scan.ticket_id == Ticket.id)
+            .filter(Ticket.event_id == event_id)
+            .group_by(Ticket.ticket_type)
+            .all()
+        )
+
+        final_metrics = {
+            "tickets_sold": sum(tickets_by_type.values()),
+            "tickets_by_type": tickets_by_type,
+            "revenue_original": float(revenue_original),
+            "revenue_converted": float(converted_revenue),
+            "attendees": sum(attendees_by_type.values()),
+            "attendees_by_type": attendees_by_type,
+            "original_currency": original_currency,
+            "target_currency": target_currency,
+        }
+
+        logger.info("Final Organizer Report Metrics: %s", final_metrics)
+        return final_metrics
+
 class ReportService:
     def __init__(self, config):
         self.config = config
