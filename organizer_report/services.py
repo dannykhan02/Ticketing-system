@@ -22,17 +22,13 @@ class AttendeeCountingService:
 
     @staticmethod
     def get_total_attendees_v2(event_id: int, start_date: datetime, end_date: datetime) -> int:
-        """
-        Enhanced attendee counting that ensures data integrity
-        Returns the count of unique PAID tickets that have been scanned
-        """
         try:
             result = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                      .select_from(Scan)
                      .join(Ticket, Scan.ticket_id == Ticket.id)
                      .filter(
                          Ticket.event_id == event_id,
-                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.payment_status == PaymentStatus.PAID,
                          Scan.scanned_at >= start_date,
                          Scan.scanned_at <= end_date
                      )
@@ -46,9 +42,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def get_attendees_by_type_v2(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
-        """
-        Enhanced attendees by type counting with better error handling
-        """
         try:
             query = (db.session.query(
                         TicketType.type_name,
@@ -59,7 +52,7 @@ class AttendeeCountingService:
                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                      .filter(
                          Ticket.event_id == event_id,
-                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.payment_status == PaymentStatus.PAID,
                          Scan.scanned_at >= start_date,
                          Scan.scanned_at <= end_date
                      )
@@ -74,10 +67,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def sync_ticket_scanned_status(event_id: Optional[int] = None) -> Dict[str, int]:
-        """
-        Synchronize the ticket.scanned boolean field with actual scan records
-        This ensures data integrity between the two tracking methods
-        """
         try:
             stats = {'updated': 0, 'errors': 0}
             ticket_query = db.session.query(Ticket)
@@ -103,9 +92,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def get_detailed_attendance_stats(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
-        """
-        Get comprehensive attendance statistics with validation
-        """
         try:
             total_tickets_sold = AttendeeCountingService._get_total_tickets_sold(event_id, start_date, end_date)
             total_attendees = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
@@ -126,12 +112,11 @@ class AttendeeCountingService:
 
     @staticmethod
     def _get_total_tickets_sold(event_id: int, start_date: datetime, end_date: datetime) -> int:
-        """Helper method to get total tickets sold"""
         try:
             result = (db.session.query(func.sum(Ticket.quantity))
                      .filter(
                          Ticket.event_id == event_id,
-                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.payment_status == PaymentStatus.PAID,
                          Ticket.purchase_date >= start_date,
                          Ticket.purchase_date <= end_date
                      )
@@ -143,7 +128,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def _get_scan_statistics(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, int]:
-        """Get detailed scan statistics"""
         try:
             total_scans = (db.session.query(func.count(Scan.id))
                           .join(Ticket, Scan.ticket_id == Ticket.id)
@@ -153,6 +137,7 @@ class AttendeeCountingService:
                               Scan.scanned_at <= end_date
                           )
                           .scalar()) or 0
+
             unique_tickets = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                              .join(Ticket, Scan.ticket_id == Ticket.id)
                              .filter(
@@ -161,16 +146,19 @@ class AttendeeCountingService:
                                  Scan.scanned_at <= end_date
                              )
                              .scalar()) or 0
+
             paid_tickets_scanned = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
+
             unpaid_tickets_scanned = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                                      .join(Ticket, Scan.ticket_id == Ticket.id)
                                      .filter(
                                          Ticket.event_id == event_id,
-                                         cast(Ticket.payment_status, String).not_(cast(Ticket.payment_status, String).ilike("paid")),
+                                         ~(Ticket.payment_status == PaymentStatus.PAID),
                                          Scan.scanned_at >= start_date,
                                          Scan.scanned_at <= end_date
                                      )
                                      .scalar()) or 0
+
             return {
                 'total_scan_events': total_scans,
                 'unique_tickets_scanned': unique_tickets,
@@ -185,7 +173,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def _check_data_integrity(event_id: int, start_date: datetime, end_date: datetime) -> List[str]:
-        """Check for data integrity issues"""
         issues = []
         try:
             orphaned_scanned = (db.session.query(func.count(Ticket.id))
@@ -200,6 +187,7 @@ class AttendeeCountingService:
                                .scalar()) or 0
             if orphaned_scanned > 0:
                 issues.append(f"{orphaned_scanned} tickets marked as scanned but have no scan records")
+
             unsynced_tickets = (db.session.query(func.count(func.distinct(Ticket.id)))
                                .join(Scan, Ticket.id == Scan.ticket_id)
                                .filter(
@@ -211,11 +199,12 @@ class AttendeeCountingService:
                                .scalar()) or 0
             if unsynced_tickets > 0:
                 issues.append(f"{unsynced_tickets} tickets have scan records but not marked as scanned")
+
             unpaid_scans = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                            .join(Ticket, Scan.ticket_id == Ticket.id)
                            .filter(
                                Ticket.event_id == event_id,
-                               cast(Ticket.payment_status, String).not_(cast(Ticket.payment_status, String).ilike("paid")),
+                               ~(Ticket.payment_status == PaymentStatus.PAID),
                                Scan.scanned_at >= start_date,
                                Scan.scanned_at <= end_date
                            )
@@ -229,7 +218,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def _calculate_data_quality_score(scan_stats: Dict[str, int], integrity_issues: List[str]) -> float:
-        """Calculate a data quality score (0-100)"""
         try:
             score = 100.0
             score -= len(integrity_issues) * 10
@@ -246,9 +234,6 @@ class AttendeeCountingService:
 
     @staticmethod
     def create_scan_record(ticket_id: int, scanned_by_user_id: int) -> Dict[str, Any]:
-        """
-        Create a scan record and update ticket status atomically
-        """
         try:
             ticket = Ticket.query.get(ticket_id)
             if not ticket:
@@ -277,6 +262,7 @@ class AttendeeCountingService:
             logger.error(f"Error creating scan record: {e}")
             return {'success': False, 'error': str(e)}
 
+            
 class DatabaseQueryService:
     @staticmethod
     def _convert_enum_to_string(value):
