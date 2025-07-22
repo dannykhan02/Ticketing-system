@@ -388,6 +388,32 @@ class DatabaseQueryService:
         return AttendeeCountingService.get_attendees_by_type_v2(event_id, start_date, end_date)
 
     @staticmethod
+    def get_payment_method_usage(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
+        """
+        Get payment method usage for PAID tickets only.
+        Returns a list of tuples with payment method and count of transactions.
+        """
+        try:
+            query = (db.session.query(Transaction.payment_method, func.count(Transaction.id))
+                     .select_from(Ticket)
+                     .join(Transaction, Ticket.transaction_id == Transaction.id)
+                     .filter(
+                         Ticket.event_id == event_id,
+                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.purchase_date >= start_date,
+                         Ticket.purchase_date <= end_date
+                     )
+                     .group_by(Transaction.payment_method)
+                     .all())
+
+            result = [(DatabaseQueryService._convert_enum_to_string(method), count) for method, count in query]
+            logger.debug(f"get_payment_method_usage for event {event_id}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in get_payment_method_usage: {e}")
+            return []
+
+    @staticmethod
     def get_attendance_rate(event_id: int, start_date: datetime, end_date: datetime) -> float:
         """Calculate attendance rate: (attendees / tickets_sold) * 100"""
         try:
