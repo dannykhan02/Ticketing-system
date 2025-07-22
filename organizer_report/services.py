@@ -8,7 +8,6 @@ from .report_generators import ChartGenerator, PDFReportGenerator, CSVReportGene
 from sqlalchemy import func, cast, String
 import logging
 import json
-
 from currency_routes import get_exchange_rate, convert_ksh_to_target_currency, rate_cache
 
 logger = logging.getLogger(__name__)

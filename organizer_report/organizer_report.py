@@ -24,6 +24,7 @@ class GenerateReportResource(Resource):
             start_time = datetime.now()
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
+
             if not current_user:
                 logger.warning(f"GenerateReportResource: User with ID {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
@@ -147,14 +148,16 @@ class GenerateReportResource(Resource):
             attendance_rate = result['report_data'].get('attendance_rate', 0.0)
             data_quality_score = result['report_data'].get('data_quality_score', 100.0)
             detailed_stats = result['report_data'].get('detailed_attendance_stats', {})
-            scan_statistics = detailed_stats.get('scan_statistics', {})
+            scan_stats = detailed_stats.get('scan_statistics', {})
             integrity_issues = detailed_stats.get('integrity_issues', [])
+
             logger.info(f"GenerateReportResource: Enhanced metrics - Tickets: {total_tickets_sold}, Attendees: {total_attendees}, Revenue: {total_revenue_ksh} KES, Quality Score: {data_quality_score}")
 
             converted_amount = Decimal(str(total_revenue_ksh))
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
             overall_conversion_rate = Decimal('1')
+
             try:
                 if target_currency_code != 'KES' and total_revenue_ksh > 0:
                     logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KES to {target_currency_code}")
@@ -195,7 +198,7 @@ class GenerateReportResource(Resource):
                 'data_quality': {
                     'data_quality_score': data_quality_score,
                     'integrity_issues': integrity_issues,
-                    'scan_statistics': scan_statistics,
+                    'scan_statistics': scan_stats,
                     'sync_statistics': sync_stats,
                     'enhancement_applied': True
                 },
