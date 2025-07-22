@@ -72,9 +72,9 @@ class DatabaseQueryService:
     def get_attendees_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
         """Get attendees by type - based on scanned tickets"""
         try:
-            query = (db.session.query(TicketType.type_name, func.count(func.distinct(Scan.ticket_id)))
-                     .select_from(Scan)
-                     .join(Ticket, Scan.ticket_id == Ticket.id)
+            # Updated query to properly count scanned tickets by type
+            query = (db.session.query(TicketType.type_name, func.count(Scan.ticket_id.distinct()))
+                     .join(Ticket, Ticket.id == Scan.ticket_id)
                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
                      .filter(
                          Ticket.event_id == event_id,
@@ -156,16 +156,15 @@ class DatabaseQueryService:
     def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Calculate attendees: Count distinct scanned tickets within the date range."""
         try:
-            result = (
-                db.session.query(func.count(func.distinct(Scan.ticket_id)))
-                .join(Ticket, Scan.ticket_id == Ticket.id)
-                .filter(
-                    Ticket.event_id == event_id,
-                    Scan.scanned_at >= start_date,
-                    Scan.scanned_at <= end_date
-                )
-                .scalar()
-            )
+            # Updated query to properly count scanned tickets
+            result = (db.session.query(func.count(Scan.ticket_id.distinct()))
+                     .join(Ticket, Scan.ticket_id == Ticket.id)
+                     .filter(
+                         Ticket.event_id == event_id,
+                         Scan.scanned_at >= start_date,
+                         Scan.scanned_at <= end_date
+                     )
+                     .scalar())
             total_attendees = result if result else 0
             logger.debug(f"get_total_attendees (scan-based) for event {event_id}: {total_attendees}")
             return total_attendees
@@ -328,19 +327,18 @@ class OrganizerReportService:
 
         # Corrected Attendees Count (distinct scanned tickets)
         attendees_count = (
-            db.session.query(Scan)
+            db.session.query(func.count(Scan.ticket_id.distinct()))
             .join(Ticket, Scan.ticket_id == Ticket.id)
             .filter(Ticket.event_id == event_id)
-            .distinct(Scan.ticket_id)
-            .count()
+            .scalar()
         )
         logger.info(f"Final attendee count: {attendees_count}")
 
         # Attendees by type (if you still need this breakdown based on scans)
         attendees_by_type = dict(
-            db.session.query(TicketType.type_name, func.count(db.distinct(Scan.ticket_id)))
-            .join(Ticket, Ticket.ticket_type_id == TicketType.id)
-            .join(Scan, Scan.ticket_id == Ticket.id)
+            db.session.query(TicketType.type_name, func.count(Scan.ticket_id.distinct()))
+            .join(Ticket, Ticket.id == Scan.ticket_id)
+            .join(TicketType, Ticket.ticket_type_id == TicketType.id)
             .filter(Ticket.event_id == event_id)
             .group_by(TicketType.type_name)
             .all()
