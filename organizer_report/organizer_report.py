@@ -1,12 +1,11 @@
 from flask import request, jsonify, send_file, current_app, after_this_request
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction,CurrencyCode
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode
 from .services import ReportService, DatabaseQueryService, AttendeeCountingService, ReportDataProcessor
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator
 from currency_routes import convert_ksh_to_target_currency
-
 from reportlab.lib.pagesizes import A4
 import logging
 from typing import Optional, Dict, Any
@@ -54,7 +53,6 @@ class GenerateReportResource(Resource):
                     logger.warning(f"GenerateReportResource: User {current_user_id} unauthorized to generate report for event {event_id}.")
                     return {'error': 'Unauthorized to generate report for this event'}, 403
 
-            # Parse date parameters
             if specific_date_str:
                 try:
                     specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
@@ -72,19 +70,15 @@ class GenerateReportResource(Resource):
                     end_date = datetime.now()
                 end_date = DateUtils.adjust_end_date(end_date)
 
-            # Validate and set target currency
             if target_currency_code:
                 try:
-                    from model import CurrencyCode
                     target_currency = Currency.query.filter_by(
                         code=CurrencyCode(target_currency_code),
                         is_active=True
                     ).first()
-
                     if not target_currency:
                         logger.warning(f"GenerateReportResource: Target currency '{target_currency_code}' not found or not active.")
                         return {'error': f'Target currency "{target_currency_code}" not found or not active'}, 400
-
                 except ValueError:
                     logger.warning(f"GenerateReportResource: Invalid target currency code '{target_currency_code}'.")
                     return {'error': f'Invalid target currency code "{target_currency_code}"'}, 400
@@ -96,8 +90,7 @@ class GenerateReportResource(Resource):
                 ).first()
 
             logger.info(f"GenerateReportResource: Starting report generation for event {event_id} from {start_date} to {end_date}")
-            
-            # STEP 1: Ensure data integrity before report generation
+
             try:
                 sync_stats = AttendeeCountingService.sync_ticket_scanned_status(event_id)
                 logger.info(f"GenerateReportResource: Data sync completed for event {event_id} - {sync_stats}")
@@ -105,10 +98,8 @@ class GenerateReportResource(Resource):
                 logger.warning(f"GenerateReportResource: Data sync failed for event {event_id}: {e}")
                 sync_stats = {'synchronized': 0, 'errors': 1}
 
-            # STEP 2: Generate report using ReportService (as requested to keep working together)
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
-
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
@@ -125,29 +116,21 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Failed to generate report data for event {event_id}: {result.get('error')}")
                 return {'error': result.get('error', 'Failed to generate report')}, 500
 
-            # STEP 3: Enhance the report data with improved attendee counting (using AttendeeCountingService)
             if result.get('report_data'):
                 try:
                     enhanced_data = ReportDataProcessor.process_report_data(
-                        result['report_data'], 
-                        event_id, 
-                        start_date, 
+                        result['report_data'],
+                        event_id,
+                        start_date,
                         end_date
                     )
-                    
-                    # Merge enhanced data back into the result
                     result['report_data'].update(enhanced_data)
-                    
-                    # Log the improvement for tracking
                     original_attendees = result['report_data'].get('original_attendees', 0)
                     enhanced_attendees = enhanced_data.get('number_of_attendees', 0)
-                    
                     logger.info(f"GenerateReportResource: Enhanced attendee counting applied for event {event_id}")
                     logger.info(f"GenerateReportResource: Attendee count - Original: {original_attendees}, Enhanced: {enhanced_attendees}")
-                    
                 except Exception as e:
                     logger.warning(f"GenerateReportResource: Failed to enhance attendee data for event {event_id}: {e}")
-                    # Continue with original data if enhancement fails
                     enhanced_data = result['report_data']
             else:
                 logger.error(f"GenerateReportResource: No report data returned from ReportService for event {event_id}")
@@ -158,26 +141,20 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            # Extract metrics using enhanced data
             total_tickets_sold = result['report_data'].get('total_tickets_sold', 0)
-            total_attendees = result['report_data'].get('number_of_attendees', 0)  # Now using enhanced counting
+            total_attendees = result['report_data'].get('number_of_attendees', 0)
             total_revenue_ksh = result['report_data'].get('total_revenue', 0)
             attendance_rate = result['report_data'].get('attendance_rate', 0.0)
             data_quality_score = result['report_data'].get('data_quality_score', 100.0)
-
-            # Get detailed statistics from enhanced data
             detailed_stats = result['report_data'].get('detailed_attendance_stats', {})
             scan_statistics = detailed_stats.get('scan_statistics', {})
             integrity_issues = detailed_stats.get('integrity_issues', [])
-
             logger.info(f"GenerateReportResource: Enhanced metrics - Tickets: {total_tickets_sold}, Attendees: {total_attendees}, Revenue: {total_revenue_ksh} KES, Quality Score: {data_quality_score}")
 
-            # Currency conversion
             converted_amount = Decimal(str(total_revenue_ksh))
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
             overall_conversion_rate = Decimal('1')
-
             try:
                 if target_currency_code != 'KES' and total_revenue_ksh > 0:
                     logger.info(f"GenerateReportResource: Converting {total_revenue_ksh} KES to {target_currency_code}")
@@ -190,18 +167,15 @@ class GenerateReportResource(Resource):
                 else:
                     converted_amount = Decimal(str(total_revenue_ksh))
                     logger.info(f"GenerateReportResource: No conversion needed - amount stays {total_revenue_ksh} KES")
-
             except Exception as e:
                 logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
                 converted_amount = Decimal(str(total_revenue_ksh))
                 target_currency_code = 'KES'
 
-            # Generate download URLs
             base_url = request.url_root.rstrip('/')
             pdf_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
             csv_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=csv&currency={target_currency_code}"
 
-            # Build comprehensive response with enhanced data
             response_data = {
                 'message': 'Report generation completed with enhanced attendee counting.',
                 'report_id': report_id,
@@ -209,7 +183,7 @@ class GenerateReportResource(Resource):
                     'total_tickets_sold': total_tickets_sold,
                     'total_revenue_original': float(total_revenue_ksh),
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
-                    'number_of_attendees': total_attendees,  # Enhanced attendee count from AttendeeCountingService
+                    'number_of_attendees': total_attendees,
                     'attendance_rate': attendance_rate,
                     'no_show_rate': result['report_data'].get('no_show_rate', 0.0),
                     'revenue_per_attendee': result['report_data'].get('revenue_per_attendee', 0.0),
@@ -227,7 +201,7 @@ class GenerateReportResource(Resource):
                 },
                 'breakdown': {
                     'tickets_by_type': result['report_data'].get('tickets_by_type', {}),
-                    'attendees_by_type': result['report_data'].get('attendees_by_type', {}),  # Enhanced by AttendeeCountingService
+                    'attendees_by_type': result['report_data'].get('attendees_by_type', {}),
                     'revenue_by_type': result['report_data'].get('revenue_by_type', {}),
                     'payment_method_usage': result['report_data'].get('payment_method_usage', {})
                 },
@@ -255,16 +229,12 @@ class GenerateReportResource(Resource):
                 'email_sent': False
             }
 
-            # Enhanced email sending with consistent data
             if send_email:
                 def async_send_email():
                     try:
                         from app import app
                         with app.app_context():
-                            # Use the enhanced report data for email (consistent with API response)
                             email_report_data = result['report_data'].copy()
-                            
-                            # Apply currency conversion to email data
                             email_report_data.update({
                                 'event_name': event.name,
                                 'currency_symbol': target_currency.symbol if target_currency else 'KSh',
@@ -280,15 +250,11 @@ class GenerateReportResource(Resource):
                                 'original_currency': 'KES' if target_currency_code != 'KES' else None,
                                 'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
                                 'currency_conversion_source': 'currencyapi.com (with fallback)',
-                                
-                                # Include enhanced data quality information
                                 'data_quality_score': data_quality_score,
                                 'integrity_issues_count': len(integrity_issues),
                                 'attendee_counting_enhanced': True,
                                 'sync_statistics': sync_stats
                             })
-
-                            # Convert revenue breakdown if needed
                             if target_currency_code != 'KES' and email_report_data.get('revenue_by_type'):
                                 converted_revenue_by_type = {}
                                 for ticket_type, original_revenue in email_report_data['revenue_by_type'].items():
@@ -301,20 +267,16 @@ class GenerateReportResource(Resource):
                                         logger.warning(f"Failed to convert revenue for {ticket_type}: {e}")
                                         converted_revenue_by_type[ticket_type] = float(original_revenue)
                                 email_report_data['revenue_by_type'] = converted_revenue_by_type
-
-                            # Send email using ReportService (maintaining integration)
                             email_sent = report_service.send_report_email(
                                 report_data=email_report_data,
                                 pdf_path='',
                                 csv_path='',
                                 recipient_email=recipient_email
                             )
-
                             if email_sent:
                                 logger.info(f"GenerateReportResource: Enhanced email sent to {recipient_email} for report {report_id}")
                             else:
                                 logger.error(f"GenerateReportResource: Email sending failed for report {report_id}")
-
                     except Exception as e:
                         logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
 
@@ -324,9 +286,9 @@ class GenerateReportResource(Resource):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Enhanced report generation completed in {duration:.2f} seconds for report {report_id}")
             logger.info(f"GenerateReportResource: Final metrics - Attendees: {total_attendees} (enhanced), Quality Score: {data_quality_score}")
-            
+
             return response_data, 200
-            
+
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error in report generation: {e}", exc_info=True)
             return {'error': 'Internal server error during report generation'}, 500
