@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class AttendeeCountingService:
     """Enhanced service for accurate attendee counting with data integrity checks"""
-    
+
     @staticmethod
     def get_total_attendees_v2(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """
@@ -27,7 +27,6 @@ class AttendeeCountingService:
         Returns the count of unique PAID tickets that have been scanned
         """
         try:
-            # Primary method: Count unique paid tickets that have scan records
             result = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                      .select_from(Scan)
                      .join(Ticket, Scan.ticket_id == Ticket.id)
@@ -38,11 +37,11 @@ class AttendeeCountingService:
                          Scan.scanned_at <= end_date
                      )
                      .scalar())
-            
+
             total_attendees = result if result else 0
             logger.debug(f"get_total_attendees_v2 for event {event_id}: {total_attendees}")
             return total_attendees
-            
+
         except Exception as e:
             logger.error(f"Error in get_total_attendees_v2: {e}")
             return 0
@@ -54,7 +53,7 @@ class AttendeeCountingService:
         """
         try:
             query = (db.session.query(
-                        TicketType.type_name, 
+                        TicketType.type_name,
                         func.count(func.distinct(Scan.ticket_id))
                      )
                      .select_from(Scan)
@@ -68,11 +67,11 @@ class AttendeeCountingService:
                      )
                      .group_by(TicketType.type_name)
                      .all())
-            
+
             result = [(str(type_name), count) for type_name, count in query]
             logger.debug(f"get_attendees_by_type_v2 for event {event_id}: {result}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error in get_attendees_by_type_v2: {e}")
             return []
@@ -85,32 +84,29 @@ class AttendeeCountingService:
         """
         try:
             stats = {'updated': 0, 'errors': 0}
-            
-            # Build base query for tickets
+
             ticket_query = db.session.query(Ticket)
             if event_id:
                 ticket_query = ticket_query.filter(Ticket.event_id == event_id)
-            
+
             tickets = ticket_query.all()
-            
+
             for ticket in tickets:
                 try:
-                    # Check if ticket has any scan records
                     has_scans = db.session.query(Scan).filter(Scan.ticket_id == ticket.id).first() is not None
-                    
-                    # Update if mismatch found
+
                     if ticket.scanned != has_scans:
                         ticket.scanned = has_scans
                         stats['updated'] += 1
-                        
+
                 except Exception as e:
                     logger.error(f"Error updating ticket {ticket.id}: {e}")
                     stats['errors'] += 1
-            
+
             db.session.commit()
             logger.info(f"Sync completed: {stats}")
             return stats
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error in sync_ticket_scanned_status: {e}")
@@ -122,19 +118,15 @@ class AttendeeCountingService:
         Get comprehensive attendance statistics with validation
         """
         try:
-            # Basic counts
             total_tickets_sold = AttendeeCountingService._get_total_tickets_sold(event_id, start_date, end_date)
             total_attendees = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
-            
-            # Scan statistics
+
             scan_stats = AttendeeCountingService._get_scan_statistics(event_id, start_date, end_date)
-            
-            # Calculate rates
+
             attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0
-            
-            # Data integrity checks
+
             integrity_issues = AttendeeCountingService._check_data_integrity(event_id, start_date, end_date)
-            
+
             return {
                 'total_tickets_sold': total_tickets_sold,
                 'total_attendees': total_attendees,
@@ -143,7 +135,7 @@ class AttendeeCountingService:
                 'integrity_issues': integrity_issues,
                 'data_quality_score': AttendeeCountingService._calculate_data_quality_score(scan_stats, integrity_issues)
             }
-            
+
         except Exception as e:
             logger.error(f"Error in get_detailed_attendance_stats: {e}")
             return {}
@@ -169,7 +161,6 @@ class AttendeeCountingService:
     def _get_scan_statistics(event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, int]:
         """Get detailed scan statistics"""
         try:
-            # Total scan events
             total_scans = (db.session.query(func.count(Scan.id))
                           .join(Ticket, Scan.ticket_id == Ticket.id)
                           .filter(
@@ -178,8 +169,7 @@ class AttendeeCountingService:
                               Scan.scanned_at <= end_date
                           )
                           .scalar()) or 0
-            
-            # Unique tickets scanned
+
             unique_tickets = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                              .join(Ticket, Scan.ticket_id == Ticket.id)
                              .filter(
@@ -188,11 +178,9 @@ class AttendeeCountingService:
                                  Scan.scanned_at <= end_date
                              )
                              .scalar()) or 0
-            
-            # Paid tickets scanned
+
             paid_tickets_scanned = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
-            
-            # Unpaid tickets scanned
+
             unpaid_tickets_scanned = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                                      .join(Ticket, Scan.ticket_id == Ticket.id)
                                      .filter(
@@ -202,7 +190,7 @@ class AttendeeCountingService:
                                          Scan.scanned_at <= end_date
                                      )
                                      .scalar()) or 0
-            
+
             return {
                 'total_scan_events': total_scans,
                 'unique_tickets_scanned': unique_tickets,
@@ -211,7 +199,7 @@ class AttendeeCountingService:
                 'duplicate_scans': total_scans - unique_tickets,
                 'multiple_scan_rate': round((total_scans - unique_tickets) / max(unique_tickets, 1) * 100, 2)
             }
-            
+
         except Exception as e:
             logger.error(f"Error getting scan statistics: {e}")
             return {}
@@ -220,9 +208,8 @@ class AttendeeCountingService:
     def _check_data_integrity(event_id: int, start_date: datetime, end_date: datetime) -> List[str]:
         """Check for data integrity issues"""
         issues = []
-        
+
         try:
-            # Check for tickets marked as scanned but with no scan records
             orphaned_scanned = (db.session.query(func.count(Ticket.id))
                                .outerjoin(Scan, Ticket.id == Scan.ticket_id)
                                .filter(
@@ -233,11 +220,10 @@ class AttendeeCountingService:
                                    Ticket.purchase_date <= end_date
                                )
                                .scalar()) or 0
-            
+
             if orphaned_scanned > 0:
                 issues.append(f"{orphaned_scanned} tickets marked as scanned but have no scan records")
-            
-            # Check for tickets with scan records but not marked as scanned
+
             unsynced_tickets = (db.session.query(func.count(func.distinct(Ticket.id)))
                                .join(Scan, Ticket.id == Scan.ticket_id)
                                .filter(
@@ -247,11 +233,10 @@ class AttendeeCountingService:
                                    Ticket.purchase_date <= end_date
                                )
                                .scalar()) or 0
-            
+
             if unsynced_tickets > 0:
                 issues.append(f"{unsynced_tickets} tickets have scan records but not marked as scanned")
-            
-            # Check for scans of unpaid tickets
+
             unpaid_scans = (db.session.query(func.count(func.distinct(Scan.ticket_id)))
                            .join(Ticket, Scan.ticket_id == Ticket.id)
                            .filter(
@@ -261,14 +246,14 @@ class AttendeeCountingService:
                                Scan.scanned_at <= end_date
                            )
                            .scalar()) or 0
-            
+
             if unpaid_scans > 0:
                 issues.append(f"{unpaid_scans} unpaid tickets have been scanned")
-                
+
         except Exception as e:
             logger.error(f"Error checking data integrity: {e}")
             issues.append("Error occurred during data integrity check")
-        
+
         return issues
 
     @staticmethod
@@ -276,22 +261,19 @@ class AttendeeCountingService:
         """Calculate a data quality score (0-100)"""
         try:
             score = 100.0
-            
-            # Deduct points for integrity issues
+
             score -= len(integrity_issues) * 10
-            
-            # Deduct points for high multiple scan rates (could indicate issues)
+
             if scan_stats.get('multiple_scan_rate', 0) > 20:
                 score -= 15
             elif scan_stats.get('multiple_scan_rate', 0) > 10:
                 score -= 5
-            
-            # Deduct points for unpaid ticket scans
+
             if scan_stats.get('unpaid_tickets_scanned', 0) > 0:
                 score -= 20
-            
+
             return max(0.0, min(100.0, score))
-            
+
         except Exception as e:
             logger.error(f"Error calculating data quality score: {e}")
             return 0.0
@@ -302,47 +284,40 @@ class AttendeeCountingService:
         Create a scan record and update ticket status atomically
         """
         try:
-            # Verify ticket exists and is paid
             ticket = Ticket.query.get(ticket_id)
             if not ticket:
                 return {'success': False, 'error': 'Ticket not found'}
-            
+
             if ticket.payment_status != PaymentStatus.PAID:
                 return {'success': False, 'error': 'Ticket is not paid'}
-            
-            # Check if already scanned (optional - you might want to allow re-scans)
+
             existing_scan = Scan.query.filter_by(ticket_id=ticket_id).first()
             if existing_scan:
                 return {'success': False, 'error': 'Ticket already scanned', 'scan_time': existing_scan.scanned_at}
-            
-            # Create scan record
+
             scan = Scan(
                 ticket_id=ticket_id,
                 scanned_by=scanned_by_user_id,
                 scanned_at=datetime.utcnow()
             )
-            
-            # Update ticket status
+
             ticket.scanned = True
-            
-            # Save both records
+
             db.session.add(scan)
             db.session.commit()
-            
+
             return {
                 'success': True,
                 'scan_id': scan.id,
                 'scan_time': scan.scanned_at,
                 'ticket_id': ticket_id
             }
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error creating scan record: {e}")
             return {'success': False, 'error': str(e)}
 
-
-# Enhanced Database Query Service with improved attendee counting
 class DatabaseQueryService:
     @staticmethod
     def _convert_enum_to_string(value):
@@ -350,6 +325,51 @@ class DatabaseQueryService:
         if hasattr(value, 'value'):
             return str(value.value)
         return str(value)
+
+    @staticmethod
+    def get_tickets_sold_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
+        """Get tickets sold by type for PAID tickets only"""
+        try:
+            query = (db.session.query(TicketType.type_name, func.count(Ticket.id))
+                     .select_from(Ticket)
+                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                     .filter(
+                         Ticket.event_id == event_id,
+                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.purchase_date >= start_date,
+                         Ticket.purchase_date <= end_date
+                     )
+                     .group_by(TicketType.type_name)
+                     .all())
+            result = [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
+            logger.debug(f"get_tickets_sold_by_type for event {event_id}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in get_tickets_sold_by_type: {e}")
+            return []
+
+    @staticmethod
+    def get_revenue_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, Decimal]]:
+        """Get revenue by type for PAID tickets only - sum of ticket prices"""
+        try:
+            query = (db.session.query(TicketType.type_name, func.sum(TicketType.price * Ticket.quantity))
+                     .select_from(Ticket)
+                     .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                     .filter(
+                         Ticket.event_id == event_id,
+                         cast(Ticket.payment_status, String).ilike("paid"),
+                         Ticket.purchase_date >= start_date,
+                         Ticket.purchase_date <= end_date
+                     )
+                     .group_by(TicketType.type_name)
+                     .all())
+            result = [(DatabaseQueryService._convert_enum_to_string(type_name),
+                       Decimal(str(revenue)) if revenue else Decimal('0')) for type_name, revenue in query]
+            logger.debug(f"get_revenue_by_type for event {event_id}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error in get_revenue_by_type: {e}")
+            return []
 
     @staticmethod
     def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
@@ -373,10 +393,8 @@ class DatabaseQueryService:
         try:
             total_tickets = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
             total_attendees = DatabaseQueryService.get_total_attendees(event_id, start_date, end_date)
-
             if total_tickets == 0:
                 return 0.0
-
             rate = (total_attendees / total_tickets) * 100
             return round(rate, 2)
         except Exception as e:
@@ -402,8 +420,22 @@ class DatabaseQueryService:
             logger.error(f"Error in get_total_tickets_sold: {e}")
             return 0
 
+    @staticmethod
+    def get_event_base_currency(event_id: int) -> str:
+        """Get event's base currency code, defaulting to KES"""
+        try:
+            event = Event.query.get(event_id)
+            if event and hasattr(event, 'base_currency_id') and event.base_currency_id:
+                currency = Currency.query.get(event.base_currency_id)
+                return currency.code.value if currency and currency.code else 'KES'
+            return 'KES'
+        except Exception as e:
+            logger.error(f"Error in get_event_base_currency: {e}")
+            return 'KES'
+
 class EnhancedCurrencyConverter:
     """Enhanced currency converter that uses the currency exchange rate service"""
+
     @staticmethod
     def get_currency_info(currency_code: str) -> Dict[str, str]:
         """Get currency information from database or return defaults"""
@@ -464,28 +496,22 @@ class ReportDataProcessor:
     @staticmethod
     def process_report_data(report_data: Dict[str, Any], event_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """Process comprehensive report data using enhanced AttendeeCountingService methods."""
-        
-        # Use enhanced attendee counting service
+
         total_tickets_sold = DatabaseQueryService.get_total_tickets_sold(event_id, start_date, end_date)
         total_attendees = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
         total_revenue = DatabaseQueryService.get_total_revenue(event_id, start_date, end_date)
-        
-        # Calculate attendance rate using enhanced methods
-        attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0.0
 
+        attendance_rate = (total_attendees / total_tickets_sold * 100) if total_tickets_sold > 0 else 0.0
         tickets_by_type = DatabaseQueryService.get_tickets_sold_by_type(event_id, start_date, end_date)
         revenue_by_type = DatabaseQueryService.get_revenue_by_type(event_id, start_date, end_date)
-        
-        # Use enhanced attendee counting by type
+
         attendees_by_type = AttendeeCountingService.get_attendees_by_type_v2(event_id, start_date, end_date)
-        
+
         payment_methods = DatabaseQueryService.get_payment_method_usage(event_id, start_date, end_date)
         base_currency_code = DatabaseQueryService.get_event_base_currency(event_id)
 
-        # Get enhanced attendance statistics with data integrity checks
         detailed_stats = AttendeeCountingService.get_detailed_attendance_stats(event_id, start_date, end_date)
-        
-        # Legacy scan stats (if still needed for backward compatibility)
+
         scan_stats = DatabaseQueryService.get_scan_validation_stats(event_id, start_date, end_date) if hasattr(DatabaseQueryService, 'get_scan_validation_stats') else {}
         integrity_check = DatabaseQueryService.validate_scan_integrity(event_id) if hasattr(DatabaseQueryService, 'validate_scan_integrity') else {}
 
@@ -503,22 +529,18 @@ class ReportDataProcessor:
             'report_end_date': end_date.isoformat(),
             'currency_conversion_source': 'currencyapi.com',
             'conversion_cache_status': f"{len(rate_cache.cache)} rates cached" if 'rate_cache' in globals() else 'Cache unavailable',
-            
-            # Enhanced statistics from AttendeeCountingService
+
             'detailed_attendance_stats': detailed_stats,
             'scan_statistics': detailed_stats.get('scan_statistics', scan_stats),
             'data_integrity': detailed_stats.get('integrity_issues', integrity_check),
             'data_quality_score': detailed_stats.get('data_quality_score', 100.0),
-            
-            # Calculated metrics
+
             'no_show_rate': round(100 - attendance_rate, 2) if attendance_rate is not None else 100.0,
             'revenue_per_attendee': float(total_revenue / total_attendees) if total_attendees > 0 else 0.0,
             'average_ticket_price': float(total_revenue / total_tickets_sold) if total_tickets_sold > 0 else 0.0
         }
-
         report_data.update(processed_data)
         return report_data
-
 
 class ReportService:
     def __init__(self, config):
@@ -576,7 +598,7 @@ class ReportService:
                 )
                 if tickets_chart:
                     chart_paths.append(tickets_chart)
-            
+
             if report_data.get('revenue_by_type'):
                 revenue_chart = self.chart_generator.create_bar_chart(
                     data=report_data['revenue_by_type'],
@@ -586,7 +608,7 @@ class ReportService:
                 )
                 if revenue_chart:
                     chart_paths.append(revenue_chart)
-            
+
             if report_data.get('payment_method_usage'):
                 payment_chart = self.chart_generator.create_pie_chart(
                     data=report_data['payment_method_usage'],
@@ -594,7 +616,7 @@ class ReportService:
                 )
                 if payment_chart:
                     chart_paths.append(payment_chart)
-            
+
             if report_data.get('attendees_by_type'):
                 attendees_chart = self.chart_generator.create_bar_chart(
                     data=report_data['attendees_by_type'],
@@ -604,8 +626,7 @@ class ReportService:
                 )
                 if attendees_chart:
                     chart_paths.append(attendees_chart)
-                    
-            # New chart for data quality visualization
+
             detailed_stats = report_data.get('detailed_attendance_stats', {})
             if detailed_stats and detailed_stats.get('scan_statistics'):
                 scan_stats = detailed_stats['scan_statistics']
@@ -623,7 +644,7 @@ class ReportService:
                     )
                     if scan_chart:
                         chart_paths.append(scan_chart)
-            
+
             logger.info(f"Generated {len(chart_paths)} charts for event {report_data['event_id']}")
             return chart_paths
         except Exception as e:
@@ -635,41 +656,34 @@ class ReportService:
         try:
             logger.debug("=== VALIDATING REPORT DATA WITH ENHANCED ATTENDEE COUNTING ===")
             logger.debug(f"Report data keys: {list(report_data.keys())}")
-            
+
             total_revenue = float(report_data.get('total_revenue', 0))
             total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
             number_of_attendees = int(report_data.get('number_of_attendees', 0))
-            
-            # Check data quality score and integrity issues
+
             detailed_stats = report_data.get('detailed_attendance_stats', {})
             integrity_issues = detailed_stats.get('integrity_issues', [])
             data_quality_score = detailed_stats.get('data_quality_score', 100.0)
-            
-            # Log data quality information
+
             if integrity_issues:
                 logger.warning(f"Data integrity issues detected: {integrity_issues}")
             logger.info(f"Data quality score: {data_quality_score}/100")
-            
-            # Enhanced validation using scan statistics
+
             scan_stats = detailed_stats.get('scan_statistics', {})
             if scan_stats:
                 paid_scanned = scan_stats.get('paid_tickets_scanned', 0)
                 unpaid_scanned = scan_stats.get('unpaid_tickets_scanned', 0)
-                
-                # Validate attendee count against scan statistics
+
                 if number_of_attendees != paid_scanned:
                     logger.warning(f"Attendee count mismatch: report={number_of_attendees}, scanned_paid={paid_scanned}")
-                    # Trust the enhanced counting service
                     number_of_attendees = paid_scanned
                     report_data['number_of_attendees'] = number_of_attendees
                     logger.info(f"✅ Corrected attendee count to: {number_of_attendees}")
-                
-                # Warn about unpaid ticket scans
+
                 if unpaid_scanned > 0:
                     logger.warning(f"WARNING: {unpaid_scanned} unpaid tickets have been scanned!")
                     report_data['unpaid_attendees_warning'] = f"{unpaid_scanned} unpaid tickets scanned"
-            
-            # Original validation logic for revenue consistency
+
             if total_revenue > 0 and total_tickets_sold == 0:
                 logger.warning("INCONSISTENCY DETECTED: Revenue exists but tickets sold is 0. Attempting to reconstruct from breakdown data.")
                 if report_data.get('tickets_by_type'):
@@ -678,20 +692,17 @@ class ReportService:
                         total_tickets_sold = reconstructed_tickets
                         report_data['total_tickets_sold'] = total_tickets_sold
                         logger.info(f"✅ Reconstructed total_tickets_sold from breakdown: {total_tickets_sold}")
-            
-            # Enhanced attendee breakdown validation
+
             if report_data.get('attendees_by_type'):
                 reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
                 logger.debug(f"Attendees from breakdown: {reconstructed_attendees}")
-                
+
                 if reconstructed_attendees != number_of_attendees:
                     logger.warning(f"Attendee breakdown mismatch: total={number_of_attendees}, breakdown_sum={reconstructed_attendees}")
-                    # Trust the main count from enhanced service
                     if number_of_attendees > 0 and reconstructed_attendees == 0:
                         report_data['attendees_by_type'] = {'General': number_of_attendees}
                         logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
                     elif reconstructed_attendees > 0:
-                        # Scale the breakdown to match the total
                         scale_factor = number_of_attendees / reconstructed_attendees
                         scaled_breakdown = {}
                         for ticket_type, count in report_data['attendees_by_type'].items():
@@ -701,43 +712,39 @@ class ReportService:
             elif number_of_attendees > 0:
                 report_data['attendees_by_type'] = {'General': number_of_attendees}
                 logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
-            
-            # Default breakdowns for missing data
+
             if total_tickets_sold > 0 and not report_data.get('tickets_by_type'):
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
                 logger.info("🔧 Created default tickets breakdown")
-            
+
             if total_revenue > 0 and not report_data.get('revenue_by_type'):
                 report_data['revenue_by_type'] = {'General': total_revenue}
                 logger.info("🔧 Created default revenue breakdown")
-            
-            # Recalculate attendance rate
+
             if total_tickets_sold > 0:
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
                 report_data['attendance_rate'] = attendance_rate
                 logger.debug(f"Recalculated attendance rate: {attendance_rate}%")
             else:
                 report_data['attendance_rate'] = 0.0
-            
-            # Ensure non-negative values
+
             report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
             report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
             report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
-            
-            # Add data quality information to report
+
             report_data['data_quality_info'] = {
                 'score': data_quality_score,
                 'integrity_issues_count': len(integrity_issues),
                 'has_integrity_issues': len(integrity_issues) > 0,
                 'scan_validation_performed': bool(scan_stats)
             }
-            
+
             logger.info(f"=== FINAL VALIDATED DATA ===")
             logger.info(f"Tickets: {report_data['total_tickets_sold']}, Attendees: {report_data['number_of_attendees']}, Revenue: {report_data['total_revenue']}, Rate: {report_data.get('attendance_rate', 0)}%")
             logger.info(f"Data Quality Score: {data_quality_score}/100")
-            
+
             return report_data
-            
+
         except Exception as e:
             logger.error(f"Error in enhanced data validation: {e}")
             return report_data
@@ -747,88 +754,78 @@ class ReportService:
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"=== CREATING ENHANCED REPORT DATA ===")
         logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
-        
+
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
-        
-        # Sync ticket scanned status before generating report
+
         logger.info("Synchronizing ticket scanned status...")
         sync_stats = AttendeeCountingService.sync_ticket_scanned_status(event_id)
         logger.info(f"Sync completed: {sync_stats}")
-        
+
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
-        
+
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
-        
+
         logger.debug("Fetching enhanced database data...")
-        
-        # Use enhanced attendee counting services
+
         tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
-        
+
         revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw revenue_data: {revenue_data}")
-        
-        # Enhanced attendee data with v2 method
+
         attendees_data = AttendeeCountingService.get_attendees_by_type_v2(event_id, start_date, end_date)
         logger.debug(f"Enhanced attendees_data: {attendees_data}")
-        
+
         payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
         logger.debug(f"Raw payment_methods: {payment_methods}")
-        
-        # Get detailed attendance statistics
+
         detailed_attendance_stats = AttendeeCountingService.get_detailed_attendance_stats(event_id, start_date, end_date)
         logger.debug(f"Detailed attendance stats: {detailed_attendance_stats}")
-        
-        # Process data
+
         tickets_sold_by_type = dict(tickets_sold_data)
         attendees_by_ticket_type = dict(attendees_data)
         payment_method_usage = dict(payment_methods)
-        
-        # Revenue conversion
+
         total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
         logger.debug(f"Total revenue (base currency): {total_revenue_base}")
-        
+
         total_revenue_display = self.currency_converter.convert_amount(
             total_revenue_base, base_currency_code, display_currency_code
         )
         logger.debug(f"Total revenue (display currency): {total_revenue_display}")
-        
+
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
             converted_revenue = self.currency_converter.convert_amount(
                 revenue, base_currency_code, display_currency_code
             )
             revenue_by_ticket_type[ticket_type] = float(converted_revenue)
-        
-        # Enhanced counts
+
         total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
         logger.debug(f"Total tickets sold: {total_tickets_sold}")
-        
-        # Use enhanced attendee counting
+
         total_attendees = AttendeeCountingService.get_total_attendees_v2(event_id, start_date, end_date)
         logger.debug(f"Enhanced total attendees: {total_attendees}")
-        
-        # Calculate attendance rate
+
         attendance_rate = 0.0
         if total_tickets_sold > 0:
             attendance_rate = (total_attendees / total_tickets_sold * 100)
             logger.debug(f"Calculated attendance rate: {attendance_rate}%")
         else:
             logger.warning("Cannot calculate attendance rate: no tickets sold")
-        
-        # Create default breakdowns if missing
+
         if total_attendees > 0 and not attendees_by_ticket_type:
             logger.warning("Have total attendees but no breakdown - creating default breakdown")
             attendees_by_ticket_type = {'General': total_attendees}
-            
+
         if total_tickets_sold > 0 and not tickets_sold_by_type:
             logger.warning("Have total tickets but no breakdown - creating default breakdown")
             tickets_sold_by_type = {'General': total_tickets_sold}
-        
+
         report_data = {
             'event_id': event_id,
             'event_name': event.name,
@@ -836,41 +833,35 @@ class ReportService:
             'event_location': getattr(event, 'location', 'N/A'),
             'filter_start_date': start_date.strftime('%Y-%m-%d'),
             'filter_end_date': end_date.strftime('%Y-%m-%d'),
-            
-            # Core metrics using enhanced counting
+
             'total_tickets_sold': total_tickets_sold,
             'total_revenue': float(total_revenue_display),
             'number_of_attendees': total_attendees,
             'attendance_rate': round(attendance_rate, 2),
-            
-            # Breakdowns
+
             'tickets_by_type': tickets_sold_by_type,
             'revenue_by_type': revenue_by_ticket_type,
             'attendees_by_type': attendees_by_ticket_type,
             'payment_method_usage': payment_method_usage,
-            
-            # Currency information
+
             'currency': display_currency_info['code'],
             'currency_symbol': display_currency_info['symbol'],
             'base_currency': base_currency_info['code'],
             'base_currency_symbol': base_currency_info['symbol'],
             'currency_conversion_source': 'currencyapi.com (with fallback)',
             'conversion_cache_entries': len(getattr(rate_cache, 'cache', {})) if 'rate_cache' in globals() else 0,
-            
-            # Enhanced attendance statistics
+
             'detailed_attendance_stats': detailed_attendance_stats,
             'data_synchronization_stats': sync_stats,
         }
-        
-        # Add currency conversion details if applicable
+
         if base_currency_code != display_currency_code:
             report_data['original_revenue'] = float(total_revenue_base)
             report_data['original_currency'] = base_currency_info['code']
             report_data['conversion_rate_used'] = float(
                 self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
             )
-        
-        # Add ticket type filter information
+
         if ticket_type_id:
             ticket_type = TicketType.query.get(ticket_type_id)
             if ticket_type:
@@ -881,27 +872,27 @@ class ReportService:
                 report_data['report_scope'] = 'event_summary'
         else:
             report_data['report_scope'] = 'event_summary'
-        
+
         logger.info(f"=== ENHANCED REPORT DATA CREATED ===")
         logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
         logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
         logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
         logger.info(f"Data quality score: {detailed_attendance_stats.get('data_quality_score', 'N/A')}")
-        
+
         return self._sanitize_report_data(report_data)
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
         try:
             base_currency = Currency.query.filter_by(code=report_data.get('base_currency', 'KES')).first()
             base_currency_id = base_currency.id if base_currency else None
-            
+
             if not base_currency_id:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
                 base_currency_id = base_currency.id if base_currency else 1
-            
+
             sanitized_report_data = self._sanitize_report_data(report_data)
-            
+
             report = Report(
                 organizer_id=organizer_id,
                 event_id=report_data['event_id'],
@@ -914,13 +905,13 @@ class ReportService:
                 report_data=sanitized_report_data,
                 report_date=datetime.now().date()
             )
-            
+
             db.session.add(report)
             db.session.commit()
-            
+
             logger.info(f"Enhanced report saved to database with ID: {report.id}")
             return report
-            
+
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error saving enhanced report to database: {e}")
@@ -933,29 +924,23 @@ class ReportService:
         chart_paths = []
         pdf_path = None
         csv_path = None
-        
+
         try:
-            # Generate enhanced report data
             report_data = self.create_report_data(
                 event_id, start_date, end_date, ticket_type_id, target_currency_code
             )
-            
-            # Validate and fix data using enhanced validation
+
             report_data = self._validate_and_fix_report_data(report_data)
-            
-            # Save to database
+
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
-            
-            # Generate file paths
+
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
-            
-            # Generate charts with enhanced data
+
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
-            
-            # Generate PDF report
+
             pdf_path = self.pdf_generator.generate_pdf(
                 report_data=report_data,
                 chart_paths=chart_paths,
@@ -964,22 +949,20 @@ class ReportService:
                 event_id=event_id,
                 target_currency=target_currency_code or "KES"
             )
-            
-            # Generate CSV report
+
             csv_path = CSVReportGenerator.generate_csv(
                 report_data=report_data,
                 output_path=csv_path,
                 session=session,
                 event_id=event_id
             )
-            
-            # Send email if requested
+
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
                 email_sent = self.send_report_email(
                     report_data, pdf_path, csv_path, recipient_email
                 )
-            
+
             return {
                 'success': True,
                 'report_data': report_data,
@@ -1002,7 +985,7 @@ class ReportService:
                     'detailed_stats_included': True
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Error generating enhanced complete report: {e}")
             return {
@@ -1020,7 +1003,6 @@ class ReportService:
                 }
             }
         finally:
-            # Clean up chart files
             if chart_paths:
                 FileManager.cleanup_files(chart_paths)
 
