@@ -1,11 +1,11 @@
 from flask import request, jsonify, send_file, current_app, after_this_request, make_response
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction,CurrencyCode
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
-from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator
-from .report_generators import ChartGenerator
+from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator
+# ChartGenerator will be imported when needed to handle import errors gracefully
 from currency_routes import convert_ksh_to_target_currency
 
 from reportlab.lib.pagesizes import A4
@@ -556,14 +556,11 @@ class ExportReportResource(Resource):
                 return {'error': 'Invalid format. Use "pdf" or "csv"'}, 400
 
             # Get report data (this should be stored in your report record or regenerated)
-            # You might need to adjust this based on how you store report data
             report_data = report.report_data if hasattr(report, 'report_data') else {}
             
             # If report_data is empty, you might need to regenerate it
             if not report_data:
                 logger.warning(f"ExportReportResource: No report data found for report {report_id}, regenerating...")
-                # You might need to regenerate the report data here
-                # This would involve calling your report service again
                 config = ReportConfig()
                 report_service = ReportService(config)
                 
@@ -601,11 +598,29 @@ class ExportReportResource(Resource):
                 # Generate charts if needed
                 chart_paths = []
                 try:
-                    from  .report_generators  import ChartGenerator
+                    from .report_generators import ChartGenerator
                     config = ReportConfig(include_charts=True)
                     chart_generator = ChartGenerator(config)
-                    chart_paths = chart_generator.generate_charts(report_data)
-                    logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
+                    
+                    # Check if the method exists before calling it
+                    if hasattr(chart_generator, 'generate_charts'):
+                        chart_paths = chart_generator.generate_charts(report_data)
+                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
+                    elif hasattr(chart_generator, 'create_charts'):
+                        # Alternative method name
+                        chart_paths = chart_generator.create_charts(report_data)
+                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
+                    elif hasattr(chart_generator, 'generate'):
+                        # Another alternative method name
+                        chart_paths = chart_generator.generate(report_data)
+                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
+                    else:
+                        logger.warning(f"ExportReportResource: ChartGenerator has no recognized chart generation method")
+                        chart_paths = []
+                        
+                except ImportError as import_error:
+                    logger.warning(f"ExportReportResource: Failed to import ChartGenerator: {import_error}")
+                    chart_paths = []
                 except Exception as chart_error:
                     logger.warning(f"ExportReportResource: Chart generation failed: {chart_error}")
                     chart_paths = []
@@ -614,14 +629,14 @@ class ExportReportResource(Resource):
                 config = ReportConfig(include_charts=bool(chart_paths))
                 pdf_generator = PDFReportGenerator(config)
                 
-                # FIXED: Call generate_pdf with all required parameters
+                # Generate PDF with all required parameters
                 file_path = pdf_generator.generate_pdf(
                     report_data=report_data,
                     chart_paths=chart_paths,
                     output_path=tmp_pdf_file.name,
-                    session=db.session,  # Added missing session parameter
-                    event_id=event_id,   # Added missing event_id parameter
-                    target_currency=target_currency  # Added target currency
+                    session=db.session,
+                    event_id=event_id,
+                    target_currency=target_currency
                 )
                 
                 if not file_path:
@@ -666,12 +681,12 @@ class ExportReportResource(Resource):
                 # Initialize CSV generator
                 csv_generator = CSVReportGenerator()
                 
-                # FIXED: Call generate_csv with all required parameters
+                # Generate CSV with all required parameters
                 file_path = csv_generator.generate_csv(
                     report_data=report_data,
                     output_path=tmp_csv_file.name,
-                    session=db.session,  # Added missing session parameter
-                    event_id=event_id    # Added missing event_id parameter
+                    session=db.session,
+                    event_id=event_id
                 )
                 
                 if not file_path:
@@ -705,6 +720,8 @@ class ExportReportResource(Resource):
         except Exception as e:
             logger.error(f"ExportReportResource: Error generating CSV for event {event_id}: {e}", exc_info=True)
             return {'error': 'Failed to generate CSV report'}, 500
+
+
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a summary report for an organizer.
