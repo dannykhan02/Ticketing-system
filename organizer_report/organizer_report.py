@@ -448,6 +448,7 @@ class GetReportsResource(Resource, AuthorizationMixin):
             logger.error(f"GetReportsResource: Error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
+
 class GetReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a single report by its ID.
@@ -549,6 +550,49 @@ class GetReportResource(Resource, AuthorizationMixin):
             
             # Build enhanced response
             report_dict = report.as_dict(target_currency_id=target_currency_id)
+            
+            # ==================== ATTENDEE COUNT CORRECTION ====================
+            # Apply the same logic as GenerateReportResource to fix attendee count
+            report_data = report_dict.get('report_data', {})
+            
+            # Extract attendee count using the same fallback approach
+            actual_attendee_count = report_data.get('attendee_count', 0)
+            if actual_attendee_count == 0:
+                actual_attendee_count = report_data.get('number_of_attendees', 0)
+                if actual_attendee_count == 0:
+                    actual_attendee_count = report_data.get('total_attendees', 0)
+            
+            # Check debug_info for event_scans_count as fallback
+            debug_info = report_data.get('debug_info', {})
+            if actual_attendee_count == 0 and debug_info.get('event_scans_count'):
+                actual_attendee_count = debug_info.get('event_scans_count', 0)
+                logger.info(f"GetReportResource: Using event_scans_count as attendee count: {actual_attendee_count}")
+            
+            # Update the report data with corrected attendee count
+            if actual_attendee_count > 0:
+                logger.info(f"GetReportResource: Correcting attendee count from {report_dict.get('number_of_attendees', 0)} to {actual_attendee_count}")
+                
+                # Update main report fields
+                report_dict['number_of_attendees'] = actual_attendee_count
+                
+                # Update report_data fields
+                if 'report_data' in report_dict:
+                    report_dict['report_data']['number_of_attendees'] = actual_attendee_count
+                    report_dict['report_data']['attendee_count'] = actual_attendee_count
+                
+                # Recalculate attendance rate if we have ticket count
+                total_tickets = report_dict.get('total_tickets_sold', 0)
+                if total_tickets > 0:
+                    attendance_rate = (actual_attendee_count / total_tickets) * 100
+                    report_dict['attendance_rate'] = round(attendance_rate, 2)
+                    if 'report_data' in report_dict:
+                        report_dict['report_data']['attendance_rate'] = round(attendance_rate, 2)
+                
+                logger.info(f"GetReportResource: Attendee count corrected for report {report_id}: {actual_attendee_count} attendees")
+            else:
+                logger.warning(f"GetReportResource: Could not determine correct attendee count for report {report_id}")
+            # ==================== END ATTENDEE COUNT CORRECTION ====================
+            
             base_url = request.url_root.rstrip('/')
             report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=pdf"
             report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{report.id}/export?format=csv"
@@ -582,6 +626,7 @@ class GetReportResource(Resource, AuthorizationMixin):
         except Exception as e:
             logger.error(f"GetReportResource: Error retrieving report {report_id} for user {current_user_id}: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
+
 
 class ExportReportResource(Resource):
     @jwt_required()
