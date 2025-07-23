@@ -1,10 +1,11 @@
-from flask import request, jsonify, send_file, current_app, after_this_request
+from flask import request, jsonify, send_file, current_app, after_this_request, make_response
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction,CurrencyCode
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator
+from .report_generators import ChartGenerator
 from currency_routes import convert_ksh_to_target_currency
 
 from reportlab.lib.pagesizes import A4
@@ -117,7 +118,24 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            total_revenue_ksh = result['report_data'].get('total_revenue', 0)
+            # FIXED: Extract attendee count correctly from report data
+            report_data = result.get('report_data', {})
+            total_revenue_ksh = report_data.get('total_revenue', 0)
+            total_tickets_sold = report_data.get('total_tickets_sold', 0)
+            
+            # FIX: Get the actual attendee count from the report data
+            # The service logs show "Final attendee count: 3", so we need to extract this correctly
+            actual_attendee_count = report_data.get('attendee_count', 0)
+            if actual_attendee_count == 0:
+                # Fallback: try other possible keys where attendee count might be stored
+                actual_attendee_count = report_data.get('number_of_attendees', 0)
+                if actual_attendee_count == 0:
+                    actual_attendee_count = report_data.get('total_attendees', 0)
+            
+            # Log the attendee count extraction for debugging
+            logger.info(f"GenerateReportResource: Extracted attendee count from report data: {actual_attendee_count}")
+            logger.info(f"GenerateReportResource: Available report data keys: {list(report_data.keys())}")
+            
             base_currency = 'KES'
 
             converted_amount = Decimal(str(total_revenue_ksh))
@@ -151,10 +169,10 @@ class GenerateReportResource(Resource):
                 'message': 'Report generation initiated. You can download the report using the provided links.',
                 'report_id': report_id,
                 'report_data_summary': {
-                    'total_tickets_sold': result['report_data'].get('total_tickets_sold'),
+                    'total_tickets_sold': total_tickets_sold,
                     'total_revenue_original': float(total_revenue_ksh),
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
-                    'number_of_attendees': result['report_data'].get('number_of_attendees'),
+                    'number_of_attendees': actual_attendee_count,  # FIXED: Use the correctly extracted attendee count
                     'original_currency': 'KES',
                     'target_currency': target_currency_code,
                     'currency_symbol': target_currency.symbol if target_currency else 'KSh'
@@ -192,7 +210,7 @@ class GenerateReportResource(Resource):
                             # Create a complete, consistent report_data object that includes
                             # all the currency conversion and metadata from the API response
 
-                            email_report_data = result['report_data'].copy()  # Start with original data
+                            email_report_data = report_data.copy()  # Start with original data
 
                             # Apply the SAME conversions that were used for the API response
                             email_report_data.update({
@@ -212,6 +230,10 @@ class GenerateReportResource(Resource):
                                 'original_currency': 'KES' if target_currency_code != 'KES' else None,
                                 'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
                                 'currency_conversion_source': 'currencyapi.com (with fallback)',
+                                
+                                # FIXED: Ensure attendee count is included in email data
+                                'attendee_count': actual_attendee_count,
+                                'number_of_attendees': actual_attendee_count,
                             })
 
                             # IMPORTANT: Apply currency conversion to revenue breakdown if needed
@@ -249,12 +271,12 @@ class GenerateReportResource(Resource):
 
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
+            logger.info(f"GenerateReportResource: Final API response attendee count: {actual_attendee_count}")
             return response_data, 200
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
-
-
+        
 
 class GetReportsResource(Resource, AuthorizationMixin):
     """
@@ -496,129 +518,193 @@ class GetReportResource(Resource, AuthorizationMixin):
             return {'error': 'Internal server error'}, 500
 
 class ExportReportResource(Resource):
-    """
-    API resource for downloading generated reports (PDF or CSV).
-    Generates the report file on demand using the data stored in the Report model.
-    """
-
     @jwt_required()
     def get(self, report_id):
         try:
+            start_time = datetime.now()
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
+            
             if not current_user:
-                logger.warning(f"ExportReportResource: User {current_user_id} not found.")
+                logger.warning(f"ExportReportResource: User with ID {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
 
+            # Get the report from database
             report = Report.query.get(report_id)
             if not report:
-                logger.warning(f"ExportReportResource: Report {report_id} not found.")
+                logger.warning(f"ExportReportResource: Report with ID {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
+            # Get the event associated with this report
+            event = Event.query.get(report.event_id)
+            if not event:
+                logger.warning(f"ExportReportResource: Event with ID {report.event_id} not found.")
+                return {'error': 'Event not found'}, 404
+
             # Authorization check
-            is_authorized = (
-                report.organizer_id == current_user_id or
-                (hasattr(current_user, 'role') and current_user.role and current_user.role.value.upper() == 'ADMIN') or
-                (hasattr(current_user, 'organizer_profile') and report.event and report.event.organizer_id == current_user.organizer_profile.id)
-            )
+            organizer = Organizer.query.filter_by(user_id=current_user_id).first()
+            if not organizer or organizer.id != event.organizer_id:
+                if current_user.role != UserRole.ADMIN:
+                    logger.warning(f"ExportReportResource: User {current_user_id} unauthorized to export report {report_id}.")
+                    return {'error': 'Unauthorized to export this report'}, 403
 
-            if not is_authorized:
-                logger.warning(f"ExportReportResource: User {current_user_id} not authorized to access report {report_id}.")
-                return {'error': 'Unauthorized to export this report'}, 403
+            # Get export format and currency from query parameters
+            export_format = request.args.get('format', 'pdf').lower()
+            target_currency = request.args.get('currency', 'KES')
+            
+            if export_format not in ['pdf', 'csv']:
+                return {'error': 'Invalid format. Use "pdf" or "csv"'}, 400
 
-            format_type = request.args.get('format', 'pdf').lower()
-            report_data = report.report_data
+            # Get report data (this should be stored in your report record or regenerated)
+            # You might need to adjust this based on how you store report data
+            report_data = report.report_data if hasattr(report, 'report_data') else {}
+            
+            # If report_data is empty, you might need to regenerate it
             if not report_data:
-                logger.error(f"ExportReportResource: No report_data found for report ID {report_id}.")
-                return {'error': 'Report data is missing, cannot generate file.'}, 500
+                logger.warning(f"ExportReportResource: No report data found for report {report_id}, regenerating...")
+                # You might need to regenerate the report data here
+                # This would involve calling your report service again
+                config = ReportConfig()
+                report_service = ReportService(config)
+                
+                result = report_service.generate_complete_report(
+                    event_id=report.event_id,
+                    organizer_id=current_user_id,
+                    start_date=report.start_date,
+                    end_date=report.end_date,
+                    session=db.session,
+                    target_currency_code=target_currency,
+                    send_email=False
+                )
+                
+                if not result['success']:
+                    return {'error': 'Failed to regenerate report data'}, 500
+                    
+                report_data = result.get('report_data', {})
 
-            config = ReportConfig(
-                include_charts=True,
-                chart_dpi=72,
-                chart_style='default',
-                pdf_pagesize=A4,
-                limit_charts=False
-            )
+            if export_format == 'pdf':
+                return self._export_pdf(report_data, report.event_id, target_currency)
+            else:
+                return self._export_csv(report_data, report.event_id, target_currency)
+                
+        except Exception as e:
+            logger.error(f"ExportReportResource: Unhandled error: {e}", exc_info=True)
+            return {'error': 'Internal server error'}, 500
 
-            file_path = None
-            mime_type = None
-            filename = None
-
-            if format_type == 'pdf':
+    def _export_pdf(self, report_data, event_id, target_currency='KES'):
+        """Export report as PDF"""
+        try:
+            # Create a temporary file for the PDF
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_pdf_file:
+                
+                # Generate charts if needed
                 chart_paths = []
                 try:
-                    if config.include_charts and not config.limit_charts:
-                        chart_generator = ChartGenerator(config)
-                        chart_paths = chart_generator.create_all_charts(report_data)
+                    from  .report_generators  import ChartGenerator
+                    config = ReportConfig(include_charts=True)
+                    chart_generator = ChartGenerator(config)
+                    chart_paths = chart_generator.generate_charts(report_data)
+                    logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
+                except Exception as chart_error:
+                    logger.warning(f"ExportReportResource: Chart generation failed: {chart_error}")
+                    chart_paths = []
 
-                    pdf_generator = PDFReportGenerator(config)
-                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_pdf_file:
-                        file_path = pdf_generator.generate_pdf(report_data, chart_paths, tmp_pdf_file.name)
+                # Initialize PDF generator
+                config = ReportConfig(include_charts=bool(chart_paths))
+                pdf_generator = PDFReportGenerator(config)
+                
+                # FIXED: Call generate_pdf with all required parameters
+                file_path = pdf_generator.generate_pdf(
+                    report_data=report_data,
+                    chart_paths=chart_paths,
+                    output_path=tmp_pdf_file.name,
+                    session=db.session,  # Added missing session parameter
+                    event_id=event_id,   # Added missing event_id parameter
+                    target_currency=target_currency  # Added target currency
+                )
+                
+                if not file_path:
+                    logger.error(f"ExportReportResource: PDF generation failed for report with event_id {event_id}")
+                    return {'error': 'Failed to generate PDF'}, 500
 
-                    mime_type = 'application/pdf'
-                    filename = f"event_report_{report.id}.pdf"
-                    logger.info(f"ExportReportResource: Generated PDF for report {report.id} at {file_path}")
-                except Exception as e:
-                    logger.error(f"ExportReportResource: Error generating PDF for report {report.id}: {e}", exc_info=True)
-                    return {'error': 'Failed to generate PDF report'}, 500
-                finally:
-                    for c_path in chart_paths:
-                        if os.path.exists(c_path):
-                            try:
-                                os.remove(c_path)
-                                logger.debug(f"ExportReportResource: Cleaned up chart file: {c_path}")
-                            except Exception as cleanup_error:
-                                logger.warning(f"ExportReportResource: Failed to cleanup chart file {c_path}: {cleanup_error}")
+                # Read the generated PDF file
+                with open(file_path, 'rb') as pdf_file:
+                    pdf_content = pdf_file.read()
 
-            elif format_type == 'csv':
+                # Clean up temporary file
                 try:
-                    csv_generator = CSVReportGenerator()
-                    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp_csv_file:
-                        file_path = csv_generator.generate_csv(report_data, tmp_csv_file.name)
+                    os.unlink(file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"ExportReportResource: Failed to cleanup PDF file: {cleanup_error}")
 
-                    mime_type = 'text/csv'
-                    filename = f"event_report_{report.id}.csv"
-                    logger.info(f"ExportReportResource: Generated CSV for report {report.id} at {file_path}")
-                except Exception as e:
-                    logger.error(f"ExportReportResource: Error generating CSV for report {report.id}: {e}", exc_info=True)
-                    return {'error': 'Failed to generate CSV report'}, 500
-
-            else:
-                logger.warning(f"ExportReportResource: Unsupported format '{format_type}' requested for report {report_id}.")
-                return {'error': 'Unsupported format. Use \"pdf\" or \"csv\".'}, 400
-
-            if not file_path or not os.path.exists(file_path):
-                logger.error(f"ExportReportResource: Generated file path is invalid or file does not exist: {file_path}")
-                return {'error': 'Failed to generate report file. Please try again.'}, 500
-
-            file_size = os.path.getsize(file_path)
-            logger.info(f"ExportReportResource: File size to be sent: {file_size} bytes")
-
-            if file_size == 0:
-                logger.error(f"ExportReportResource: Generated file is empty: {file_path}")
-                return {'error': 'Report file is empty.'}, 500
-
-            @after_this_request
-            def delete_temp_file(response):
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.info(f"ExportReportResource: Cleaned up temporary file: {file_path}")
-                except Exception as e:
-                    logger.error(f"ExportReportResource: Error cleaning up temporary file {file_path}: {e}")
+                # Get event name for filename
+                event = Event.query.get(event_id)
+                event_name = event.name if event else f"Event_{event_id}"
+                safe_event_name = "".join(c for c in event_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                
+                # Create response
+                response = make_response(pdf_content)
+                response.headers['Content-Type'] = 'application/pdf'
+                response.headers['Content-Disposition'] = f'attachment; filename="Report_{safe_event_name}_{datetime.now().strftime("%Y%m%d")}.pdf"'
+                response.headers['Content-Length'] = len(pdf_content)
+                
+                logger.info(f"ExportReportResource: Successfully generated PDF for event {event_id}")
                 return response
-
-            response = send_file(
-                file_path,
-                mimetype=mime_type,
-                as_attachment=True,
-                download_name=filename
-            )
-            return response
-
+                
         except Exception as e:
-            logger.error(f"ExportReportResource: Unhandled error: {str(e)}", exc_info=True)
-            return {'error': 'Internal server error'}, 500
+            logger.error(f"ExportReportResource: Error generating PDF for event {event_id}: {e}", exc_info=True)
+            return {'error': 'Failed to generate PDF report'}, 500
+
+    def _export_csv(self, report_data, event_id, target_currency='KES'):
+        """Export report as CSV"""
+        try:
+            # Create a temporary file for the CSV
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv', mode='w', encoding='utf-8') as tmp_csv_file:
+                
+                # Initialize CSV generator
+                csv_generator = CSVReportGenerator()
+                
+                # FIXED: Call generate_csv with all required parameters
+                file_path = csv_generator.generate_csv(
+                    report_data=report_data,
+                    output_path=tmp_csv_file.name,
+                    session=db.session,  # Added missing session parameter
+                    event_id=event_id    # Added missing event_id parameter
+                )
+                
+                if not file_path:
+                    logger.error(f"ExportReportResource: CSV generation failed for event {event_id}")
+                    return {'error': 'Failed to generate CSV'}, 500
+
+                # Read the generated CSV file
+                with open(file_path, 'r', encoding='utf-8') as csv_file:
+                    csv_content = csv_file.read()
+
+                # Clean up temporary file
+                try:
+                    os.unlink(file_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"ExportReportResource: Failed to cleanup CSV file: {cleanup_error}")
+
+                # Get event name for filename
+                event = Event.query.get(event_id)
+                event_name = event.name if event else f"Event_{event_id}"
+                safe_event_name = "".join(c for c in event_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                
+                # Create response
+                response = make_response(csv_content)
+                response.headers['Content-Type'] = 'text/csv'
+                response.headers['Content-Disposition'] = f'attachment; filename="Report_{safe_event_name}_{datetime.now().strftime("%Y%m%d")}.csv"'
+                response.headers['Content-Length'] = len(csv_content.encode('utf-8'))
+                
+                logger.info(f"ExportReportResource: Successfully generated CSV for event {event_id}")
+                return response
+                
+        except Exception as e:
+            logger.error(f"ExportReportResource: Error generating CSV for event {event_id}: {e}", exc_info=True)
+            return {'error': 'Failed to generate CSV report'}, 500
 class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a summary report for an organizer.
