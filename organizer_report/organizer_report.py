@@ -468,18 +468,46 @@ class GetReportResource(Resource, AuthorizationMixin):
                 logger.warning(f"GetReportResource: Report with ID {report_id} not found.")
                 return {'error': 'Report not found'}, 404
 
-            # Enhanced authorization check
+            # Enhanced authorization check with detailed logging
             is_authorized = False
             organizer = None
+            
+            # Admin users have access to all reports
             if current_user.role == UserRole.ADMIN:
                 is_authorized = True
+                logger.info(f"GetReportResource: Admin user {current_user_id} accessing report {report_id}.")
             else:
+                # Get organizer record for current user
                 organizer = Organizer.query.filter_by(user_id=current_user_id).first()
-                if organizer and report.organizer_id == organizer.id:
+                
+                if not organizer:
+                    logger.warning(f"GetReportResource: No organizer record found for user {current_user_id}.")
+                    return {'error': 'Organizer profile not found'}, 403
+                
+                # Log authorization details for debugging
+                logger.info(f"GetReportResource: Checking authorization - User: {current_user_id}, "
+                           f"Organizer ID: {organizer.id}, Report Organizer ID: {report.organizer_id}")
+                
+                # Check if organizer owns the report
+                if report.organizer_id == organizer.id:
                     is_authorized = True
+                    logger.info(f"GetReportResource: Organizer {organizer.id} authorized to access report {report_id}.")
+                else:
+                    # Additional check: if report has no organizer_id, check if user created it
+                    if report.organizer_id is None and hasattr(report, 'created_by_user_id'):
+                        if report.created_by_user_id == current_user_id:
+                            is_authorized = True
+                            logger.info(f"GetReportResource: User {current_user_id} authorized as creator of report {report_id}.")
+                    
+                    # Additional check: if organizer has permissions to view all reports in their organization
+                    if not is_authorized and hasattr(organizer, 'organization_id') and hasattr(report, 'organization_id'):
+                        if organizer.organization_id == report.organization_id:
+                            is_authorized = True
+                            logger.info(f"GetReportResource: Organizer {organizer.id} authorized via organization access for report {report_id}.")
 
             if not is_authorized:
-                logger.warning(f"GetReportResource: User {current_user_id} unauthorized to access report {report_id}.")
+                logger.warning(f"GetReportResource: User {current_user_id} (organizer: {organizer.id if organizer else 'None'}) "
+                              f"unauthorized to access report {report_id} (owned by organizer: {report.organizer_id}).")
                 return {'error': 'Unauthorized to access this report'}, 403
 
             # Get target currency for conversion
@@ -497,6 +525,7 @@ class GetReportResource(Resource, AuthorizationMixin):
                 'request_info': {
                     'requested_by_user_id': current_user_id,
                     'requested_by_role': current_user.role.value if current_user.role else None,
+                    'requested_by_organizer_id': organizer.id if organizer else None,
                     'target_currency_id': target_currency_id,
                     'request_timestamp': datetime.now().isoformat()
                 }
@@ -512,11 +541,12 @@ class GetReportResource(Resource, AuthorizationMixin):
                         'conversion_applied': True
                     }
 
-            logger.info(f"GetReportResource: Retrieved report {report_id} for user {current_user_id} with currency_id {target_currency_id}.")
+            logger.info(f"GetReportResource: Successfully retrieved report {report_id} for user {current_user_id} "
+                       f"(organizer: {organizer.id if organizer else 'None'}) with currency_id {target_currency_id}.")
             return response_data, 200
 
         except Exception as e:
-            logger.error(f"GetReportResource: Error retrieving report {report_id}: {e}", exc_info=True)
+            logger.error(f"GetReportResource: Error retrieving report {report_id} for user {current_user_id}: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
 class ExportReportResource(Resource):
@@ -798,7 +828,6 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             "total_revenue_across_all_events": f"{total_revenue:.2f}",
             "events_summary": events_summary
         }
-
 class EventReportsResource(Resource):
     """
     API resource for retrieving reports specific to a single event.
@@ -877,13 +906,82 @@ class EventReportsResource(Resource):
 
             reports_data = []
             base_url = request.url_root.rstrip('/')
+            
+            # FIXED: Initialize ReportService to get correct attendee counts
+            config = ReportConfig(include_email=False)
+            report_service = ReportService(config)
+            
             for r in reports:
+                # FIXED: Get the correct attendee count using the same logic as GenerateReportResource
+                actual_attendee_count = r.number_of_attendees
+                
+                # If the stored attendee count is 0, try to recalculate it from the report data
+                if actual_attendee_count == 0 and hasattr(r, 'report_data') and r.report_data:
+                    try:
+                        # Parse the stored report data (assuming it's JSON)
+                        import json
+                        if isinstance(r.report_data, str):
+                            report_data = json.loads(r.report_data)
+                        else:
+                            report_data = r.report_data
+                        
+                        # Apply the same extraction logic as GenerateReportResource
+                        actual_attendee_count = report_data.get('attendee_count', 0)
+                        if actual_attendee_count == 0:
+                            actual_attendee_count = report_data.get('number_of_attendees', 0)
+                            if actual_attendee_count == 0:
+                                actual_attendee_count = report_data.get('total_attendees', 0)
+                        
+                        logger.info(f"EventReportsResource: Extracted attendee count from report data for report {r.id}: {actual_attendee_count}")
+                        
+                    except Exception as e:
+                        logger.warning(f"EventReportsResource: Failed to extract attendee count from report data for report {r.id}: {e}")
+                        # Keep the original value if extraction fails
+                        actual_attendee_count = r.number_of_attendees
+                
+                # Alternative approach: If report_data is not available or extraction failed,
+                # and stored count is still 0, recalculate from the database
+                if actual_attendee_count == 0:
+                    try:
+                        # Use the same date range that was used for this report
+                        report_start_date = r.report_date.replace(hour=0, minute=0, second=0, microsecond=0) if r.report_date else None
+                        report_end_date = r.report_date.replace(hour=23, minute=59, second=59, microsecond=999999) if r.report_date else None
+                        
+                        if report_start_date and report_end_date:
+                            # Generate fresh report data to get the correct attendee count
+                            fresh_result = report_service.generate_complete_report(
+                                event_id=event_id,
+                                organizer_id=current_user_id,
+                                start_date=report_start_date,
+                                end_date=report_end_date,
+                                session=db.session,
+                                ticket_type_id=None,
+                                target_currency_code='KES',
+                                send_email=False,
+                                recipient_email=None
+                            )
+                            
+                            if fresh_result['success']:
+                                fresh_report_data = fresh_result.get('report_data', {})
+                                fresh_attendee_count = fresh_report_data.get('attendee_count', 0)
+                                if fresh_attendee_count == 0:
+                                    fresh_attendee_count = fresh_report_data.get('number_of_attendees', 0)
+                                    if fresh_attendee_count == 0:
+                                        fresh_attendee_count = fresh_report_data.get('total_attendees', 0)
+                                
+                                if fresh_attendee_count > 0:
+                                    actual_attendee_count = fresh_attendee_count
+                                    logger.info(f"EventReportsResource: Recalculated attendee count for report {r.id}: {actual_attendee_count}")
+                                
+                    except Exception as e:
+                        logger.warning(f"EventReportsResource: Failed to recalculate attendee count for report {r.id}: {e}")
+                
                 report_dict = {
                     'report_id': r.id,
                     'event_id': r.event_id,
                     'total_tickets_sold': r.total_tickets_sold,
                     'total_revenue': float(r.total_revenue),
-                    'number_of_attendees': r.number_of_attendees,
+                    'number_of_attendees': actual_attendee_count,  # FIXED: Use the correctly extracted/calculated attendee count
                     'report_date': r.report_date.isoformat() if r.report_date else None
                 }
                 report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{r.id}/export?format=pdf"
