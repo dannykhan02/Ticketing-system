@@ -70,9 +70,23 @@ class DatabaseQueryService:
 
     @staticmethod
     def get_attendees_by_type(event_id: int, start_date: datetime, end_date: datetime) -> List[Tuple[str, int]]:
-        """Get attendees by type - based on scanned tickets"""
+        """Get attendees by type - based on scanned tickets with enhanced debugging"""
         try:
-            # Updated query to properly count scanned tickets by type
+            logger.debug(f"=== DEBUGGING get_attendees_by_type ===")
+            logger.debug(f"Event ID: {event_id}, Date range: {start_date} to {end_date}")
+
+            # Check if Scan table has any data
+            scan_count = db.session.query(func.count(Scan.id)).scalar()
+            logger.debug(f"Total records in Scan table: {scan_count}")
+
+            # Check scans for this specific event (without date filter first)
+            event_scans = (db.session.query(func.count(Scan.id))
+                          .join(Ticket, Scan.ticket_id == Ticket.id)
+                          .filter(Ticket.event_id == event_id)
+                          .scalar())
+            logger.debug(f"Total scans for event {event_id}: {event_scans}")
+
+            # Original query with debug
             query = (db.session.query(TicketType.type_name, func.count(Scan.ticket_id.distinct()))
                      .join(Ticket, Ticket.id == Scan.ticket_id)
                      .join(TicketType, Ticket.ticket_type_id == TicketType.id)
@@ -83,8 +97,10 @@ class DatabaseQueryService:
                      )
                      .group_by(TicketType.type_name)
                      .all())
+
             result = [(DatabaseQueryService._convert_enum_to_string(type_name), count) for type_name, count in query]
-            logger.debug(f"get_attendees_by_type (scan-based) for event {event_id}: {result}")
+            logger.debug(f"get_attendees_by_type result: {result}")
+            logger.debug(f"=== END DEBUGGING get_attendees_by_type ===")
             return result
         except Exception as e:
             logger.error(f"Error in get_attendees_by_type: {e}")
@@ -156,7 +172,36 @@ class DatabaseQueryService:
     def get_total_attendees(event_id: int, start_date: datetime, end_date: datetime) -> int:
         """Calculate attendees: Count distinct scanned tickets within the date range."""
         try:
-            # Updated query to properly count scanned tickets
+            # Add debug logging to understand what's happening
+            logger.debug(f"=== DEBUGGING get_total_attendees ===")
+            logger.debug(f"Event ID: {event_id}")
+            logger.debug(f"Date range: {start_date} to {end_date}")
+
+            # First, check if there are any scans at all for this event
+            total_scans_query = (db.session.query(func.count(Scan.id))
+                               .join(Ticket, Scan.ticket_id == Ticket.id)
+                               .filter(Ticket.event_id == event_id))
+            total_scans = total_scans_query.scalar()
+            logger.debug(f"Total scans for event {event_id}: {total_scans}")
+
+            # Check scans within date range
+            scans_in_range_query = (db.session.query(func.count(Scan.id))
+                                  .join(Ticket, Scan.ticket_id == Ticket.id)
+                                  .filter(
+                                      Ticket.event_id == event_id,
+                                      Scan.scanned_at >= start_date,
+                                      Scan.scanned_at <= end_date
+                                  ))
+            scans_in_range = scans_in_range_query.scalar()
+            logger.debug(f"Scans in date range: {scans_in_range}")
+
+            # Check if there are any tickets for this event
+            total_tickets_query = (db.session.query(func.count(Ticket.id))
+                                 .filter(Ticket.event_id == event_id))
+            total_tickets = total_tickets_query.scalar()
+            logger.debug(f"Total tickets for event {event_id}: {total_tickets}")
+
+            # Original query with enhanced logging
             result = (db.session.query(func.count(Scan.ticket_id.distinct()))
                      .join(Ticket, Scan.ticket_id == Ticket.id)
                      .filter(
@@ -165,8 +210,11 @@ class DatabaseQueryService:
                          Scan.scanned_at <= end_date
                      )
                      .scalar())
+
             total_attendees = result if result else 0
-            logger.debug(f"get_total_attendees (scan-based) for event {event_id}: {total_attendees}")
+            logger.debug(f"Final attendees count: {total_attendees}")
+            logger.debug(f"=== END DEBUGGING get_total_attendees ===")
+
             return total_attendees
         except Exception as e:
             logger.error(f"Error in get_total_attendees: {e}")
@@ -269,7 +317,6 @@ class ReportDataProcessor:
         attendees_by_type = DatabaseQueryService.get_attendees_by_type(event_id, start_date, end_date)
         payment_methods = DatabaseQueryService.get_payment_method_usage(event_id, start_date, end_date)
         base_currency_code = DatabaseQueryService.get_event_base_currency(event_id)
-
         processed_data = {
             'total_tickets_sold': total_tickets_sold,
             'number_of_attendees': total_attendees,
@@ -297,7 +344,6 @@ class OrganizerReportService:
     @staticmethod
     def generate_event_metrics(event_id: int) -> Dict[str, Any]:
         logger.info("Generating event metrics for event_id: %s", event_id)
-
         # Tickets Sold by Type
         tickets_by_type = dict(
             db.session.query(Ticket.ticket_type, db.func.count(Ticket.id))
@@ -305,7 +351,6 @@ class OrganizerReportService:
             .group_by(Ticket.ticket_type)
             .all()
         )
-
         # Revenue Calculations
         revenue_original = (
             db.session.query(db.func.sum(Ticket.price))
@@ -313,7 +358,6 @@ class OrganizerReportService:
             .scalar()
             or 0.0
         )
-
         # Organizer & Currency
         event = Event.query.get(event_id)
         organizer = Organizer.query.get(event.organizer_id)
@@ -324,7 +368,6 @@ class OrganizerReportService:
             from_currency=original_currency,
             to_currency=target_currency,
         )
-
         # Corrected Attendees Count (distinct scanned tickets)
         attendees_count = (
             db.session.query(func.count(Scan.ticket_id.distinct()))
@@ -333,7 +376,6 @@ class OrganizerReportService:
             .scalar()
         )
         logger.info(f"Final attendee count: {attendees_count}")
-
         # Attendees by type (if you still need this breakdown based on scans)
         attendees_by_type = dict(
             db.session.query(TicketType.type_name, func.count(Scan.ticket_id.distinct()))
@@ -343,7 +385,6 @@ class OrganizerReportService:
             .group_by(TicketType.type_name)
             .all()
         )
-
         final_metrics = {
             "tickets_sold": sum(tickets_by_type.values()),
             "tickets_by_type": tickets_by_type,
@@ -354,7 +395,6 @@ class OrganizerReportService:
             "original_currency": original_currency,
             "target_currency": target_currency,
         }
-
         logger.info("Final Organizer Report Metrics: %s", final_metrics)
         return final_metrics
 
@@ -500,53 +540,124 @@ class ReportService:
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
         logger.info(f"=== CREATING REPORT DATA ===")
         logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
+
         event = Event.query.get(event_id)
         if not event:
             raise ValueError(f"Event with ID {event_id} not found")
+
+        # Enhanced debugging section
+        logger.debug("=== DATABASE INVESTIGATION ===")
+
+        # Check if tickets exist for this event
+        ticket_count = db.session.query(func.count(Ticket.id)).filter(Ticket.event_id == event_id).scalar()
+        logger.debug(f"Total tickets in database for event {event_id}: {ticket_count}")
+
+        # Check if scans exist
+        scan_count = db.session.query(func.count(Scan.id)).scalar()
+        logger.debug(f"Total scans in database: {scan_count}")
+
+        # Check if there are scans for tickets of this event
+        event_scan_count = (db.session.query(func.count(Scan.id))
+                           .join(Ticket, Scan.ticket_id == Ticket.id)
+                           .filter(Ticket.event_id == event_id)
+                           .scalar())
+        logger.debug(f"Scans for event {event_id} tickets: {event_scan_count}")
+
+        # Check scan date ranges
+        if event_scan_count > 0:
+            scan_date_range = (db.session.query(
+                                func.min(Scan.scanned_at),
+                                func.max(Scan.scanned_at)
+                              )
+                              .join(Ticket, Scan.ticket_id == Ticket.id)
+                              .filter(Ticket.event_id == event_id)
+                              .first())
+            logger.debug(f"Scan date range for event {event_id}: {scan_date_range}")
+            logger.debug(f"Requested date range: {start_date} to {end_date}")
+
+        logger.debug("=== END DATABASE INVESTIGATION ===")
+
         base_currency_code = self.db_service.get_event_base_currency(event_id)
         display_currency_code = target_currency_code or base_currency_code
         base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
         display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
+
         logger.debug("Fetching raw database data...")
         tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
+
         revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw revenue_data: {revenue_data}")
+
         attendees_data = self.db_service.get_attendees_by_type(event_id, start_date, end_date)
         logger.debug(f"Raw attendees_data: {attendees_data}")
+
         payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
         logger.debug(f"Raw payment_methods: {payment_methods}")
+
         tickets_sold_by_type = dict(tickets_sold_data)
         attendees_by_ticket_type = dict(attendees_data)
         payment_method_usage = dict(payment_methods)
+
         total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
         logger.debug(f"Total revenue (base currency): {total_revenue_base}")
+
         total_revenue_display = self.currency_converter.convert_amount(
             total_revenue_base, base_currency_code, display_currency_code
         )
         logger.debug(f"Total revenue (display currency): {total_revenue_display}")
+
         revenue_by_ticket_type = {}
         for ticket_type, revenue in revenue_data:
             converted_revenue = self.currency_converter.convert_amount(
                 revenue, base_currency_code, display_currency_code
             )
             revenue_by_ticket_type[ticket_type] = float(converted_revenue)
+
         total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
         logger.debug(f"Total tickets sold: {total_tickets_sold}")
+
         total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
-        logger.debug(f"Total attendees: {total_attendees}")
+        logger.debug(f"Total attendees from DB service: {total_attendees}")
+
+        # FALLBACK 1: If no scans but tickets sold, check if event requires scanning
+        if total_attendees == 0 and total_tickets_sold > 0:
+            logger.warning("⚠️ No attendees found but tickets were sold - investigating...")
+
+            # Check if this is a data issue or if scanning hasn't started
+            if event_scan_count == 0:
+                logger.warning("🔍 No scans recorded for this event at all")
+                logger.warning("💡 This could mean:")
+                logger.warning("   1. Event hasn't started yet")
+                logger.warning("   2. Scanning system not used")
+                logger.warning("   3. Data integrity issue")
+
+                # FALLBACK OPTION: Use tickets sold as potential attendees
+                # (This should be configurable based on event type)
+                logger.info("🔧 Consider using tickets sold as estimated attendees if event doesn't use scanning")
+
+            elif event_scan_count > 0:
+                logger.warning("🔍 Scans exist for this event but not in date range")
+                logger.warning("💡 Check if date range is correct")
+
+        # Calculate attendance rate
         attendance_rate = 0.0
         if total_tickets_sold > 0:
             attendance_rate = (total_attendees / total_tickets_sold * 100)
             logger.debug(f"Calculated attendance rate: {attendance_rate}%")
         else:
             logger.warning("Cannot calculate attendance rate: no tickets sold")
+
+        # Handle empty breakdowns
         if total_attendees > 0 and not attendees_by_ticket_type:
             logger.warning("Have total attendees but no breakdown - creating default breakdown")
             attendees_by_ticket_type = {'General': total_attendees}
+
         if total_tickets_sold > 0 and not tickets_sold_by_type:
             logger.warning("Have total tickets but no breakdown - creating default breakdown")
             tickets_sold_by_type = {'General': total_tickets_sold}
+
+        # Build report data
         report_data = {
             'event_id': event_id,
             'event_name': event.name,
@@ -568,13 +679,25 @@ class ReportService:
             'base_currency_symbol': base_currency_info['symbol'],
             'currency_conversion_source': 'currencyapi.com (with fallback)',
             'conversion_cache_entries': len(rate_cache.cache),
+            # Debug info
+            'debug_info': {
+                'total_tickets_in_db': ticket_count,
+                'total_scans_in_db': scan_count,
+                'event_scans_count': event_scan_count,
+                'scan_date_range_check': scan_date_range if event_scan_count > 0 else None,
+                'requested_date_range': f"{start_date} to {end_date}"
+            }
         }
+
+        # Handle currency conversion info
         if base_currency_code != display_currency_code:
             report_data['original_revenue'] = float(total_revenue_base)
             report_data['original_currency'] = base_currency_info['code']
             report_data['conversion_rate_used'] = float(
                 self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
             )
+
+        # Handle ticket type filtering
         if ticket_type_id:
             ticket_type = TicketType.query.get(ticket_type_id)
             if ticket_type:
@@ -585,10 +708,19 @@ class ReportService:
                 report_data['report_scope'] = 'event_summary'
         else:
             report_data['report_scope'] = 'event_summary'
+
         logger.info(f"=== REPORT DATA CREATED ===")
         logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
         logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
         logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
+
+        # Additional diagnostic info
+        if total_attendees == 0 and total_tickets_sold > 0:
+            logger.warning("⚠️ ATTENTION: Zero attendees with non-zero ticket sales")
+            logger.warning(f"📊 Tickets sold: {total_tickets_sold}")
+            logger.warning(f"📅 Date range: {start_date} to {end_date}")
+            logger.warning(f"🎫 Event scans available: {event_scan_count}")
+
         return self._sanitize_report_data(report_data)
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
@@ -599,6 +731,7 @@ class ReportService:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
                 base_currency_id = base_currency.id if base_currency else 1
+
             sanitized_report_data = self._sanitize_report_data(report_data)
             report = Report(
                 organizer_id=organizer_id,
@@ -635,9 +768,11 @@ class ReportService:
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
+
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
+
             pdf_path = self.pdf_generator.generate_pdf(
                 report_data=report_data,
                 chart_paths=chart_paths,
@@ -646,17 +781,20 @@ class ReportService:
                 event_id=event_id,
                 target_currency=target_currency_code or "KES"
             )
+
             csv_path = CSVReportGenerator.generate_csv(
                 report_data=report_data,
                 output_path=csv_path,
                 session=session,
                 event_id=event_id
             )
+
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
                 email_sent = self.send_report_email(
                     report_data, pdf_path, csv_path, recipient_email
                 )
+
             return {
                 'success': True,
                 'report_data': report_data,
@@ -712,6 +850,7 @@ class ReportService:
         total_revenue = max(0.0, float(report_data.get('total_revenue', 0)))
         number_of_attendees = max(0, int(report_data.get('number_of_attendees', 0)))
         attendance_rate = max(0.0, float(report_data.get('attendance_rate', 0)))
+
         body = f"""
         <!DOCTYPE html>
         <html>
