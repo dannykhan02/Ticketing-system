@@ -1,12 +1,14 @@
 from flask import request, jsonify, send_file, current_app, after_this_request, make_response
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode, TicketType
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator
 # ChartGenerator will be imported when needed to handle import errors gracefully
 from currency_routes import convert_ksh_to_target_currency
+
+from sqlalchemy import func, cast, String
 
 from reportlab.lib.pagesizes import A4
 import logging
@@ -753,12 +755,24 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
         organizer_events = Event.query.filter_by(organizer_id=organizer.id).all()
 
         for event in organizer_events:
-            event_tickets = Ticket.query.filter_by(event_id=event.id).count()
-            event_revenue_query = (db.session.query(db.func.sum(Transaction.amount_paid))
-                                  .join(Ticket, Ticket.transaction_id == Transaction.id)
-                                  .filter(Ticket.event_id == event.id,
-                                          Transaction.payment_status == 'COMPLETED')
+            # Count only PAID tickets (following DatabaseQueryService approach)
+            event_tickets = (db.session.query(func.count(Ticket.id))
+                           .filter(
+                               Ticket.event_id == event.id,
+                               cast(Ticket.payment_status, String).ilike("paid")
+                           )
+                           .scalar()) or 0
+
+            # Calculate revenue using ticket price * quantity for PAID tickets only
+            event_revenue_query = (db.session.query(func.sum(TicketType.price * Ticket.quantity))
+                                  .select_from(Ticket)
+                                  .join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                                  .filter(
+                                      Ticket.event_id == event.id,
+                                      cast(Ticket.payment_status, String).ilike("paid")
+                                  )
                                   .scalar())
+            
             event_revenue = float(event_revenue_query) if event_revenue_query else 0.0
 
             total_tickets_sold += event_tickets
