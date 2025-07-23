@@ -485,7 +485,7 @@ class GetReportResource(Resource, AuthorizationMixin):
                 
                 # Log authorization details for debugging
                 logger.info(f"GetReportResource: Checking authorization - User: {current_user_id}, "
-                           f"Organizer ID: {organizer.id}, Report Organizer ID: {report.organizer_id}")
+                        f"Organizer ID: {organizer.id}, Report Organizer ID: {report.organizer_id}")
                 
                 # Primary check: if organizer owns the report
                 if report.organizer_id == organizer.id:
@@ -494,10 +494,11 @@ class GetReportResource(Resource, AuthorizationMixin):
                 else:
                     # Alternative authorization checks
                     
-                    # Check 1: If report's organizer_id matches the user_id (direct user ownership)
+                    # Check 1: If report's organizer_id matches the user_id (possible data inconsistency)
                     if report.organizer_id == current_user_id:
                         is_authorized = True
-                        logger.info(f"GetReportResource: User {current_user_id} authorized via direct user-report ownership for report {report_id}.")
+                        logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
+                        logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
                     
                     # Check 2: If current organizer can access reports from the target organizer (same organization/team)
                     elif report.organizer_id:
@@ -526,13 +527,18 @@ class GetReportResource(Resource, AuthorizationMixin):
                         if report_owner:
                             logger.info(f"GetReportResource: Report {report_id} is owned by organizer {report.organizer_id} (user_id: {report_owner.user_id})")
                         else:
-                            logger.warning(f"GetReportResource: Report {report_id} has invalid organizer_id {report.organizer_id}")
+                            # Check if organizer_id actually refers to a user_id
+                            potential_user = User.query.get(report.organizer_id)
+                            if potential_user:
+                                logger.warning(f"GetReportResource: Report {report_id} has organizer_id {report.organizer_id} which appears to be a user_id, not organizer_id")
+                            else:
+                                logger.warning(f"GetReportResource: Report {report_id} has invalid organizer_id {report.organizer_id}")
                     else:
                         logger.info(f"GetReportResource: Report {report_id} has no organizer_id set")
 
             if not is_authorized:
                 logger.warning(f"GetReportResource: User {current_user_id} (organizer: {organizer.id if organizer else 'None'}) "
-                              f"unauthorized to access report {report_id} (owned by organizer: {report.organizer_id}).")
+                            f"unauthorized to access report {report_id} (owned by organizer: {report.organizer_id}).")
                 return {'error': 'Unauthorized to access this report'}, 403
 
             # Get target currency for conversion
@@ -567,7 +573,7 @@ class GetReportResource(Resource, AuthorizationMixin):
                     }
 
             logger.info(f"GetReportResource: Successfully retrieved report {report_id} for user {current_user_id} "
-                       f"(organizer: {organizer.id if organizer else 'None'}) with currency_id {target_currency_id}.")
+                    f"(organizer: {organizer.id if organizer else 'None'}) with currency_id {target_currency_id}.")
             return response_data, 200
 
         except Exception as e:
