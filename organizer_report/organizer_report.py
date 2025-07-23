@@ -496,7 +496,8 @@ class GetReportResource(Resource, AuthorizationMixin):
                 # Check 2: If report's organizer_id matches the user_id (possible data inconsistency)
                 else:
                     logger.info(f"GetReportResource: Check 2 - report.organizer_id ({report.organizer_id}) == current_user_id ({current_user_id}): {report.organizer_id == current_user_id}")
-                    if report.organizer_id == current_user_id:
+                    logger.info(f"GetReportResource: Check 2 types - report.organizer_id type: {type(report.organizer_id)}, current_user_id type: {type(current_user_id)}")
+                    if str(report.organizer_id) == str(current_user_id):
                         is_authorized = True
                         logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
                         logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
