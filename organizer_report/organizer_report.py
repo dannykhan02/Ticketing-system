@@ -491,33 +491,31 @@ class GetReportResource(Resource, AuthorizationMixin):
                 if report.organizer_id == organizer.id:
                     is_authorized = True
                     logger.info(f"GetReportResource: Organizer {organizer.id} authorized to access report {report_id}.")
-                else:
-                    # Alternative authorization checks
-                    
-                    # Check 1: If report's organizer_id matches the user_id (possible data inconsistency)
-                    if report.organizer_id == current_user_id:
-                        is_authorized = True
-                        logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
-                        logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
-                    
-                    # Check 2: If current organizer can access reports from the target organizer (same organization/team)
-                    elif report.organizer_id:
+                
+                # Check 1: If report's organizer_id matches the user_id (possible data inconsistency)
+                if not is_authorized and report.organizer_id == current_user_id:
+                    is_authorized = True
+                    logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
+                    logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
+                
+                # Check 2: If current organizer can access reports from the target organizer (same organization/team)
+                if not is_authorized and report.organizer_id:
                         target_organizer = Organizer.query.get(report.organizer_id)
                         if target_organizer and hasattr(organizer, 'organization_id') and hasattr(target_organizer, 'organization_id'):
                             if organizer.organization_id == target_organizer.organization_id and organizer.organization_id is not None:
                                 is_authorized = True
                                 logger.info(f"GetReportResource: Organizer {organizer.id} authorized via same organization ({organizer.organization_id}) for report {report_id}.")
                     
-                    # Check 3: If report has no organizer_id but was created by current user
-                    if not is_authorized and report.organizer_id is None and hasattr(report, 'created_by_user_id'):
-                        if report.created_by_user_id == current_user_id:
-                            is_authorized = True
-                            logger.info(f"GetReportResource: User {current_user_id} authorized as creator of report {report_id}.")
-                    
-                    # Check 4: Check if the user has admin privileges for this specific organizer/organization
-                    if not is_authorized and hasattr(organizer, 'is_admin') and organizer.is_admin:
+                # Check 3: If report has no organizer_id but was created by current user
+                if not is_authorized and report.organizer_id is None and hasattr(report, 'created_by_user_id'):
+                    if report.created_by_user_id == current_user_id:
                         is_authorized = True
-                        logger.info(f"GetReportResource: Organizer {organizer.id} authorized via admin privileges for report {report_id}.")
+                        logger.info(f"GetReportResource: User {current_user_id} authorized as creator of report {report_id}.")
+                
+                # Check 4: Check if the user has admin privileges for this specific organizer/organization
+                if not is_authorized and hasattr(organizer, 'is_admin') and organizer.is_admin:
+                    is_authorized = True
+                    logger.info(f"GetReportResource: Organizer {organizer.id} authorized via admin privileges for report {report_id}.")
                 
                 # Additional diagnostic logging
                 if not is_authorized:
