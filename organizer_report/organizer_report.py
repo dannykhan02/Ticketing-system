@@ -448,7 +448,6 @@ class GetReportsResource(Resource, AuthorizationMixin):
             logger.error(f"GetReportsResource: Error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
 
-
 class GetReportResource(Resource, AuthorizationMixin):
     """
     API resource for retrieving a single report by its ID.
@@ -488,22 +487,48 @@ class GetReportResource(Resource, AuthorizationMixin):
                 logger.info(f"GetReportResource: Checking authorization - User: {current_user_id}, "
                            f"Organizer ID: {organizer.id}, Report Organizer ID: {report.organizer_id}")
                 
-                # Check if organizer owns the report
+                # Primary check: if organizer owns the report
                 if report.organizer_id == organizer.id:
                     is_authorized = True
                     logger.info(f"GetReportResource: Organizer {organizer.id} authorized to access report {report_id}.")
                 else:
-                    # Additional check: if report has no organizer_id, check if user created it
-                    if report.organizer_id is None and hasattr(report, 'created_by_user_id'):
+                    # Alternative authorization checks
+                    
+                    # Check 1: If report's organizer_id matches the user_id (direct user ownership)
+                    if report.organizer_id == current_user_id:
+                        is_authorized = True
+                        logger.info(f"GetReportResource: User {current_user_id} authorized via direct user-report ownership for report {report_id}.")
+                    
+                    # Check 2: If current organizer can access reports from the target organizer (same organization/team)
+                    elif report.organizer_id:
+                        target_organizer = Organizer.query.get(report.organizer_id)
+                        if target_organizer and hasattr(organizer, 'organization_id') and hasattr(target_organizer, 'organization_id'):
+                            if organizer.organization_id == target_organizer.organization_id and organizer.organization_id is not None:
+                                is_authorized = True
+                                logger.info(f"GetReportResource: Organizer {organizer.id} authorized via same organization ({organizer.organization_id}) for report {report_id}.")
+                    
+                    # Check 3: If report has no organizer_id but was created by current user
+                    if not is_authorized and report.organizer_id is None and hasattr(report, 'created_by_user_id'):
                         if report.created_by_user_id == current_user_id:
                             is_authorized = True
                             logger.info(f"GetReportResource: User {current_user_id} authorized as creator of report {report_id}.")
                     
-                    # Additional check: if organizer has permissions to view all reports in their organization
-                    if not is_authorized and hasattr(organizer, 'organization_id') and hasattr(report, 'organization_id'):
-                        if organizer.organization_id == report.organization_id:
-                            is_authorized = True
-                            logger.info(f"GetReportResource: Organizer {organizer.id} authorized via organization access for report {report_id}.")
+                    # Check 4: Check if the user has admin privileges for this specific organizer/organization
+                    if not is_authorized and hasattr(organizer, 'is_admin') and organizer.is_admin:
+                        is_authorized = True
+                        logger.info(f"GetReportResource: Organizer {organizer.id} authorized via admin privileges for report {report_id}.")
+                
+                # Additional diagnostic logging
+                if not is_authorized:
+                    logger.info(f"GetReportResource: Authorization failed - investigating report ownership:")
+                    if report.organizer_id:
+                        report_owner = Organizer.query.get(report.organizer_id)
+                        if report_owner:
+                            logger.info(f"GetReportResource: Report {report_id} is owned by organizer {report.organizer_id} (user_id: {report_owner.user_id})")
+                        else:
+                            logger.warning(f"GetReportResource: Report {report_id} has invalid organizer_id {report.organizer_id}")
+                    else:
+                        logger.info(f"GetReportResource: Report {report_id} has no organizer_id set")
 
             if not is_authorized:
                 logger.warning(f"GetReportResource: User {current_user_id} (organizer: {organizer.id if organizer else 'None'}) "
