@@ -488,23 +488,27 @@ class GetReportResource(Resource, AuthorizationMixin):
                         f"Organizer ID: {organizer.id}, Report Organizer ID: {report.organizer_id}")
                 
                 # Check 1: Primary check - if organizer owns the report
+                logger.info(f"GetReportResource: Check 1 - report.organizer_id ({report.organizer_id}) == organizer.id ({organizer.id}): {report.organizer_id == organizer.id}")
                 if report.organizer_id == organizer.id:
                     is_authorized = True
                     logger.info(f"GetReportResource: Organizer {organizer.id} authorized to access report {report_id}.")
                 
                 # Check 2: If report's organizer_id matches the user_id (possible data inconsistency)
-                elif report.organizer_id == current_user_id:
-                    is_authorized = True
-                    logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
-                    logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
-                
-                # Check 3: If current organizer can access reports from the target organizer (same organization/team)
-                elif report.organizer_id:
-                    target_organizer = Organizer.query.get(report.organizer_id)
-                    if target_organizer and hasattr(organizer, 'organization_id') and hasattr(target_organizer, 'organization_id'):
-                        if organizer.organization_id == target_organizer.organization_id and organizer.organization_id is not None:
-                            is_authorized = True
-                            logger.info(f"GetReportResource: Organizer {organizer.id} authorized via same organization ({organizer.organization_id}) for report {report_id}.")
+                else:
+                    logger.info(f"GetReportResource: Check 2 - report.organizer_id ({report.organizer_id}) == current_user_id ({current_user_id}): {report.organizer_id == current_user_id}")
+                    if report.organizer_id == current_user_id:
+                        is_authorized = True
+                        logger.info(f"GetReportResource: User {current_user_id} authorized via user-report ownership for report {report_id}.")
+                        logger.warning(f"GetReportResource: Data inconsistency detected - report {report_id} has organizer_id={report.organizer_id} but user's organizer.id={organizer.id}")
+                    
+                    # Check 3: If current organizer can access reports from the target organizer (same organization/team)
+                    elif report.organizer_id:
+                        logger.info(f"GetReportResource: Check 3 - Checking organization access for organizer_id {report.organizer_id}")
+                        target_organizer = Organizer.query.get(report.organizer_id)
+                        if target_organizer and hasattr(organizer, 'organization_id') and hasattr(target_organizer, 'organization_id'):
+                            if organizer.organization_id == target_organizer.organization_id and organizer.organization_id is not None:
+                                is_authorized = True
+                                logger.info(f"GetReportResource: Organizer {organizer.id} authorized via same organization ({organizer.organization_id}) for report {report_id}.")
                 
                 # Check 4: If report has no organizer_id but was created by current user
                 if not is_authorized and report.organizer_id is None and hasattr(report, 'created_by_user_id'):
