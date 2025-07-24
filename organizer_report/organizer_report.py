@@ -1001,19 +1001,14 @@ class EventReportsResource(Resource):
             # Query reports with proper date filtering
             query = Report.query.filter_by(event_id=event_id)
             
-            # Apply date filtering to created_at or updated_at instead of report_date
+            # Apply date filtering to timestamp instead of created_at or updated_at
             # This ensures we get reports generated within the specified timeframe
             if start_date and end_date:
-                # Filter by when the report was created, not the report_date field
-                query = query.filter(
-                    or_(
-                        Report.created_at.between(start_date, end_date),
-                        Report.updated_at.between(start_date, end_date)
-                    )
-                )
+                # Filter by when the report was created using the timestamp field
+                query = query.filter(Report.timestamp.between(start_date, end_date))
 
-            # Order by creation time descending to get most recently generated reports first
-            query = query.order_by(Report.created_at.desc(), Report.id.desc())
+            # Order by timestamp descending to get most recently generated reports first
+            query = query.order_by(Report.timestamp.desc(), Report.id.desc())
 
             # Apply limit if specified
             if limit:
@@ -1092,7 +1087,7 @@ class EventReportsResource(Resource):
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
                     'number_of_attendees': actual_attendee_count,
                     'report_date': r.report_date.isoformat() if r.report_date else None,
-                    'created_at': r.created_at.isoformat() if hasattr(r, 'created_at') and r.created_at else None,
+                    'created_at': r.timestamp.isoformat() if r.timestamp else None,
                     'report_scope': getattr(r, 'report_scope', 'event_summary'),
                     'ticket_type_name': getattr(r.ticket_type, 'type_name', None) if hasattr(r, 'ticket_type') and r.ticket_type else None,
                     'generated_order': r.id,
