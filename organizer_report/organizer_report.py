@@ -1022,9 +1022,13 @@ class EventReportsResource(Resource):
                 debug_date_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in debug_date_reports]
                 logger.info(f"EventReportsResource: DEBUG - Reports matching date filter {start_date} to {end_date}: {debug_date_info}")
 
-            # FIXED: Order by ID descending to get the most recently created reports
-            # This is more reliable than timestamp as IDs are sequential
-            query = query.order_by(Report.id.desc())
+            # SMART ORDERING: Prioritize reports with actual data, then by ID descending
+            # This ensures reports with revenue/attendees appear first, then empty ones
+            query = query.order_by(
+                (Report.total_revenue > 0).desc(),  # Reports with revenue first
+                (Report.total_tickets_sold > 0).desc(),  # Then reports with tickets sold
+                Report.id.desc()  # Finally by ID descending
+            )
 
             # Apply limit if specified
             if limit:
@@ -1187,7 +1191,7 @@ class EventReportsResource(Resource):
                 'total_reports_returned': len(reports_data),
                 'is_limited': bool(limit),
                 'limit_applied': limit,
-                'ordering': 'most_recent_id_first',  # Updated to reflect ID ordering
+                'ordering': 'data_first_then_recent_id',  # Updated to reflect smart ordering
                 'currency_info': {
                     'target_currency': target_currency_code,
                     'currency_symbol': target_currency.symbol if target_currency else 'KSh'
@@ -1202,7 +1206,7 @@ class EventReportsResource(Resource):
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_id_desc'  # Updated
+                    'ordering_method': 'data_first_then_id_desc'  # Updated
                 }
             elif start_date_str or end_date_str:
                 response_data['query_info'] = {
@@ -1212,14 +1216,14 @@ class EventReportsResource(Resource):
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_id_desc'  # Updated
+                    'ordering_method': 'data_first_then_id_desc'  # Updated
                 }
             else:
                 response_data['query_info'] = {
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_id_desc'  # Updated
+                    'ordering_method': 'data_first_then_id_desc'  # Updated
                 }
 
             # Add summary statistics
@@ -1246,7 +1250,7 @@ class EventReportsResource(Resource):
                     'oldest_report_id': min(r['report_id'] for r in reports_data)
                 }
 
-            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by ID descending")
+            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by data-first then ID descending")
             return response_data, 200
 
         except Exception as e:
