@@ -974,7 +974,7 @@ class EventReportsResource(Resource):
                         logger.warning(f"EventReportsResource: Invalid limit format: {limit_str}")
                         return {'error': 'Limit must be a valid integer'}, 400
                 else:
-                    limit = 5  # Default to 5 most recent reports
+                    limit = 1  # Default to 1 most recent report (like POST request returns one report)
 
             # Validate target currency
             target_currency = None
@@ -998,259 +998,133 @@ class EventReportsResource(Resource):
                     is_active=True
                 ).first()
 
-            # Debug: First, let's see ALL reports for this event without date filtering
-            all_reports_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(10)
-            all_reports = all_reports_query.all()
-            all_report_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in all_reports]
-            logger.info(f"EventReportsResource: DEBUG - ALL reports for event {event_id} (top 10 by ID desc): {all_report_info}")
-
-            # Query reports with proper date filtering
+            # Query reports with date filtering and smart ordering
             query = Report.query.filter_by(event_id=event_id)
             
-            # Debug the date range being applied
-            logger.info(f"EventReportsResource: DEBUG - Date filtering: start_date={start_date}, end_date={end_date}")
-            logger.info(f"EventReportsResource: DEBUG - Specific date query: {specific_date_str}")
-            
-            # Apply date filtering to timestamp instead of created_at or updated_at
-            # This ensures we get reports generated within the specified timeframe
+            # Apply date filtering
             if start_date and end_date:
-                # Filter by when the report was created using the timestamp field
                 query = query.filter(Report.timestamp.between(start_date, end_date))
-                
-                # Debug: Show what reports would match this date filter before ordering
-                debug_date_reports = query.all()
-                debug_date_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in debug_date_reports]
-                logger.info(f"EventReportsResource: DEBUG - Reports matching date filter {start_date} to {end_date}: {debug_date_info}")
 
-            # SMART ORDERING: Prioritize reports with actual data, then by ID descending
-            # This ensures reports with revenue/attendees appear first, then empty ones
+            # Order by: reports with data first, then by most recent ID
             query = query.order_by(
-                (Report.total_revenue > 0).desc(),  # Reports with revenue first
-                (Report.total_tickets_sold > 0).desc(),  # Then reports with tickets sold
-                Report.id.desc()  # Finally by ID descending
+                (Report.total_revenue > 0).desc(),
+                Report.id.desc()
             )
 
-            # Apply limit if specified
+            # Apply limit
             if limit:
                 query = query.limit(limit)
 
             reports = query.all()
+
+            if not reports:
+                logger.info(f"EventReportsResource: No reports found for event {event_id}")
+                return {
+                    'event_id': event_id,
+                    'event_name': event.name,
+                    'message': 'No reports found for the specified criteria',
+                    'reports': []
+                }, 200
+
+            # Get the most recent report with data (first in our ordered results)
+            report = reports[0]
             
-            # FALLBACK: If we're looking for a specific date and got no/few results, 
-            # also check if there are more recent reports outside the date range
-            if specific_date_str and len(reports) < 3:
-                logger.info(f"EventReportsResource: FALLBACK - Only found {len(reports)} reports for specific date, checking for more recent reports...")
-                fallback_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(3)
-                fallback_reports = fallback_query.all()
-                fallback_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in fallback_reports]
-                logger.info(f"EventReportsResource: FALLBACK - Most recent reports by ID: {fallback_info}")
-                
-                # If the most recent report has actual data and the date-filtered ones don't, use it
-                if fallback_reports and len(reports) > 0:
-                    most_recent = fallback_reports[0]
-                    current_best = reports[0] if reports else None
-                    
-                    most_recent_revenue = float(most_recent.total_revenue) if most_recent.total_revenue else 0
-                    current_best_revenue = float(current_best.total_revenue) if current_best and current_best.total_revenue else 0
-                    
-                    if most_recent_revenue > 0 and current_best_revenue == 0:
-                        logger.info(f"EventReportsResource: FALLBACK - Using most recent report {most_recent.id} instead of date-filtered results because it has actual data")
-                        reports = [most_recent] + [r for r in reports if r.id != most_recent.id][:4]  # Include most recent + up to 4 others
-
-            # Enhanced logging with ID ordering info
-            date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}" if (start_date and end_date) else "all dates"
-            limit_info = f"(limited to {limit} most recent)" if limit else "(all reports)"
-            report_ids = [r.id for r in reports] if reports else []
-            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}. Report IDs (by ID desc): {report_ids}")
-
-            # Debug: Let's also check what the timestamp ordering would return
-            debug_query = Report.query.filter_by(event_id=event_id)
-            if start_date and end_date:
-                debug_query = debug_query.filter(Report.timestamp.between(start_date, end_date))
-            debug_timestamp_reports = debug_query.order_by(Report.timestamp.desc()).limit(5).all()
-            debug_timestamp_ids = [r.id for r in debug_timestamp_reports]
-            logger.info(f"EventReportsResource: DEBUG - Same query ordered by timestamp desc would return: {debug_timestamp_ids}")
+            # Extract data exactly like GenerateReportResource
+            total_revenue_ksh = float(report.total_revenue) if report.total_revenue else 0.0
+            total_tickets_sold = report.total_tickets_sold if report.total_tickets_sold else 0
             
-            # CRITICAL: Check if report 104 exists and what its timestamp is
-            report_104 = Report.query.filter_by(event_id=event_id, id=104).first()
-            if report_104:
-                logger.info(f"EventReportsResource: DEBUG - Report 104 exists with timestamp: {report_104.timestamp}, revenue: {report_104.total_revenue}")
-                logger.info(f"EventReportsResource: DEBUG - Report 104 timestamp in range? {start_date} <= {report_104.timestamp} <= {end_date}: {start_date <= report_104.timestamp <= end_date if report_104.timestamp else False}")
-            else:
-                logger.info(f"EventReportsResource: DEBUG - Report 104 does not exist for event {event_id}")
-
-            reports_data = []
-            base_url = request.url_root.rstrip('/')
-
-            for r in reports:
-                # Extract data similar to GenerateReportResource
-                total_revenue_ksh = float(r.total_revenue) if r.total_revenue else 0.0
-                total_tickets_sold = r.total_tickets_sold if r.total_tickets_sold else 0
-                
-                # Get attendee count with fallback logic like GenerateReportResource
-                actual_attendee_count = r.number_of_attendees if r.number_of_attendees else 0
-                
-                # If stored count is 0, try to extract from report_data
-                if actual_attendee_count == 0 and hasattr(r, 'report_data') and r.report_data:
-                    try:
-                        import json
-                        if isinstance(r.report_data, str):
-                            report_data = json.loads(r.report_data)
-                        elif isinstance(r.report_data, dict):
-                            report_data = r.report_data
-                        else:
-                            report_data = {}
-
-                        # Use same fallback logic as GenerateReportResource
-                        actual_attendee_count = report_data.get('attendee_count', 0)
-                        if actual_attendee_count == 0:
-                            actual_attendee_count = report_data.get('number_of_attendees', 0)
-                            if actual_attendee_count == 0:
-                                actual_attendee_count = report_data.get('total_attendees', 0)
-                        
-                        logger.info(f"EventReportsResource: Extracted attendee count from report data for report {r.id}: {actual_attendee_count}")
-                        
-                    except Exception as e:
-                        logger.debug(f"EventReportsResource: Could not extract attendee count from report data for report {r.id}: {e}")
-
-                # Log more details about this report for debugging
-                logger.info(f"EventReportsResource: Processing report {r.id} - Revenue: {total_revenue_ksh}, Tickets: {total_tickets_sold}, Attendees: {actual_attendee_count}, Timestamp: {r.timestamp}")
-
-                # Currency conversion logic similar to GenerateReportResource
-                converted_amount = Decimal(str(total_revenue_ksh))
-                ksh_to_usd_rate = Decimal('1')
-                usd_to_target_rate = Decimal('1')
-                overall_conversion_rate = Decimal('1')
-
+            # Get attendee count with fallback logic like GenerateReportResource
+            actual_attendee_count = report.number_of_attendees if report.number_of_attendees else 0
+            
+            # If stored count is 0, try to extract from report_data
+            if actual_attendee_count == 0 and hasattr(report, 'report_data') and report.report_data:
                 try:
-                    if target_currency_code != 'KES' and total_revenue_ksh > 0:
-                        logger.info(f"EventReportsResource: Converting {total_revenue_ksh} KES to {target_currency_code} for report {r.id}")
-                        converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
-                            total_revenue_ksh,
-                            target_currency_code
-                        )
-                        overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
-                        logger.info(f"EventReportsResource: Conversion successful - {total_revenue_ksh} KES = {converted_amount} {target_currency_code}")
+                    import json
+                    if isinstance(report.report_data, str):
+                        report_data = json.loads(report.report_data)
+                    elif isinstance(report.report_data, dict):
+                        report_data = report.report_data
                     else:
-                        converted_amount = Decimal(str(total_revenue_ksh))
-                        logger.info(f"EventReportsResource: No conversion needed - amount stays {total_revenue_ksh} KES")
-                except Exception as e:
-                    logger.warning(f"EventReportsResource: Currency conversion failed for {target_currency_code}: {str(e)}")
-                    converted_amount = Decimal(str(total_revenue_ksh))
-                    target_currency_code = 'KES'
+                        report_data = {}
 
-                report_dict = {
-                    'report_id': r.id,
-                    'event_id': r.event_id,
+                    # Use same fallback logic as GenerateReportResource
+                    actual_attendee_count = report_data.get('attendee_count', 0)
+                    if actual_attendee_count == 0:
+                        actual_attendee_count = report_data.get('number_of_attendees', 0)
+                        if actual_attendee_count == 0:
+                            actual_attendee_count = report_data.get('total_attendees', 0)
+                    
+                    logger.info(f"EventReportsResource: Extracted attendee count from report data for report {report.id}: {actual_attendee_count}")
+                    
+                except Exception as e:
+                    logger.debug(f"EventReportsResource: Could not extract attendee count from report data for report {report.id}: {e}")
+
+            # Currency conversion logic identical to GenerateReportResource
+            converted_amount = Decimal(str(total_revenue_ksh))
+            ksh_to_usd_rate = Decimal('1')
+            usd_to_target_rate = Decimal('1')
+            overall_conversion_rate = Decimal('1')
+
+            try:
+                if target_currency_code != 'KES' and total_revenue_ksh > 0:
+                    logger.info(f"EventReportsResource: Converting {total_revenue_ksh} KES to {target_currency_code} for report {report.id}")
+                    converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
+                        total_revenue_ksh,
+                        target_currency_code
+                    )
+                    overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
+                    logger.info(f"EventReportsResource: Conversion successful - {total_revenue_ksh} KES = {converted_amount} {target_currency_code}")
+                else:
+                    converted_amount = Decimal(str(total_revenue_ksh))
+                    logger.info(f"EventReportsResource: No conversion needed - amount stays {total_revenue_ksh} KES")
+            except Exception as e:
+                logger.warning(f"EventReportsResource: Currency conversion failed for {target_currency_code}: {str(e)}")
+                converted_amount = Decimal(str(total_revenue_ksh))
+                target_currency_code = 'KES'
+
+            # Build response exactly like GenerateReportResource
+            base_url = request.url_root.rstrip('/')
+            pdf_download_url = f"{base_url}/reports/{report.id}/export?format=pdf&currency={target_currency_code}"
+            csv_download_url = f"{base_url}/reports/{report.id}/export?format=csv&currency={target_currency_code}"
+
+            response_data = {
+                'message': f'Found {len(reports)} report(s) for the specified criteria',
+                'report_id': report.id,
+                'event_id': event_id,
+                'event_name': event.name,
+                'report_data_summary': {
                     'total_tickets_sold': total_tickets_sold,
-                    'total_revenue_original': total_revenue_ksh,
+                    'total_revenue_original': float(total_revenue_ksh),
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
                     'number_of_attendees': actual_attendee_count,
-                    'report_date': r.report_date.isoformat() if r.report_date else None,
-                    'created_at': r.timestamp.isoformat() if r.timestamp else None,
-                    'report_scope': getattr(r, 'report_scope', 'event_summary'),
-                    'ticket_type_name': getattr(r.ticket_type, 'type_name', None) if hasattr(r, 'ticket_type') and r.ticket_type else None,
-                    'generated_order': r.id,
                     'original_currency': 'KES',
                     'target_currency': target_currency_code,
                     'currency_symbol': target_currency.symbol if target_currency else 'KSh'
-                }
-                
-                # Add currency conversion details
-                if target_currency_code != 'KES':
-                    report_dict['currency_conversion'] = {
-                        'original_amount': total_revenue_ksh,
-                        'original_currency': 'KES',
-                        'converted_amount': float(converted_amount.quantize(Decimal('0.01'))),
-                        'converted_currency': target_currency_code,
-                        'conversion_steps': {
-                            'ksh_to_usd_rate': float(ksh_to_usd_rate),
-                            'usd_to_target_rate': float(usd_to_target_rate),
-                            'overall_conversion_rate': float(overall_conversion_rate)
-                        },
-                        'conversion_successful': True
-                    }
-                
-                # Add download URLs with currency parameter
-                report_dict['pdf_download_url'] = f"{base_url}/reports/{r.id}/export?format=pdf&currency={target_currency_code}"
-                report_dict['csv_download_url'] = f"{base_url}/reports/{r.id}/export?format=csv&currency={target_currency_code}"
-                
-                # Add attendance rate calculation
-                if total_tickets_sold > 0:
-                    attendance_rate = round((actual_attendee_count / total_tickets_sold) * 100, 2)
-                    report_dict['attendance_rate'] = attendance_rate
-                else:
-                    report_dict['attendance_rate'] = 0.0
-                
-                reports_data.append(report_dict)
-
-            response_data = {
-                'event_id': event_id,
-                'event_name': event.name if event else f"Event {event_id}",
-                'reports': reports_data,
-                'total_reports_returned': len(reports_data),
-                'is_limited': bool(limit),
-                'limit_applied': limit,
-                'ordering': 'data_first_then_recent_id',  # Updated to reflect smart ordering
-                'currency_info': {
-                    'target_currency': target_currency_code,
-                    'currency_symbol': target_currency.symbol if target_currency else 'KSh'
+                },
+                'report_period': {
+                    'start_date': start_date.isoformat(),
+                    'end_date': end_date.isoformat(),
+                    'is_single_day': bool(specific_date_str)
+                },
+                'currency_conversion': {
+                    'original_amount': float(total_revenue_ksh),
+                    'original_currency': 'KES',
+                    'converted_amount': float(converted_amount.quantize(Decimal('0.01'))),
+                    'converted_currency': target_currency_code,
+                    'conversion_steps': {
+                        'ksh_to_usd_rate': float(ksh_to_usd_rate),
+                        'usd_to_target_rate': float(usd_to_target_rate),
+                        'overall_conversion_rate': float(overall_conversion_rate)
+                    },
+                    'conversion_successful': target_currency_code != 'KES' or total_revenue_ksh == 0
+                },
+                'download_links': {
+                    'pdf_url': pdf_download_url,
+                    'csv_url': csv_download_url
                 }
             }
 
-            # Add query parameters info to response for clarity
-            if specific_date_str:
-                response_data['query_info'] = {
-                    'specific_date': specific_date_str,
-                    'is_single_day': True,
-                    'limit': limit,
-                    'get_all': get_all,
-                    'target_currency': target_currency_code,
-                    'ordering_method': 'data_first_then_id_desc'  # Updated
-                }
-            elif start_date_str or end_date_str:
-                response_data['query_info'] = {
-                    'start_date': start_date_str,
-                    'end_date': end_date_str,
-                    'is_single_day': False,
-                    'limit': limit,
-                    'get_all': get_all,
-                    'target_currency': target_currency_code,
-                    'ordering_method': 'data_first_then_id_desc'  # Updated
-                }
-            else:
-                response_data['query_info'] = {
-                    'limit': limit,
-                    'get_all': get_all,
-                    'target_currency': target_currency_code,
-                    'ordering_method': 'data_first_then_id_desc'  # Updated
-                }
-
-            # Add summary statistics
-            if reports_data:
-                total_tickets = sum(r['total_tickets_sold'] for r in reports_data)
-                total_revenue_converted = sum(r['total_revenue_converted'] for r in reports_data)
-                total_attendees = sum(r['number_of_attendees'] for r in reports_data)
-                
-                response_data['summary'] = {
-                    'total_tickets_across_reports': total_tickets,
-                    'total_revenue_across_reports': round(total_revenue_converted, 2),
-                    'total_attendees_across_reports': total_attendees,
-                    'average_attendance_rate': round(
-                        sum(r['attendance_rate'] for r in reports_data) / len(reports_data), 2
-                    ) if reports_data else 0.0,
-                    'currency': target_currency_code,
-                    'currency_symbol': target_currency.symbol if target_currency else 'KSh'
-                }
-
-            # Add information about most recent and oldest report IDs in the result
-            if reports_data:
-                response_data['report_range'] = {
-                    'most_recent_report_id': max(r['report_id'] for r in reports_data),
-                    'oldest_report_id': min(r['report_id'] for r in reports_data)
-                }
-
-            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by data-first then ID descending")
+            logger.info(f"EventReportsResource: Successfully returned report {report.id} for event {event_id}")
             return response_data, 200
 
         except Exception as e:
