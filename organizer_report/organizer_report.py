@@ -998,14 +998,29 @@ class EventReportsResource(Resource):
                     is_active=True
                 ).first()
 
+            # Debug: First, let's see ALL reports for this event without date filtering
+            all_reports_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(10)
+            all_reports = all_reports_query.all()
+            all_report_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in all_reports]
+            logger.info(f"EventReportsResource: DEBUG - ALL reports for event {event_id} (top 10 by ID desc): {all_report_info}")
+
             # Query reports with proper date filtering
             query = Report.query.filter_by(event_id=event_id)
+            
+            # Debug the date range being applied
+            logger.info(f"EventReportsResource: DEBUG - Date filtering: start_date={start_date}, end_date={end_date}")
+            logger.info(f"EventReportsResource: DEBUG - Specific date query: {specific_date_str}")
             
             # Apply date filtering to timestamp instead of created_at or updated_at
             # This ensures we get reports generated within the specified timeframe
             if start_date and end_date:
                 # Filter by when the report was created using the timestamp field
                 query = query.filter(Report.timestamp.between(start_date, end_date))
+                
+                # Debug: Show what reports would match this date filter before ordering
+                debug_date_reports = query.all()
+                debug_date_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in debug_date_reports]
+                logger.info(f"EventReportsResource: DEBUG - Reports matching date filter {start_date} to {end_date}: {debug_date_info}")
 
             # FIXED: Order by ID descending to get the most recently created reports
             # This is more reliable than timestamp as IDs are sequential
@@ -1016,6 +1031,27 @@ class EventReportsResource(Resource):
                 query = query.limit(limit)
 
             reports = query.all()
+            
+            # FALLBACK: If we're looking for a specific date and got no/few results, 
+            # also check if there are more recent reports outside the date range
+            if specific_date_str and len(reports) < 3:
+                logger.info(f"EventReportsResource: FALLBACK - Only found {len(reports)} reports for specific date, checking for more recent reports...")
+                fallback_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(3)
+                fallback_reports = fallback_query.all()
+                fallback_info = [(r.id, r.timestamp.strftime('%Y-%m-%d %H:%M:%S') if r.timestamp else 'No timestamp', float(r.total_revenue) if r.total_revenue else 0) for r in fallback_reports]
+                logger.info(f"EventReportsResource: FALLBACK - Most recent reports by ID: {fallback_info}")
+                
+                # If the most recent report has actual data and the date-filtered ones don't, use it
+                if fallback_reports and len(reports) > 0:
+                    most_recent = fallback_reports[0]
+                    current_best = reports[0] if reports else None
+                    
+                    most_recent_revenue = float(most_recent.total_revenue) if most_recent.total_revenue else 0
+                    current_best_revenue = float(current_best.total_revenue) if current_best and current_best.total_revenue else 0
+                    
+                    if most_recent_revenue > 0 and current_best_revenue == 0:
+                        logger.info(f"EventReportsResource: FALLBACK - Using most recent report {most_recent.id} instead of date-filtered results because it has actual data")
+                        reports = [most_recent] + [r for r in reports if r.id != most_recent.id][:4]  # Include most recent + up to 4 others
 
             # Enhanced logging with ID ordering info
             date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}" if (start_date and end_date) else "all dates"
@@ -1030,6 +1066,14 @@ class EventReportsResource(Resource):
             debug_timestamp_reports = debug_query.order_by(Report.timestamp.desc()).limit(5).all()
             debug_timestamp_ids = [r.id for r in debug_timestamp_reports]
             logger.info(f"EventReportsResource: DEBUG - Same query ordered by timestamp desc would return: {debug_timestamp_ids}")
+            
+            # CRITICAL: Check if report 104 exists and what its timestamp is
+            report_104 = Report.query.filter_by(event_id=event_id, id=104).first()
+            if report_104:
+                logger.info(f"EventReportsResource: DEBUG - Report 104 exists with timestamp: {report_104.timestamp}, revenue: {report_104.total_revenue}")
+                logger.info(f"EventReportsResource: DEBUG - Report 104 timestamp in range? {start_date} <= {report_104.timestamp} <= {end_date}: {start_date <= report_104.timestamp <= end_date if report_104.timestamp else False}")
+            else:
+                logger.info(f"EventReportsResource: DEBUG - Report 104 does not exist for event {event_id}")
 
             reports_data = []
             base_url = request.url_root.rstrip('/')
