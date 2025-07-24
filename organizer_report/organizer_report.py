@@ -1007,8 +1007,9 @@ class EventReportsResource(Resource):
                 # Filter by when the report was created using the timestamp field
                 query = query.filter(Report.timestamp.between(start_date, end_date))
 
-            # Order by timestamp descending to get most recently generated reports first
-            query = query.order_by(Report.timestamp.desc(), Report.id.desc())
+            # FIXED: Order by ID descending to get the most recently created reports
+            # This is more reliable than timestamp as IDs are sequential
+            query = query.order_by(Report.id.desc())
 
             # Apply limit if specified
             if limit:
@@ -1016,11 +1017,19 @@ class EventReportsResource(Resource):
 
             reports = query.all()
 
-            # Enhanced logging
+            # Enhanced logging with ID ordering info
             date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}" if (start_date and end_date) else "all dates"
             limit_info = f"(limited to {limit} most recent)" if limit else "(all reports)"
             report_ids = [r.id for r in reports] if reports else []
-            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}. Report IDs: {report_ids}")
+            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}. Report IDs (by ID desc): {report_ids}")
+
+            # Debug: Let's also check what the timestamp ordering would return
+            debug_query = Report.query.filter_by(event_id=event_id)
+            if start_date and end_date:
+                debug_query = debug_query.filter(Report.timestamp.between(start_date, end_date))
+            debug_timestamp_reports = debug_query.order_by(Report.timestamp.desc()).limit(5).all()
+            debug_timestamp_ids = [r.id for r in debug_timestamp_reports]
+            logger.info(f"EventReportsResource: DEBUG - Same query ordered by timestamp desc would return: {debug_timestamp_ids}")
 
             reports_data = []
             base_url = request.url_root.rstrip('/')
@@ -1055,6 +1064,9 @@ class EventReportsResource(Resource):
                         
                     except Exception as e:
                         logger.debug(f"EventReportsResource: Could not extract attendee count from report data for report {r.id}: {e}")
+
+                # Log more details about this report for debugging
+                logger.info(f"EventReportsResource: Processing report {r.id} - Revenue: {total_revenue_ksh}, Tickets: {total_tickets_sold}, Attendees: {actual_attendee_count}, Timestamp: {r.timestamp}")
 
                 # Currency conversion logic similar to GenerateReportResource
                 converted_amount = Decimal(str(total_revenue_ksh))
@@ -1131,7 +1143,7 @@ class EventReportsResource(Resource):
                 'total_reports_returned': len(reports_data),
                 'is_limited': bool(limit),
                 'limit_applied': limit,
-                'ordering': 'most_recent_created_first',
+                'ordering': 'most_recent_id_first',  # Updated to reflect ID ordering
                 'currency_info': {
                     'target_currency': target_currency_code,
                     'currency_symbol': target_currency.symbol if target_currency else 'KSh'
@@ -1146,7 +1158,7 @@ class EventReportsResource(Resource):
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_creation_time_desc'
+                    'ordering_method': 'by_id_desc'  # Updated
                 }
             elif start_date_str or end_date_str:
                 response_data['query_info'] = {
@@ -1156,14 +1168,14 @@ class EventReportsResource(Resource):
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_creation_time_desc'
+                    'ordering_method': 'by_id_desc'  # Updated
                 }
             else:
                 response_data['query_info'] = {
                     'limit': limit,
                     'get_all': get_all,
                     'target_currency': target_currency_code,
-                    'ordering_method': 'by_creation_time_desc'
+                    'ordering_method': 'by_id_desc'  # Updated
                 }
 
             # Add summary statistics
@@ -1190,13 +1202,13 @@ class EventReportsResource(Resource):
                     'oldest_report_id': min(r['report_id'] for r in reports_data)
                 }
 
-            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by creation time")
+            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by ID descending")
             return response_data, 200
 
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error', 'details': str(e) if current_app.debug else None}, 500
-
+        
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
     @staticmethod
