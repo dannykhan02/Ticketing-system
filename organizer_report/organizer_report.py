@@ -4,22 +4,24 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode, TicketType
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
-from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator
-# ChartGenerator will be imported when needed to handle import errors gracefully
+from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator # Import ChartGenerator
 from currency_routes import convert_ksh_to_target_currency
 
 from sqlalchemy import func, cast, String
 
 from reportlab.lib.pagesizes import A4
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List, Tuple
 from datetime import datetime, timedelta
 import os
 import tempfile
 import threading
 from decimal import Decimal
+import matplotlib.pyplot as plt # Import matplotlib
+from contextlib import contextmanager # Import contextmanager
 
 logger = logging.getLogger(__name__)
+
 
 class GenerateReportResource(Resource):
     @jwt_required()
@@ -81,11 +83,9 @@ class GenerateReportResource(Resource):
                         code=CurrencyCode(target_currency_code),
                         is_active=True
                     ).first()
-
                     if not target_currency:
                         logger.warning(f"GenerateReportResource: Target currency '{target_currency_code}' not found or not active.")
                         return {'error': f'Target currency "{target_currency_code}" not found or not active'}, 400
-
                 except ValueError:
                     logger.warning(f"GenerateReportResource: Invalid target currency code '{target_currency_code}'.")
                     return {'error': f'Invalid target currency code "{target_currency_code}"'}, 400
@@ -98,7 +98,6 @@ class GenerateReportResource(Resource):
 
             config = ReportConfig(include_email=send_email)
             report_service = ReportService(config)
-
             result = report_service.generate_complete_report(
                 event_id=event_id,
                 organizer_id=current_user_id,
@@ -120,26 +119,20 @@ class GenerateReportResource(Resource):
                 logger.error(f"GenerateReportResource: Report data generated successfully but no database_id returned for event {event_id}.")
                 return {'error': 'Report generated but could not retrieve ID'}, 500
 
-            # FIXED: Extract attendee count correctly from report data
             report_data = result.get('report_data', {})
             total_revenue_ksh = report_data.get('total_revenue', 0)
             total_tickets_sold = report_data.get('total_tickets_sold', 0)
-            
-            # FIX: Get the actual attendee count from the report data
-            # The service logs show "Final attendee count: 3", so we need to extract this correctly
+
             actual_attendee_count = report_data.get('attendee_count', 0)
             if actual_attendee_count == 0:
-                # Fallback: try other possible keys where attendee count might be stored
                 actual_attendee_count = report_data.get('number_of_attendees', 0)
                 if actual_attendee_count == 0:
                     actual_attendee_count = report_data.get('total_attendees', 0)
-            
-            # Log the attendee count extraction for debugging
+
             logger.info(f"GenerateReportResource: Extracted attendee count from report data: {actual_attendee_count}")
             logger.info(f"GenerateReportResource: Available report data keys: {list(report_data.keys())}")
-            
-            base_currency = 'KES'
 
+            base_currency = 'KES'
             converted_amount = Decimal(str(total_revenue_ksh))
             ksh_to_usd_rate = Decimal('1')
             usd_to_target_rate = Decimal('1')
@@ -157,15 +150,14 @@ class GenerateReportResource(Resource):
                 else:
                     converted_amount = Decimal(str(total_revenue_ksh))
                     logger.info(f"GenerateReportResource: No conversion needed - amount stays {total_revenue_ksh} KES")
-
             except Exception as e:
                 logger.warning(f"GenerateReportResource: Currency conversion failed for {target_currency_code}: {str(e)}")
                 converted_amount = Decimal(str(total_revenue_ksh))
                 target_currency_code = 'KES'
 
             base_url = request.url_root.rstrip('/')
-            pdf_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
-            csv_download_url = f"{base_url}/api/v1/reports/{report_id}/export?format=csv&currency={target_currency_code}"
+            pdf_download_url = f"{base_url}/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
+            csv_download_url = f"{base_url}/reports/{report_id}/export?format=csv&currency={target_currency_code}"
 
             response_data = {
                 'message': 'Report generation initiated. You can download the report using the provided links.',
@@ -174,7 +166,7 @@ class GenerateReportResource(Resource):
                     'total_tickets_sold': total_tickets_sold,
                     'total_revenue_original': float(total_revenue_ksh),
                     'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
-                    'number_of_attendees': actual_attendee_count,  # FIXED: Use the correctly extracted attendee count
+                    'number_of_attendees': actual_attendee_count,
                     'original_currency': 'KES',
                     'target_currency': target_currency_code,
                     'currency_symbol': target_currency.symbol if target_currency else 'KSh'
@@ -208,37 +200,26 @@ class GenerateReportResource(Resource):
                     try:
                         from app import app
                         with app.app_context():
-                            # CRITICAL FIX: Use the SAME data structure for both API and email
-                            # Create a complete, consistent report_data object that includes
-                            # all the currency conversion and metadata from the API response
-
-                            email_report_data = report_data.copy()  # Start with original data
-
-                            # Apply the SAME conversions that were used for the API response
+                            email_report_data = report_data.copy()
                             email_report_data.update({
                                 'event_name': event.name,
                                 'currency_symbol': target_currency.symbol if target_currency else 'KSh',
-                                'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),  # Use converted amount
-                                'currency': target_currency_code,  # Set display currency
+                                'total_revenue': float(converted_amount.quantize(Decimal('0.01'))),
+                                'currency': target_currency_code,
                                 'target_currency': target_currency_code,
                                 'report_period_start': start_date.strftime('%Y-%m-%d'),
                                 'report_period_end': end_date.strftime('%Y-%m-%d'),
                                 'conversion_rate': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
-
-                                # Add original currency info for email display
                                 'base_currency': 'KES',
                                 'base_currency_symbol': 'KSh',
                                 'original_revenue': float(total_revenue_ksh) if target_currency_code != 'KES' else None,
                                 'original_currency': 'KES' if target_currency_code != 'KES' else None,
                                 'conversion_rate_used': float(overall_conversion_rate) if overall_conversion_rate != 1 else None,
                                 'currency_conversion_source': 'currencyapi.com (with fallback)',
-                                
-                                # FIXED: Ensure attendee count is included in email data
                                 'attendee_count': actual_attendee_count,
                                 'number_of_attendees': actual_attendee_count,
                             })
 
-                            # IMPORTANT: Apply currency conversion to revenue breakdown if needed
                             if target_currency_code != 'KES' and email_report_data.get('revenue_by_type'):
                                 converted_revenue_by_type = {}
                                 for ticket_type, original_revenue in email_report_data['revenue_by_type'].items():
@@ -252,7 +233,6 @@ class GenerateReportResource(Resource):
                                         converted_revenue_by_type[ticket_type] = float(original_revenue)
                                 email_report_data['revenue_by_type'] = converted_revenue_by_type
 
-                            # Send email with the SAME data used in API response
                             email_sent = report_service.send_report_email(
                                 report_data=email_report_data,
                                 pdf_path='',
@@ -264,7 +244,6 @@ class GenerateReportResource(Resource):
                                 logger.info(f"GenerateReportResource: Background email sent to {recipient_email} for report {report_id}")
                             else:
                                 logger.error(f"GenerateReportResource: Email sending failed for report {report_id}")
-
                     except Exception as e:
                         logger.error(f"GenerateReportResource: Email sending failed for report {report_id}: {e}", exc_info=True)
 
@@ -274,11 +253,12 @@ class GenerateReportResource(Resource):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
             logger.info(f"GenerateReportResource: Final API response attendee count: {actual_attendee_count}")
+
             return response_data, 200
         except Exception as e:
             logger.error(f"GenerateReportResource: Unhandled error: {e}", exc_info=True)
             return {'error': 'Internal server error'}, 500
-        
+
 
 class GetReportsResource(Resource, AuthorizationMixin):
     """
@@ -709,31 +689,23 @@ class ExportReportResource(Resource):
                 # Generate charts if needed
                 chart_paths = []
                 try:
-                    from .report_generators import ChartGenerator
+                    # ChartGenerator is already imported at the top
+                    # Ensure matplotlib is imported for ChartGenerator
+                    import matplotlib.pyplot as plt
+                    from contextlib import contextmanager
+
                     config = ReportConfig(include_charts=True)
                     chart_generator = ChartGenerator(config)
                     
-                    # Check if the method exists before calling it
-                    if hasattr(chart_generator, 'generate_charts'):
-                        chart_paths = chart_generator.generate_charts(report_data)
-                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
-                    elif hasattr(chart_generator, 'create_charts'):
-                        # Alternative method name
-                        chart_paths = chart_generator.create_charts(report_data)
-                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
-                    elif hasattr(chart_generator, 'generate'):
-                        # Another alternative method name
-                        chart_paths = chart_generator.generate(report_data)
-                        logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
-                    else:
-                        logger.warning(f"ExportReportResource: ChartGenerator has no recognized chart generation method")
-                        chart_paths = []
+                    # Explicitly call the method that creates all charts
+                    chart_paths = chart_generator.create_all_charts(report_data)
+                    logger.info(f"ExportReportResource: Generated {len(chart_paths)} charts for PDF export")
                         
                 except ImportError as import_error:
-                    logger.warning(f"ExportReportResource: Failed to import ChartGenerator: {import_error}")
+                    logger.warning(f"ExportReportResource: Failed to import ChartGenerator or matplotlib: {import_error}")
                     chart_paths = []
                 except Exception as chart_error:
-                    logger.warning(f"ExportReportResource: Chart generation failed: {chart_error}")
+                    logger.warning(f"ExportReportResource: Chart generation failed: {chart_error}", exc_info=True)
                     chart_paths = []
 
                 # Initialize PDF generator
@@ -761,8 +733,12 @@ class ExportReportResource(Resource):
                 # Clean up temporary file
                 try:
                     os.unlink(file_path)
+                    # Clean up chart files
+                    for chart_path in chart_paths:
+                        if os.path.exists(chart_path):
+                            os.unlink(chart_path)
                 except Exception as cleanup_error:
-                    logger.warning(f"ExportReportResource: Failed to cleanup PDF file: {cleanup_error}")
+                    logger.warning(f"ExportReportResource: Failed to cleanup files: {cleanup_error}")
 
                 # Get event name for filename
                 event = Event.query.get(event_id)
@@ -907,6 +883,8 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             "total_revenue_across_all_events": f"{total_revenue:.2f}",
             "events_summary": events_summary
         }
+from datetime import datetime, time
+
 class EventReportsResource(Resource):
     """
     API resource for retrieving reports specific to a single event.
@@ -977,7 +955,7 @@ class EventReportsResource(Resource):
                 query = query.limit(limit)
 
             reports = query.all()
-            
+
             # Enhanced logging to include limit information
             date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}"
             limit_info = f"(limited to {limit})" if limit else "(all reports)"
@@ -985,15 +963,15 @@ class EventReportsResource(Resource):
 
             reports_data = []
             base_url = request.url_root.rstrip('/')
-            
+
             # FIXED: Initialize ReportService to get correct attendee counts
             config = ReportConfig(include_email=False)
             report_service = ReportService(config)
-            
+
             for r in reports:
                 # FIXED: Get the correct attendee count using the same logic as GenerateReportResource
                 actual_attendee_count = r.number_of_attendees
-                
+
                 # If the stored attendee count is 0, try to recalculate it from the report data
                 if actual_attendee_count == 0 and hasattr(r, 'report_data') and r.report_data:
                     try:
@@ -1003,29 +981,38 @@ class EventReportsResource(Resource):
                             report_data = json.loads(r.report_data)
                         else:
                             report_data = r.report_data
-                        
+
                         # Apply the same extraction logic as GenerateReportResource
                         actual_attendee_count = report_data.get('attendee_count', 0)
                         if actual_attendee_count == 0:
                             actual_attendee_count = report_data.get('number_of_attendees', 0)
                             if actual_attendee_count == 0:
                                 actual_attendee_count = report_data.get('total_attendees', 0)
-                        
+
                         logger.info(f"EventReportsResource: Extracted attendee count from report data for report {r.id}: {actual_attendee_count}")
-                        
+
                     except Exception as e:
                         logger.warning(f"EventReportsResource: Failed to extract attendee count from report data for report {r.id}: {e}")
                         # Keep the original value if extraction fails
                         actual_attendee_count = r.number_of_attendees
-                
+
                 # Alternative approach: If report_data is not available or extraction failed,
                 # and stored count is still 0, recalculate from the database
                 if actual_attendee_count == 0:
                     try:
                         # Use the same date range that was used for this report
-                        report_start_date = r.report_date.replace(hour=0, minute=0, second=0, microsecond=0) if r.report_date else None
-                        report_end_date = r.report_date.replace(hour=23, minute=59, second=59, microsecond=999999) if r.report_date else None
-                        
+                        if r.report_date:
+                            if isinstance(r.report_date, datetime):
+                                report_start_date = r.report_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                                report_end_date = r.report_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                            else:
+                                # If it's a date object, convert to datetime first
+                                report_start_date = datetime.combine(r.report_date, time.min)
+                                report_end_date = datetime.combine(r.report_date, time.max)
+                        else:
+                            report_start_date = None
+                            report_end_date = None
+
                         if report_start_date and report_end_date:
                             # Generate fresh report data to get the correct attendee count
                             fresh_result = report_service.generate_complete_report(
@@ -1039,7 +1026,7 @@ class EventReportsResource(Resource):
                                 send_email=False,
                                 recipient_email=None
                             )
-                            
+
                             if fresh_result['success']:
                                 fresh_report_data = fresh_result.get('report_data', {})
                                 fresh_attendee_count = fresh_report_data.get('attendee_count', 0)
@@ -1047,14 +1034,14 @@ class EventReportsResource(Resource):
                                     fresh_attendee_count = fresh_report_data.get('number_of_attendees', 0)
                                     if fresh_attendee_count == 0:
                                         fresh_attendee_count = fresh_report_data.get('total_attendees', 0)
-                                
+
                                 if fresh_attendee_count > 0:
                                     actual_attendee_count = fresh_attendee_count
                                     logger.info(f"EventReportsResource: Recalculated attendee count for report {r.id}: {actual_attendee_count}")
-                                
+
                     except Exception as e:
                         logger.warning(f"EventReportsResource: Failed to recalculate attendee count for report {r.id}: {e}")
-                
+
                 report_dict = {
                     'report_id': r.id,
                     'event_id': r.event_id,
@@ -1063,8 +1050,8 @@ class EventReportsResource(Resource):
                     'number_of_attendees': actual_attendee_count,  # FIXED: Use the correctly extracted/calculated attendee count
                     'report_date': r.report_date.isoformat() if r.report_date else None
                 }
-                report_dict['pdf_download_url'] = f"{base_url}/api/v1/reports/{r.id}/export?format=pdf"
-                report_dict['csv_download_url'] = f"{base_url}/api/v1/reports/{r.id}/export?format=csv"
+                report_dict['pdf_download_url'] = f"{base_url}/reports/{r.id}/export?format=pdf"
+                report_dict['csv_download_url'] = f"{base_url}/reports/{r.id}/export?format=csv"
                 reports_data.append(report_dict)
 
             response_data = {
@@ -1102,6 +1089,7 @@ class EventReportsResource(Resource):
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
             return {'error': 'Internal server error'}, 500
+
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
     @staticmethod
