@@ -12,7 +12,7 @@ from sqlalchemy import func, cast, String
 from reportlab.lib.pagesizes import A4
 import logging
 from typing import Optional, Dict, Any, Union, List, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta,time
 import os
 import tempfile
 import threading
@@ -883,7 +883,7 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             "total_revenue_across_all_events": f"{total_revenue:.2f}",
             "events_summary": events_summary
         }
-from datetime import datetime, time
+
 
 class EventReportsResource(Resource):
     """
