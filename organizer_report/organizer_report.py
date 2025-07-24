@@ -7,7 +7,7 @@ from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator # Import ChartGenerator
 from currency_routes import convert_ksh_to_target_currency
 
-from sqlalchemy import func, cast, String
+from sqlalchemy import func, cast, String, or_
 
 from reportlab.lib.pagesizes import A4
 import logging
