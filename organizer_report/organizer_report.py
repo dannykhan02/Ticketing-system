@@ -1,7 +1,7 @@
 from flask import request, jsonify, send_file, current_app, after_this_request, make_response
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode, TicketType
+from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode, TicketType ,Scan
 from .services import ReportService, DatabaseQueryService
 from .utils import DateUtils, DateValidator, AuthorizationMixin
 from .report_generators import ReportConfig, PDFReportGenerator, CSVReportGenerator, ChartGenerator # Import ChartGenerator
@@ -12,13 +12,15 @@ from sqlalchemy import func, cast, String
 from reportlab.lib.pagesizes import A4
 import logging
 from typing import Optional, Dict, Any, Union, List, Tuple
-from datetime import datetime, timedelta,time
+from datetime import datetime, timedelta, time as dt_time
 import os
 import tempfile
 import threading
 from decimal import Decimal
 import matplotlib.pyplot as plt # Import matplotlib
 from contextlib import contextmanager # Import contextmanager
+import time  # Fix: Import time for time.time()
+from model import Scan  # Fix: Import Scan model for attendee count queries
 
 logger = logging.getLogger(__name__)
 
@@ -884,11 +886,13 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             "events_summary": events_summary
         }
 
-
 class EventReportsResource(Resource):
     """
     API resource for retrieving reports specific to a single event.
     """
+    def __init__(self):
+        self._last_request_times = {}  # Simple request deduplication cache
+    
     @jwt_required()
     def get(self, event_id):
         try:
@@ -898,9 +902,31 @@ class EventReportsResource(Resource):
                 logger.warning(f"EventReportsResource: User {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
 
+            # Request deduplication check
             start_date_str = request.args.get('start_date')
             end_date_str = request.args.get('end_date')
             specific_date_str = request.args.get('specific_date')
+            
+            cache_key = f"event_report_{event_id}_{specific_date_str or 'range'}_{current_user_id}"
+            current_time = time.time()
+            
+            if cache_key in self._last_request_times:
+                if current_time - self._last_request_times[cache_key] < 5:  # 5 seconds cooldown
+                    logger.info(f"Skipping duplicate request for {cache_key}")
+                    return {
+                        'message': 'Request processed recently, please wait',
+                        'retry_after': 5
+                    }, 429
+            
+            self._last_request_times[cache_key] = current_time
+
+            # Clean old entries from cache (keep only last hour)
+            cutoff_time = current_time - 3600
+            self._last_request_times = {
+                k: v for k, v in self._last_request_times.items() 
+                if v > cutoff_time
+            }
+
             limit_str = request.args.get('limit')
             get_all = request.args.get('get_all', 'false').lower() == 'true'
 
@@ -919,7 +945,7 @@ class EventReportsResource(Resource):
                     logger.warning(f"EventReportsResource: Invalid date range provided: {error}")
                     return error, error.get('status', 400)
 
-            # Handle limit parameter
+            # Handle limit parameter - get most recent generated reports by ID
             limit = None
             if not get_all:
                 if limit_str:
@@ -932,7 +958,7 @@ class EventReportsResource(Resource):
                         logger.warning(f"EventReportsResource: Invalid limit format: {limit_str}")
                         return {'error': 'Limit must be a valid integer'}, 400
                 else:
-                    limit = 5  # Default to 5 most recent reports
+                    limit = 5  # Default to 5 most recent reports by generation order
 
             event = Event.query.get(event_id)
             if not event:
@@ -947,97 +973,78 @@ class EventReportsResource(Resource):
             if start_date and end_date:
                 query = query.filter(Report.report_date.between(start_date, end_date))
 
-            # Order by report_date descending to get most recent first
-            query = query.order_by(Report.report_date.desc())
+            # Order by report ID descending to get most recent generated reports first
+            # This ensures if latest report is ID 109, we get 109, 108, 107, 106, 105
+            query = query.order_by(Report.id.desc())
 
-            # Apply limit if specified
+            # Apply limit if specified to get most recent N reports
             if limit:
                 query = query.limit(limit)
 
             reports = query.all()
 
-            # Enhanced logging to include limit information
-            date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}"
-            limit_info = f"(limited to {limit})" if limit else "(all reports)"
-            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}.")
+            # Enhanced logging to include limit information and report IDs
+            date_info = f"specific date {specific_date_str}" if specific_date_str else f"from {start_date} to {end_date}" if (start_date and end_date) else "all dates"
+            limit_info = f"(limited to {limit} most recent)" if limit else "(all reports)"
+            report_ids = [r.id for r in reports] if reports else []
+            logger.info(f"EventReportsResource: Found {len(reports)} reports for event {event_id} {date_info} {limit_info}. Report IDs: {report_ids}")
 
             reports_data = []
-            base_url = request.url_root.rstrip('/')
-
-            # FIXED: Initialize ReportService to get correct attendee counts
+            # Initialize ReportService to get correct attendee counts if needed
             config = ReportConfig(include_email=False)
             report_service = ReportService(config)
 
+            base_url = request.url_root.rstrip('/')
+
             for r in reports:
-                # FIXED: Get the correct attendee count using the same logic as GenerateReportResource
+                # SIMPLIFIED: Use the stored attendee count first
                 actual_attendee_count = r.number_of_attendees
 
-                # If the stored attendee count is 0, try to recalculate it from the report data
-                if actual_attendee_count == 0 and hasattr(r, 'report_data') and r.report_data:
-                    try:
-                        # Parse the stored report data (assuming it's JSON)
-                        import json
-                        if isinstance(r.report_data, str):
-                            report_data = json.loads(r.report_data)
-                        else:
-                            report_data = r.report_data
-
-                        # Apply the same extraction logic as GenerateReportResource
-                        actual_attendee_count = report_data.get('attendee_count', 0)
-                        if actual_attendee_count == 0:
-                            actual_attendee_count = report_data.get('number_of_attendees', 0)
-                            if actual_attendee_count == 0:
-                                actual_attendee_count = report_data.get('total_attendees', 0)
-
-                        logger.info(f"EventReportsResource: Extracted attendee count from report data for report {r.id}: {actual_attendee_count}")
-
-                    except Exception as e:
-                        logger.warning(f"EventReportsResource: Failed to extract attendee count from report data for report {r.id}: {e}")
-                        # Keep the original value if extraction fails
-                        actual_attendee_count = r.number_of_attendees
-
-                # Alternative approach: If report_data is not available or extraction failed,
-                # and stored count is still 0, recalculate from the database
+                # Only recalculate if stored count is 0 AND we have reason to believe there should be attendees
                 if actual_attendee_count == 0:
                     try:
-                        # Use the same date range that was used for this report
+                        # Simple recalculation using the same logic as report generation
                         if r.report_date:
                             if isinstance(r.report_date, datetime):
                                 report_start_date = r.report_date.replace(hour=0, minute=0, second=0, microsecond=0)
                                 report_end_date = r.report_date.replace(hour=23, minute=59, second=59, microsecond=999999)
                             else:
                                 # If it's a date object, convert to datetime first
-                                report_start_date = datetime.combine(r.report_date, time.min)
-                                report_end_date = datetime.combine(r.report_date, time.max)
-                        else:
-                            report_start_date = None
-                            report_end_date = None
+                                report_start_date = datetime.combine(r.report_date, dt_time.min)
+                                report_end_date = datetime.combine(r.report_date, dt_time.max)
 
-                        if report_start_date and report_end_date:
-                            # Generate fresh report data to get the correct attendee count
-                            fresh_result = report_service.generate_complete_report(
-                                event_id=event_id,
-                                organizer_id=current_user_id,
-                                start_date=report_start_date,
-                                end_date=report_end_date,
-                                session=db.session,
-                                ticket_type_id=None,
-                                target_currency_code='KES',
-                                send_email=False,
-                                recipient_email=None
+                            # Direct database query for attendee count in the report's date range
+                            recalculated_count = (
+                                db.session.query(func.count(Scan.ticket_id.distinct()))
+                                .join(Ticket, Scan.ticket_id == Ticket.id)
+                                .filter(Ticket.event_id == event_id)
+                                .filter(Scan.scanned_at.between(report_start_date, report_end_date))
+                                .scalar() or 0
                             )
 
-                            if fresh_result['success']:
-                                fresh_report_data = fresh_result.get('report_data', {})
-                                fresh_attendee_count = fresh_report_data.get('attendee_count', 0)
-                                if fresh_attendee_count == 0:
-                                    fresh_attendee_count = fresh_report_data.get('number_of_attendees', 0)
-                                    if fresh_attendee_count == 0:
-                                        fresh_attendee_count = fresh_report_data.get('total_attendees', 0)
+                            if recalculated_count > 0:
+                                actual_attendee_count = recalculated_count
+                                logger.info(f"EventReportsResource: Recalculated attendee count for report {r.id}: {actual_attendee_count}")
+                            else:
+                                # Check if report_data contains attendee info
+                                if hasattr(r, 'report_data') and r.report_data:
+                                    try:
+                                        import json
+                                        if isinstance(r.report_data, str):
+                                            report_data = json.loads(r.report_data)
+                                        else:
+                                            report_data = r.report_data
 
-                                if fresh_attendee_count > 0:
-                                    actual_attendee_count = fresh_attendee_count
-                                    logger.info(f"EventReportsResource: Recalculated attendee count for report {r.id}: {actual_attendee_count}")
+                                        # Try different keys for attendee count
+                                        for key in ['attendee_count', 'number_of_attendees', 'total_attendees']:
+                                            stored_count = report_data.get(key, 0)
+                                            if stored_count > 0:
+                                                actual_attendee_count = stored_count
+                                                logger.info(f"EventReportsResource: Extracted attendee count from report data for report {r.id}: {actual_attendee_count}")
+                                                break
+
+                                    except Exception as e:
+                                        logger.debug(f"EventReportsResource: Could not extract attendee count from report data for report {r.id}: {e}")
 
                     except Exception as e:
                         logger.warning(f"EventReportsResource: Failed to recalculate attendee count for report {r.id}: {e}")
@@ -1047,19 +1054,34 @@ class EventReportsResource(Resource):
                     'event_id': r.event_id,
                     'total_tickets_sold': r.total_tickets_sold,
                     'total_revenue': float(r.total_revenue),
-                    'number_of_attendees': actual_attendee_count,  # FIXED: Use the correctly extracted/calculated attendee count
-                    'report_date': r.report_date.isoformat() if r.report_date else None
+                    'number_of_attendees': actual_attendee_count,
+                    'report_date': r.report_date.isoformat() if r.report_date else None,
+                    'report_scope': getattr(r, 'report_scope', 'event_summary'),
+                    'ticket_type_name': getattr(r.ticket_type, 'type_name', None) if hasattr(r, 'ticket_type') and r.ticket_type else None,
+                    'generated_order': r.id  # Add the report ID to show generation order
                 }
+                
+                # Add download URLs
                 report_dict['pdf_download_url'] = f"{base_url}/reports/{r.id}/export?format=pdf"
                 report_dict['csv_download_url'] = f"{base_url}/reports/{r.id}/export?format=csv"
+                
+                # Add attendance rate calculation
+                if r.total_tickets_sold > 0:
+                    attendance_rate = round((actual_attendee_count / r.total_tickets_sold) * 100, 2)
+                    report_dict['attendance_rate'] = attendance_rate
+                else:
+                    report_dict['attendance_rate'] = 0.0
+                
                 reports_data.append(report_dict)
 
             response_data = {
                 'event_id': event_id,
+                'event_name': event.name if event else f"Event {event_id}",
                 'reports': reports_data,
                 'total_reports_returned': len(reports_data),
                 'is_limited': bool(limit),
-                'limit_applied': limit
+                'limit_applied': limit,
+                'ordering': 'most_recent_generated_first'  # Clarify the ordering method
             }
 
             # Add query parameters info to response for clarity
@@ -1068,7 +1090,8 @@ class EventReportsResource(Resource):
                     'specific_date': specific_date_str,
                     'is_single_day': True,
                     'limit': limit,
-                    'get_all': get_all
+                    'get_all': get_all,
+                    'ordering_method': 'by_generation_id_desc'
                 }
             elif start_date_str or end_date_str:
                 response_data['query_info'] = {
@@ -1076,19 +1099,44 @@ class EventReportsResource(Resource):
                     'end_date': end_date_str,
                     'is_single_day': False,
                     'limit': limit,
-                    'get_all': get_all
+                    'get_all': get_all,
+                    'ordering_method': 'by_generation_id_desc'
                 }
             else:
                 response_data['query_info'] = {
                     'limit': limit,
-                    'get_all': get_all
+                    'get_all': get_all,
+                    'ordering_method': 'by_generation_id_desc'
                 }
 
+            # Add summary statistics
+            if reports_data:
+                total_tickets = sum(r['total_tickets_sold'] for r in reports_data)
+                total_revenue = sum(r['total_revenue'] for r in reports_data)
+                total_attendees = sum(r['number_of_attendees'] for r in reports_data)
+                
+                response_data['summary'] = {
+                    'total_tickets_across_reports': total_tickets,
+                    'total_revenue_across_reports': round(total_revenue, 2),
+                    'total_attendees_across_reports': total_attendees,
+                    'average_attendance_rate': round(
+                        sum(r['attendance_rate'] for r in reports_data) / len(reports_data), 2
+                    ) if reports_data else 0.0
+                }
+
+            # Add information about most recent and oldest report IDs in the result
+            if reports_data:
+                response_data['report_range'] = {
+                    'most_recent_report_id': max(r['report_id'] for r in reports_data),
+                    'oldest_report_id': min(r['report_id'] for r in reports_data)
+                }
+
+            logger.info(f"EventReportsResource: Successfully returned {len(reports_data)} reports for event {event_id} ordered by generation ID")
             return response_data, 200
 
         except Exception as e:
             logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
-            return {'error': 'Internal server error'}, 500
+            return {'error': 'Internal server error', 'details': str(e) if current_app.debug else None}, 500
 
 class ReportResourceRegistry:
     """Registry for report-related API resources"""

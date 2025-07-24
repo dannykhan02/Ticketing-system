@@ -11,6 +11,7 @@ from sqlalchemy import func, cast, String
 import logging
 import os
 import json
+import time
 from currency_routes import get_exchange_rate, convert_ksh_to_target_currency, rate_cache
 
 logger = logging.getLogger(__name__)
@@ -405,6 +406,7 @@ class ReportService:
         self.pdf_generator = PDFReportGenerator(self.config)
         self.db_service = DatabaseQueryService()
         self.currency_converter = EnhancedCurrencyConverter()
+        self._processing_cache = {}  # Simple in-memory cache to prevent duplicate processing
 
     def _sanitize_report_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize data to ensure all keys and values are database-compatible"""
@@ -492,6 +494,7 @@ class ReportService:
             total_revenue = float(report_data.get('total_revenue', 0))
             total_tickets_sold = int(report_data.get('total_tickets_sold', 0))
             number_of_attendees = int(report_data.get('number_of_attendees', 0))
+            
             if total_revenue > 0 and total_tickets_sold == 0:
                 logger.warning("INCONSISTENCY DETECTED: Revenue exists but tickets sold is 0. Attempting to reconstruct from breakdown data.")
                 if report_data.get('tickets_by_type'):
@@ -500,6 +503,7 @@ class ReportService:
                         total_tickets_sold = reconstructed_tickets
                         report_data['total_tickets_sold'] = total_tickets_sold
                         logger.info(f"✅ Reconstructed total_tickets_sold from breakdown: {total_tickets_sold}")
+            
             if report_data.get('attendees_by_type'):
                 reconstructed_attendees = sum(int(count) for count in report_data['attendees_by_type'].values())
                 logger.debug(f"Attendees from breakdown: {reconstructed_attendees}")
@@ -513,21 +517,26 @@ class ReportService:
             elif number_of_attendees > 0:
                 report_data['attendees_by_type'] = {'General': number_of_attendees}
                 logger.info(f"🔧 Created default attendees breakdown with {number_of_attendees} attendees")
+            
             if total_tickets_sold > 0 and not report_data.get('tickets_by_type'):
                 report_data['tickets_by_type'] = {'General': total_tickets_sold}
                 logger.info("🔧 Created default tickets breakdown")
+            
             if total_revenue > 0 and not report_data.get('revenue_by_type'):
                 report_data['revenue_by_type'] = {'General': total_revenue}
                 logger.info("🔧 Created default revenue breakdown")
+            
             if total_tickets_sold > 0:
                 attendance_rate = round((number_of_attendees / total_tickets_sold) * 100, 2)
                 report_data['attendance_rate'] = attendance_rate
                 logger.debug(f"Recalculated attendance rate: {attendance_rate}%")
             else:
                 report_data['attendance_rate'] = 0.0
+            
             report_data['total_tickets_sold'] = max(0, int(report_data.get('total_tickets_sold', 0)))
             report_data['number_of_attendees'] = max(0, int(report_data.get('number_of_attendees', 0)))
             report_data['total_revenue'] = max(0.0, float(report_data.get('total_revenue', 0)))
+            
             logger.info(f"=== FINAL VALIDATED DATA ===")
             logger.info(f"Tickets: {report_data['total_tickets_sold']}, Attendees: {report_data['number_of_attendees']}, Revenue: {report_data['total_revenue']}, Rate: {report_data.get('attendance_rate', 0)}%")
             return report_data
@@ -535,172 +544,265 @@ class ReportService:
             logger.error(f"Error in data validation: {e}")
             return report_data
 
+    def _check_duplicate_processing(self, event_id: int, date_key: str) -> bool:
+        """Check if we're already processing this request to prevent duplicates"""
+        cache_key = f"{event_id}_{date_key}"
+        current_time = time.time()
+        
+        if cache_key in self._processing_cache:
+            last_processed = self._processing_cache[cache_key]
+            if current_time - last_processed < 10:  # 10 seconds cooldown
+                logger.warning(f"Duplicate processing detected for {cache_key}, skipping")
+                return True
+        
+        self._processing_cache[cache_key] = current_time
+        return False
+
     def create_report_data(self, event_id: int, start_date: datetime, end_date: datetime,
                           ticket_type_id: Optional[int] = None,
                           target_currency_code: Optional[str] = None) -> Dict[str, Any]:
-        logger.info(f"=== CREATING REPORT DATA ===")
-        logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
-        event = Event.query.get(event_id)
-        if not event:
-            raise ValueError(f"Event with ID {event_id} not found")
-        # Enhanced debugging section
-        logger.debug("=== DATABASE INVESTIGATION ===")
-        # Check if tickets exist for this event
-        ticket_count = db.session.query(func.count(Ticket.id)).filter(Ticket.event_id == event_id).scalar()
-        logger.debug(f"Total tickets in database for event {event_id}: {ticket_count}")
-        # Check if scans exist
-        scan_count = db.session.query(func.count(Scan.id)).scalar()
-        logger.debug(f"Total scans in database: {scan_count}")
-        # Check if there are scans for tickets of this event
-        event_scan_count = (db.session.query(func.count(Scan.id))
-                           .join(Ticket, Scan.ticket_id == Ticket.id)
-                           .filter(Ticket.event_id == event_id)
-                           .scalar())
-        logger.debug(f"Scans for event {event_id} tickets: {event_scan_count}")
-        # Check scan date ranges
-        if event_scan_count > 0:
-            scan_date_range = (db.session.query(
-                                func.min(Scan.scanned_at),
-                                func.max(Scan.scanned_at)
-                              )
-                              .join(Ticket, Scan.ticket_id == Ticket.id)
-                              .filter(Ticket.event_id == event_id)
-                              .first())
-            logger.debug(f"Scan date range for event {event_id}: {scan_date_range}")
-            logger.debug(f"Requested date range: {start_date} to {end_date}")
-        logger.debug("=== END DATABASE INVESTIGATION ===")
-        base_currency_code = self.db_service.get_event_base_currency(event_id)
-        display_currency_code = target_currency_code or base_currency_code
-        base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
-        display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
-        logger.debug("Fetching raw database data...")
-        tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
-        logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
-        revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
-        logger.debug(f"Raw revenue_data: {revenue_data}")
-        attendees_data = self.db_service.get_attendees_by_type(event_id, start_date, end_date)
-        logger.debug(f"Raw attendees_data: {attendees_data}")
-        payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
-        logger.debug(f"Raw payment_methods: {payment_methods}")
-        tickets_sold_by_type = dict(tickets_sold_data)
-        attendees_by_ticket_type = dict(attendees_data)
-        payment_method_usage = dict(payment_methods)
-        total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
-        logger.debug(f"Total revenue (base currency): {total_revenue_base}")
-        total_revenue_display = self.currency_converter.convert_amount(
-            total_revenue_base, base_currency_code, display_currency_code
-        )
-        logger.debug(f"Total revenue (display currency): {total_revenue_display}")
-        revenue_by_ticket_type = {}
-        for ticket_type, revenue in revenue_data:
-            converted_revenue = self.currency_converter.convert_amount(
-                revenue, base_currency_code, display_currency_code
+        
+        date_key = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+        
+        # Check for duplicate processing
+        if self._check_duplicate_processing(event_id, date_key):
+            raise ValueError("Report generation already in progress, please wait")
+        
+        try:
+            logger.info(f"=== CREATING REPORT DATA ===")
+            logger.info(f"Event ID: {event_id}, Date Range: {start_date} to {end_date}")
+            
+            event = Event.query.get(event_id)
+            if not event:
+                raise ValueError(f"Event with ID {event_id} not found")
+            
+            # Enhanced debugging section
+            logger.debug("=== DATABASE INVESTIGATION ===")
+            # Check if tickets exist for this event
+            ticket_count = db.session.query(func.count(Ticket.id)).filter(Ticket.event_id == event_id).scalar()
+            logger.debug(f"Total tickets in database for event {event_id}: {ticket_count}")
+            
+            # Check if scans exist
+            scan_count = db.session.query(func.count(Scan.id)).scalar()
+            logger.debug(f"Total scans in database: {scan_count}")
+            
+            # Check if there are scans for tickets of this event
+            event_scan_count = (db.session.query(func.count(Scan.id))
+                               .join(Ticket, Scan.ticket_id == Ticket.id)
+                               .filter(Ticket.event_id == event_id)
+                               .scalar())
+            logger.debug(f"Scans for event {event_id} tickets: {event_scan_count}")
+            
+            # Check scans in date range specifically
+            scans_in_range = (db.session.query(func.count(Scan.id))
+                             .join(Ticket, Scan.ticket_id == Ticket.id)
+                             .filter(Ticket.event_id == event_id)
+                             .filter(Scan.scanned_at.between(start_date, end_date))
+                             .scalar())
+            logger.debug(f"Scans in requested date range ({start_date} to {end_date}): {scans_in_range}")
+            
+            # Check scan date ranges
+            if event_scan_count > 0:
+                scan_date_range = (db.session.query(
+                                    func.min(Scan.scanned_at),
+                                    func.max(Scan.scanned_at)
+                                  )
+                                  .join(Ticket, Scan.ticket_id == Ticket.id)
+                                  .filter(Ticket.event_id == event_id)
+                                  .first())
+                logger.debug(f"Scan date range for event {event_id}: {scan_date_range}")
+                logger.debug(f"Requested date range: {start_date} to {end_date}")
+            
+            logger.debug("=== END DATABASE INVESTIGATION ===")
+            
+            base_currency_code = self.db_service.get_event_base_currency(event_id)
+            display_currency_code = target_currency_code or base_currency_code
+            base_currency_info = self.currency_converter.get_currency_info(base_currency_code)
+            display_currency_info = self.currency_converter.get_currency_info(display_currency_code)
+            
+            logger.debug("Fetching raw database data...")
+            tickets_sold_data = self.db_service.get_tickets_sold_by_type(event_id, start_date, end_date)
+            logger.debug(f"Raw tickets_sold_data: {tickets_sold_data}")
+            
+            revenue_data = self.db_service.get_revenue_by_type(event_id, start_date, end_date)
+            logger.debug(f"Raw revenue_data: {revenue_data}")
+            
+            attendees_data = self.db_service.get_attendees_by_type(event_id, start_date, end_date)
+            logger.debug(f"Raw attendees_data: {attendees_data}")
+            
+            payment_methods = self.db_service.get_payment_method_usage(event_id, start_date, end_date)
+            logger.debug(f"Raw payment_methods: {payment_methods}")
+            
+            tickets_sold_by_type = dict(tickets_sold_data)
+            attendees_by_ticket_type = dict(attendees_data)
+            payment_method_usage = dict(payment_methods)
+            
+            total_revenue_base = self.db_service.get_total_revenue(event_id, start_date, end_date)
+            logger.debug(f"Total revenue (base currency): {total_revenue_base}")
+            
+            total_revenue_display = self.currency_converter.convert_amount(
+                total_revenue_base, base_currency_code, display_currency_code
             )
-            revenue_by_ticket_type[ticket_type] = float(converted_revenue)
-        total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
-        logger.debug(f"Total tickets sold: {total_tickets_sold}")
-        total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
-        logger.debug(f"Total attendees from DB service: {total_attendees}")
-        # FALLBACK 1: If no scans but tickets sold, check if event requires scanning
-        if total_attendees == 0 and total_tickets_sold > 0:
-            logger.warning("⚠️ No attendees found but tickets were sold - investigating...")
-            # Check if this is a data issue or if scanning hasn't started
-            if event_scan_count == 0:
-                logger.warning("🔍 No scans recorded for this event at all")
-                logger.warning("💡 This could mean:")
-                logger.warning("   1. Event hasn't started yet")
-                logger.warning("   2. Scanning system not used")
-                logger.warning("   3. Data integrity issue")
-                # FALLBACK OPTION: Use tickets sold as potential attendees
-                # (This should be configurable based on event type)
-                logger.info("🔧 Consider using tickets sold as estimated attendees if event doesn't use scanning")
-            elif event_scan_count > 0:
-                logger.warning("🔍 Scans exist for this event but not in date range")
-                logger.warning("💡 Check if date range is correct")
-        # Calculate attendance rate
-        attendance_rate = 0.0
-        if total_tickets_sold > 0:
-            attendance_rate = (total_attendees / total_tickets_sold * 100)
-            logger.debug(f"Calculated attendance rate: {attendance_rate}%")
-        else:
-            logger.info("No tickets sold for this date range - attendance rate set to 0%")
-        # Handle empty breakdowns
-        if total_attendees > 0 and not attendees_by_ticket_type:
-            logger.warning("Have total attendees but no breakdown - creating default breakdown")
-            attendees_by_ticket_type = {'General': total_attendees}
-        if total_tickets_sold > 0 and not tickets_sold_by_type:
-            logger.warning("Have total tickets but no breakdown - creating default breakdown")
-            tickets_sold_by_type = {'General': total_tickets_sold}
-        # Build report data
-        report_data = {
-            'event_id': event_id,
-            'event_name': event.name,
-            'event_date': event.event_date.isoformat() if hasattr(event, 'event_date') and event.event_date else 'N/A',
-            'event_location': getattr(event, 'location', 'N/A'),
-            'filter_start_date': start_date.strftime('%Y-%m-%d'),
-            'filter_end_date': end_date.strftime('%Y-%m-%d'),
-            'total_tickets_sold': total_tickets_sold,
-            'total_revenue': float(total_revenue_display),
-            'number_of_attendees': total_attendees,
-            'attendance_rate': round(attendance_rate, 2),
-            'tickets_by_type': tickets_sold_by_type,
-            'revenue_by_type': revenue_by_ticket_type,
-            'attendees_by_type': attendees_by_ticket_type,
-            'payment_method_usage': payment_method_usage,
-            'currency': display_currency_info['code'],
-            'currency_symbol': display_currency_info['symbol'],
-            'base_currency': base_currency_info['code'],
-            'base_currency_symbol': base_currency_info['symbol'],
-            'currency_conversion_source': 'currencyapi.com (with fallback)',
-            'conversion_cache_entries': len(rate_cache.cache),
-            # Debug info
-            'debug_info': {
-                'total_tickets_in_db': ticket_count,
-                'total_scans_in_db': scan_count,
-                'event_scans_count': event_scan_count,
-                'scan_date_range_check': scan_date_range if event_scan_count > 0 else None,
-                'requested_date_range': f"{start_date} to {end_date}"
+            logger.debug(f"Total revenue (display currency): {total_revenue_display}")
+            
+            revenue_by_ticket_type = {}
+            for ticket_type, revenue in revenue_data:
+                converted_revenue = self.currency_converter.convert_amount(
+                    revenue, base_currency_code, display_currency_code
+                )
+                revenue_by_ticket_type[ticket_type] = float(converted_revenue)
+            
+            total_tickets_sold = self.db_service.get_total_tickets_sold(event_id, start_date, end_date)
+            logger.debug(f"Total tickets sold: {total_tickets_sold}")
+            
+            total_attendees = self.db_service.get_total_attendees(event_id, start_date, end_date)
+            logger.debug(f"Total attendees from DB service: {total_attendees}")
+            
+            # IMPROVED FALLBACK LOGIC: If no scans but tickets sold, provide more context
+            if total_attendees == 0 and total_tickets_sold > 0:
+                logger.warning("⚠️ No attendees found but tickets were sold - investigating...")
+                
+                if event_scan_count == 0:
+                    logger.warning("🔍 No scans recorded for this event at all")
+                    logger.warning("💡 This could mean:")
+                    logger.warning("   1. Event hasn't started yet")
+                    logger.warning("   2. Scanning system not used")
+                    logger.warning("   3. Data integrity issue")
+                elif scans_in_range == 0 and event_scan_count > 0:
+                    logger.warning("🔍 Scans exist for this event but not in the requested date range")
+                    logger.warning("💡 Check if date range is correct or if scans are on different dates")
+            
+            # Calculate attendance rate
+            attendance_rate = 0.0
+            if total_tickets_sold > 0:
+                attendance_rate = (total_attendees / total_tickets_sold * 100)
+                logger.debug(f"Calculated attendance rate: {attendance_rate}%")
+            else:
+                logger.info("No tickets sold for this date range - attendance rate set to 0%")
+            
+            # Handle empty breakdowns
+            if total_attendees > 0 and not attendees_by_ticket_type:
+                logger.warning("Have total attendees but no breakdown - creating default breakdown")
+                attendees_by_ticket_type = {'General': total_attendees}
+            
+            if total_tickets_sold > 0 and not tickets_sold_by_type:
+                logger.warning("Have total tickets but no breakdown - creating default breakdown")
+                tickets_sold_by_type = {'General': total_tickets_sold}
+            
+            # Build report data
+            report_data = {
+                'event_id': event_id,
+                'event_name': event.name,
+                'event_date': event.event_date.isoformat() if hasattr(event, 'event_date') and event.event_date else 'N/A',
+                'event_location': getattr(event, 'location', 'N/A'),
+                'filter_start_date': start_date.strftime('%Y-%m-%d'),
+                'filter_end_date': end_date.strftime('%Y-%m-%d'),
+                'total_tickets_sold': total_tickets_sold,
+                'total_revenue': float(total_revenue_display),
+                'number_of_attendees': total_attendees,
+                'attendance_rate': round(attendance_rate, 2),
+                'tickets_by_type': tickets_sold_by_type,
+                'revenue_by_type': revenue_by_ticket_type,
+                'attendees_by_type': attendees_by_ticket_type,
+                'payment_method_usage': payment_method_usage,
+                'currency': display_currency_info['code'],
+                'currency_symbol': display_currency_info['symbol'],
+                'base_currency': base_currency_info['code'],
+                'base_currency_symbol': base_currency_info['symbol'],
+                'currency_conversion_source': 'currencyapi.com (with fallback)',
+                'conversion_cache_entries': len(rate_cache.cache),
+                # Debug info
+                'debug_info': {
+                    'total_tickets_in_db': ticket_count,
+                    'total_scans_in_db': scan_count,
+                    'event_scans_count': event_scan_count,
+                    'scans_in_date_range': scans_in_range,
+                    'scan_date_range_check': scan_date_range if event_scan_count > 0 else None,
+                    'requested_date_range': f"{start_date} to {end_date}"
+                }
             }
-        }
-        # Handle currency conversion info
-        if base_currency_code != display_currency_code:
-            report_data['original_revenue'] = float(total_revenue_base)
-            report_data['original_currency'] = base_currency_info['code']
-            report_data['conversion_rate_used'] = float(
-                self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
-            )
-        # Handle ticket type filtering
-        if ticket_type_id:
-            ticket_type = TicketType.query.get(ticket_type_id)
-            if ticket_type:
-                report_data['ticket_type_id'] = ticket_type_id
-                report_data['ticket_type_name'] = ticket_type.type_name
-                report_data['report_scope'] = 'ticket_type_summary'
+            
+            # Handle currency conversion info
+            if base_currency_code != display_currency_code:
+                report_data['original_revenue'] = float(total_revenue_base)
+                report_data['original_currency'] = base_currency_info['code']
+                report_data['conversion_rate_used'] = float(
+                    self.currency_converter.convert_amount(Decimal('1'), base_currency_code, display_currency_code)
+                )
+            
+            # Handle ticket type filtering
+            if ticket_type_id:
+                ticket_type = TicketType.query.get(ticket_type_id)
+                if ticket_type:
+                    report_data['ticket_type_id'] = ticket_type_id
+                    report_data['ticket_type_name'] = ticket_type.type_name
+                    report_data['report_scope'] = 'ticket_type_summary'
+                else:
+                    report_data['report_scope'] = 'event_summary'
             else:
                 report_data['report_scope'] = 'event_summary'
-        else:
-            report_data['report_scope'] = 'event_summary'
-        logger.info(f"=== REPORT DATA CREATED ===")
-        logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
-        logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
-        logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
-        # Additional diagnostic info
-        if total_attendees == 0 and total_tickets_sold > 0:
-            logger.warning("⚠️ ATTENTION: Zero attendees with non-zero ticket sales")
-            logger.warning(f"📊 Tickets sold: {total_tickets_sold}")
-            logger.warning(f"📅 Date range: {start_date} to {end_date}")
-            logger.warning(f"🎫 Event scans available: {event_scan_count}")
-        return self._sanitize_report_data(report_data)
+            
+            logger.info(f"=== REPORT DATA CREATED ===")
+            logger.info(f"Final attendee count: {report_data['number_of_attendees']}")
+            logger.info(f"Final attendance rate: {report_data['attendance_rate']}%")
+            logger.info(f"Attendees by type: {report_data['attendees_by_type']}")
+            
+            # Additional diagnostic info
+            if total_attendees == 0 and total_tickets_sold > 0:
+                logger.warning("⚠️ ATTENTION: Zero attendees with non-zero ticket sales")
+                logger.warning(f"📊 Tickets sold: {total_tickets_sold}")
+                logger.warning(f"📅 Date range: {start_date} to {end_date}")
+                logger.warning(f"🎫 Event scans available: {event_scan_count}")
+                logger.warning(f"🎫 Scans in date range: {scans_in_range}")
+            
+            return self._sanitize_report_data(report_data)
+            
+        finally:
+            # Clean up processing cache entry
+            cache_key = f"{event_id}_{date_key}"
+            if cache_key in self._processing_cache:
+                del self._processing_cache[cache_key]
 
     def save_report_to_database(self, report_data: Dict[str, Any], organizer_id: int) -> Optional[Report]:
         try:
+            # Check if a report already exists for this event, organizer, and date
+            report_date = datetime.now().date()
+            existing_report = Report.query.filter_by(
+                event_id=report_data['event_id'],
+                organizer_id=organizer_id,
+                report_date=report_date,
+                report_scope=report_data.get('report_scope', 'event_summary')
+            ).first()
+            
+            if existing_report:
+                logger.info(f"Report already exists with ID: {existing_report.id}, updating instead of creating new")
+                # Update existing report
+                existing_report.total_tickets_sold = report_data.get('total_tickets_sold', 0)
+                existing_report.total_revenue = Decimal(str(report_data.get('total_revenue', 0)))
+                existing_report.number_of_attendees = report_data.get('number_of_attendees', 0)
+                existing_report.report_data = self._sanitize_report_data(report_data)
+                existing_report.ticket_type_id = report_data.get('ticket_type_id')
+                
+                try:
+                    db.session.commit()
+                    logger.info(f"Successfully updated existing report with ID: {existing_report.id}")
+                    return existing_report
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"Error updating existing report: {e}")
+                    raise
+            
+            # Create new report only if none exists
             base_currency = Currency.query.filter_by(code=report_data.get('base_currency', 'KES')).first()
             base_currency_id = base_currency.id if base_currency else None
+            
             if not base_currency_id:
                 logger.warning(f"Base currency {report_data.get('base_currency')} not found, using default")
                 base_currency = Currency.query.filter_by(code='KES').first()
                 base_currency_id = base_currency.id if base_currency else 1
+
             sanitized_report_data = self._sanitize_report_data(report_data)
+            
             report = Report(
                 organizer_id=organizer_id,
                 event_id=report_data['event_id'],
@@ -711,12 +813,16 @@ class ReportService:
                 total_revenue=Decimal(str(report_data.get('total_revenue', 0))),
                 number_of_attendees=report_data.get('number_of_attendees', 0),
                 report_data=sanitized_report_data,
-                report_date=datetime.now().date()
+                report_date=report_date
             )
+            
             db.session.add(report)
+            db.session.flush()  # Flush to get the ID without committing
+            logger.info(f"Report created with ID: {report.id}")
             db.session.commit()
             logger.info(f"Report saved to database with ID: {report.id}")
             return report
+            
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error saving report to database: {e}")
@@ -729,16 +835,22 @@ class ReportService:
         chart_paths = []
         pdf_path = None
         csv_path = None
+        
         try:
             report_data = self.create_report_data(
                 event_id, start_date, end_date, ticket_type_id, target_currency_code
             )
+            
             saved_report = self.save_report_to_database(report_data, organizer_id)
             if saved_report:
                 report_data['database_id'] = saved_report.id
+            
             pdf_path, csv_path = FileManager.generate_unique_paths(event_id)
+            
             if self.config.include_charts and self.chart_generator:
                 chart_paths = self._generate_charts(report_data)
+                logger.info(f"Generated {len(chart_paths)} charts for event {event_id}")
+            
             pdf_path = self.pdf_generator.generate_pdf(
                 report_data=report_data,
                 chart_paths=chart_paths,
@@ -747,17 +859,20 @@ class ReportService:
                 event_id=event_id,
                 target_currency=target_currency_code or "KES"
             )
+            
             csv_path = CSVReportGenerator.generate_csv(
                 report_data=report_data,
                 output_path=csv_path,
                 session=session,
                 event_id=event_id
             )
+            
             email_sent = False
             if send_email and recipient_email and self.config.include_email:
                 email_sent = self.send_report_email(
                     report_data, pdf_path, csv_path, recipient_email
                 )
+            
             return {
                 'success': True,
                 'report_data': report_data,
