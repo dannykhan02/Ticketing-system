@@ -962,12 +962,42 @@ class EventReportsResource(Resource, AuthorizationMixin):
             reports_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(5)
             reports = reports_query.all()
 
+            # Get organizer name safely
+            organizer_name = 'Unknown'
+            try:
+                if hasattr(event, 'organizer') and event.organizer:
+                    # Use company_name as the primary organizer identifier
+                    if hasattr(event.organizer, 'company_name') and event.organizer.company_name:
+                        organizer_name = event.organizer.company_name
+                    elif hasattr(event.organizer, 'user') and event.organizer.user and hasattr(event.organizer.user, 'name'):
+                        organizer_name = event.organizer.user.name
+                    elif hasattr(event.organizer, 'user') and event.organizer.user and hasattr(event.organizer.user, 'username'):
+                        organizer_name = event.organizer.user.username
+                    else:
+                        organizer_name = f"Organizer {event.organizer.id}"
+                elif event.organizer_id:
+                    # Try to get organizer directly by ID
+                    event_organizer = Organizer.query.get(event.organizer_id)
+                    if event_organizer:
+                        if hasattr(event_organizer, 'company_name') and event_organizer.company_name:
+                            organizer_name = event_organizer.company_name
+                        elif hasattr(event_organizer, 'user') and event_organizer.user:
+                            if hasattr(event_organizer.user, 'name'):
+                                organizer_name = event_organizer.user.name
+                            elif hasattr(event_organizer.user, 'username'):
+                                organizer_name = event_organizer.user.username
+                        else:
+                            organizer_name = f"Organizer {event_organizer.id}"
+            except Exception as e:
+                logger.warning(f"EventReportsResource: Error getting organizer name for event {event_id}: {e}")
+                organizer_name = 'Unknown'
+
             if not reports:
                 logger.info(f"EventReportsResource: No reports found for event {event_id}")
                 return {
                     'event_id': event_id,
                     'event_name': event.name,
-                    'organizer_name': event.organizer.name if hasattr(event, 'organizer') and event.organizer else 'Unknown',
+                    'organizer_name': organizer_name,
                     'message': 'No reports found for this event',
                     'reports': [],
                     'total_reports_found': 0
@@ -1028,7 +1058,7 @@ class EventReportsResource(Resource, AuthorizationMixin):
             response_data = {
                 'event_id': event_id,
                 'event_name': event.name,
-                'organizer_name': event.organizer.name if hasattr(event, 'organizer') and event.organizer else 'Unknown',
+                'organizer_name': organizer_name,
                 'total_reports_found': len(processed_reports),
                 'reports': processed_reports,
                 'request_info': {
