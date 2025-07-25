@@ -113,169 +113,174 @@ class ReportDataProcessor:
         try:
             ticket_prices = {}
             
-            # Method 1: If prices are stored in a separate ticket_types table
-            # Try to get prices from TicketType table first (if it exists)
-            try:
-                # Assuming you have a TicketType model with price information
-                # Uncomment and modify this if you have a ticket_types table:
-                """
-                from model import TicketType
-                ticket_types = session.query(TicketType).filter_by(event_id=event_id).all()
-                for ticket_type in ticket_types:
-                    ticket_prices[ticket_type.name] = float(ticket_type.price)
-                
-                if ticket_prices:
-                    logger.info(f"Retrieved ticket prices from TicketType table for event {event_id}: {ticket_prices}")
-                    return ticket_prices
-                """
-            except Exception as e:
-                logger.debug(f"TicketType table approach not available: {e}")
-            
-            # Method 2: Extract prices from successful transactions
-            # Use a more robust approach with explicit session management
+            # First, let's determine your table structure
+            # Based on the errors, it looks like you have:
+            # - Ticket table with ticket_type_id (foreign key)
+            # - TicketType table with id and name/price
+            # - Transaction table with amount_paid
             
             try:
-                # Approach 1: Simple query focusing on getting ticket type and transaction amount
-                # Use subquery to be more explicit about the relationships
-                
-                # First, let's get all paid tickets for this event
-                paid_tickets_subquery = session.query(Ticket.id, Ticket.ticket_type, Ticket.transaction_id).filter(
-                    Ticket.event_id == event_id,
-                    cast(Ticket.payment_status, String).ilike("paid"),
-                    Ticket.transaction_id.isnot(None)  # Ensure we have a transaction
-                ).subquery()
-                
-                # Now join with transactions to get the amounts
-                price_query = session.query(
-                    paid_tickets_subquery.c.ticket_type,
-                    func.min(Transaction.amount_paid).label('min_price')
-                ).select_from(
-                    paid_tickets_subquery.join(Transaction, paid_tickets_subquery.c.transaction_id == Transaction.id)
-                ).filter(
-                    Transaction.payment_status == PaymentStatus.PAID
-                ).group_by(paid_tickets_subquery.c.ticket_type).all()
-                
-                if price_query:
-                    for ticket_type, price in price_query:
-                        if price is not None:
-                            ticket_prices[str(ticket_type)] = float(price)
+                # Approach 1: Try to get prices from TicketType table if it exists
+                # This is the most reliable approach if you have a dedicated table for ticket types
+                try:
+                    # Try to import and use TicketType model
+                    from model import TicketType
                     
-                    logger.info(f"Retrieved ticket prices using subquery approach for event {event_id}: {ticket_prices}")
+                    # Get all ticket types for this event
+                    ticket_type_query = session.query(TicketType).filter(
+                        TicketType.event_id == event_id
+                    ).all()
+                    
+                    if ticket_type_query:
+                        for ticket_type in ticket_type_query:
+                            # Assuming TicketType has 'name' and 'price' fields
+                            # Adjust field names based on your actual model
+                            type_name = getattr(ticket_type, 'name', str(ticket_type.id))
+                            price = getattr(ticket_type, 'price', 0.0)
+                            ticket_prices[type_name] = float(price) if price else 0.0
+                        
+                        logger.info(f"Retrieved ticket prices from TicketType table for event {event_id}: {ticket_prices}")
+                        return ticket_prices
+                        
+                except ImportError:
+                    logger.debug("TicketType model not available, trying alternative approaches")
+                except Exception as ticket_type_error:
+                    logger.debug(f"TicketType approach failed: {ticket_type_error}")
+            
+            except Exception as e:
+                logger.debug(f"TicketType table approach not working: {e}")
+            
+            # Approach 2: Get prices from transaction data (simplified approach)
+            try:
+                # Use raw SQL for more control and avoid SQLAlchemy join issues
+                raw_sql = """
+                    SELECT 
+                        COALESCE(tt.name, CAST(t.ticket_type_id AS TEXT)) as ticket_type_name,
+                        MIN(tr.amount_paid) as min_price
+                    FROM ticket t
+                    LEFT JOIN ticket_type tt ON t.ticket_type_id = tt.id
+                    JOIN transaction tr ON t.transaction_id = tr.id
+                    WHERE t.event_id = :event_id 
+                        AND LOWER(CAST(t.payment_status AS TEXT)) LIKE 'paid'
+                        AND tr.payment_status = 'PAID'
+                        AND t.transaction_id IS NOT NULL
+                        AND tr.amount_paid IS NOT NULL
+                    GROUP BY COALESCE(tt.name, CAST(t.ticket_type_id AS TEXT))
+                """
+                
+                result = session.execute(raw_sql, {'event_id': event_id})
+                rows = result.fetchall()
+                
+                if rows:
+                    for row in rows:
+                        ticket_type_name = row[0] if row[0] else 'Unknown'
+                        price = float(row[1]) if row[1] else 0.0
+                        ticket_prices[ticket_type_name] = price
+                    
+                    logger.info(f"Retrieved ticket prices using raw SQL for event {event_id}: {ticket_prices}")
                     return ticket_prices
+                    
+            except Exception as raw_sql_error:
+                logger.warning(f"Raw SQL approach failed: {raw_sql_error}")
                 
-            except Exception as subquery_error:
-                logger.warning(f"Subquery approach failed: {subquery_error}")
-                
-                # Rollback the session to clear any failed transaction state
+                # Rollback to clear any failed transaction state
                 try:
                     session.rollback()
                 except:
                     pass
-                
-                # Approach 2: Simple direct query without complex joins
-                try:
-                    # Get all paid tickets for the event
-                    paid_tickets = session.query(Ticket).filter(
-                        Ticket.event_id == event_id,
-                        cast(Ticket.payment_status, String).ilike("paid"),
-                        Ticket.transaction_id.isnot(None)
-                    ).all()
-                    
-                    # Collect transaction IDs
-                    transaction_ids = [ticket.transaction_id for ticket in paid_tickets if ticket.transaction_id]
-                    
-                    if transaction_ids:
-                        # Get all successful transactions
-                        transactions = session.query(Transaction).filter(
-                            Transaction.id.in_(transaction_ids),
-                            Transaction.payment_status == PaymentStatus.PAID
-                        ).all()
-                        
-                        # Create a mapping of transaction_id to amount
-                        transaction_amounts = {tx.id: float(tx.amount_paid) for tx in transactions}
-                        
-                        # Group by ticket type and find minimum price
-                        ticket_type_prices = {}
-                        for ticket in paid_tickets:
-                            if ticket.transaction_id in transaction_amounts:
-                                ticket_type = str(ticket.ticket_type)
-                                amount = transaction_amounts[ticket.transaction_id]
-                                
-                                if ticket_type not in ticket_type_prices:
-                                    ticket_type_prices[ticket_type] = []
-                                ticket_type_prices[ticket_type].append(amount)
-                        
-                        # Calculate minimum price for each ticket type
-                        for ticket_type, amounts in ticket_type_prices.items():
-                            if amounts:
-                                ticket_prices[ticket_type] = min(amounts)
-                        
-                        logger.info(f"Retrieved ticket prices using manual approach for event {event_id}: {ticket_prices}")
-                        return ticket_prices
-                    
-                except Exception as manual_error:
-                    logger.warning(f"Manual approach failed: {manual_error}")
-                    
-                    # Rollback again
-                    try:
-                        session.rollback()
-                    except:
-                        pass
-                    
-                    # Approach 3: Junction table approach (if applicable)
-                    try:
-                        # Check if TransactionTicket junction table exists and is being used
-                        from model import TransactionTicket
-                        
-                        # Query through junction table
-                        junction_query = session.query(
-                            Ticket.ticket_type,
-                            func.min(Transaction.amount_paid).label('min_price')
-                        ).select_from(
-                            Ticket.join(TransactionTicket, Ticket.id == TransactionTicket.ticket_id)
-                            .join(Transaction, TransactionTicket.transaction_id == Transaction.id)
-                        ).filter(
-                            Ticket.event_id == event_id,
-                            cast(Ticket.payment_status, String).ilike("paid"),
-                            Transaction.payment_status == PaymentStatus.PAID
-                        ).group_by(Ticket.ticket_type).all()
-                        
-                        if junction_query:
-                            for ticket_type, price in junction_query:
-                                if price is not None:
-                                    ticket_prices[str(ticket_type)] = float(price)
-                            
-                            logger.info(f"Retrieved ticket prices using junction table for event {event_id}: {ticket_prices}")
-                            return ticket_prices
-                        
-                    except Exception as junction_error:
-                        logger.warning(f"Junction table approach failed: {junction_error}")
             
-            # If all approaches failed but we still want to return something
-            if not ticket_prices:
-                logger.warning(f"Could not retrieve ticket prices for event {event_id}. All approaches failed.")
+            # Approach 3: Simple Python-based approach (most reliable fallback)
+            try:
+                # Get all paid tickets for the event
+                tickets = session.query(Ticket).filter(
+                    Ticket.event_id == event_id,
+                    cast(Ticket.payment_status, String).ilike("paid"),
+                    Ticket.transaction_id.isnot(None)
+                ).all()
                 
-                # Final fallback: try to get any ticket types from the event (without prices)
+                if not tickets:
+                    logger.info(f"No paid tickets found for event {event_id}")
+                    return {}
+                
+                # Collect unique transaction IDs
+                transaction_ids = list(set([t.transaction_id for t in tickets if t.transaction_id]))
+                
+                if not transaction_ids:
+                    logger.info(f"No transaction IDs found for event {event_id}")
+                    return {}
+                
+                # Get all relevant transactions
+                transactions = session.query(Transaction).filter(
+                    Transaction.id.in_(transaction_ids),
+                    Transaction.payment_status == PaymentStatus.PAID
+                ).all()
+                
+                # Create transaction ID to amount mapping
+                tx_amounts = {tx.id: float(tx.amount_paid) for tx in transactions}
+                
+                # Group by ticket type and collect prices
+                type_prices = {}
+                for ticket in tickets:
+                    if ticket.transaction_id in tx_amounts:
+                        # Get ticket type name
+                        type_key = str(ticket.ticket_type_id) if hasattr(ticket, 'ticket_type_id') else str(ticket.ticket_type)
+                        
+                        # Try to get a better name if possible
+                        try:
+                            if hasattr(ticket, 'ticket_type_id') and ticket.ticket_type_id:
+                                # Try to get the actual ticket type name
+                                ticket_type_obj = session.query(session.query(Ticket).column_descriptions[0]['type'].__table__.c.ticket_type_id.type.python_type).filter_by(id=ticket.ticket_type_id).first()
+                                if ticket_type_obj and hasattr(ticket_type_obj, 'name'):
+                                    type_key = ticket_type_obj.name
+                        except:
+                            pass  # Use the ID as fallback
+                        
+                        amount = tx_amounts[ticket.transaction_id]
+                        
+                        if type_key not in type_prices:
+                            type_prices[type_key] = []
+                        type_prices[type_key].append(amount)
+                
+                # Calculate minimum price for each type
+                for type_name, amounts in type_prices.items():
+                    if amounts:
+                        ticket_prices[type_name] = min(amounts)
+                
+                logger.info(f"Retrieved ticket prices using Python approach for event {event_id}: {ticket_prices}")
+                return ticket_prices
+                
+            except Exception as python_error:
+                logger.warning(f"Python approach failed: {python_error}")
+                
+                # Clear transaction state
                 try:
-                    session.rollback()  # Clear any failed state
-                    ticket_types = session.query(Ticket.ticket_type).filter(
-                        Ticket.event_id == event_id
-                    ).distinct().all()
-                    
-                    # Return 0.0 prices for all ticket types found
-                    for (ticket_type,) in ticket_types:
-                        ticket_prices[str(ticket_type)] = 0.0
-                    
-                    logger.info(f"Fallback: Set default prices for event {event_id} ticket types: {ticket_prices}")
-                    
-                except Exception as fallback_error:
-                    logger.error(f"Even fallback approach failed: {fallback_error}")
+                    session.rollback()
+                except:
+                    pass
+            
+            # Approach 4: Last resort - get ticket types without prices
+            try:
+                # Just get the ticket types that exist for this event
+                ticket_types = session.query(Ticket.ticket_type_id).filter(
+                    Ticket.event_id == event_id
+                ).distinct().all()
+                
+                # Set default price of 0.0 for each type found
+                for (type_id,) in ticket_types:
+                    type_name = f"Type_{type_id}" if type_id else "Unknown"
+                    ticket_prices[type_name] = 0.0
+                
+                logger.info(f"Fallback: Using default prices for event {event_id}: {ticket_prices}")
+                return ticket_prices
+                
+            except Exception as final_error:
+                logger.error(f"All approaches failed for event {event_id}: {final_error}")
             
             return ticket_prices
             
         except Exception as e:
             logger.error(f"Error retrieving ticket prices for event {event_id}: {e}")
-            # Ensure session is clean for subsequent operations
+            # Ensure session is clean
             try:
                 session.rollback()
             except:
