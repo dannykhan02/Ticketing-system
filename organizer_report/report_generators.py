@@ -23,6 +23,7 @@ import logging
 import time
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, String
+import numpy as np
 # Import currency conversion functions from the currency module
 from currency_routes import convert_ksh_to_target_currency, get_exchange_rate
 # Optional: Import psutil for memory logging
@@ -106,66 +107,57 @@ class ReportDataProcessor:
         return processed_data
 
     @staticmethod
+ 
     def get_ticket_type_prices(session: Session, event_id: int) -> Dict[str, float]:
         """
-        Get the original prices for each ticket type for the event
+        Get the original prices for each ticket type for the event using ticket type names
         """
         try:
             ticket_prices = {}
             
-            # First, let's determine your table structure
-            # Based on the errors, it looks like you have:
-            # - Ticket table with ticket_type_id (foreign key)
-            # - TicketType table with id and name/price
-            # - Transaction table with amount_paid
-            
+            # Approach 1: Get prices directly from TicketType table (most reliable)
             try:
-                # Approach 1: Try to get prices from TicketType table if it exists
-                # This is the most reliable approach if you have a dedicated table for ticket types
-                try:
-                    # Try to import and use TicketType model
-                    from model import TicketType
+                from model import TicketType
+                
+                # Get all ticket types for this event
+                ticket_types = session.query(TicketType).filter(
+                    TicketType.event_id == event_id
+                ).all()
+                
+                if ticket_types:
+                    for ticket_type in ticket_types:
+                        # Use the enum value as the display name
+                        type_name = ticket_type.type_name.value  # This gets the enum value (e.g., "STUDENT", "VIP")
+                        price = float(ticket_type.price) if ticket_type.price else 0.0
+                        ticket_prices[type_name] = price
                     
-                    # Get all ticket types for this event
-                    ticket_type_query = session.query(TicketType).filter(
-                        TicketType.event_id == event_id
-                    ).all()
+                    logger.info(f"Retrieved ticket prices from TicketType table for event {event_id}: {ticket_prices}")
+                    return ticket_prices
                     
-                    if ticket_type_query:
-                        for ticket_type in ticket_type_query:
-                            # Assuming TicketType has 'name' and 'price' fields
-                            # Adjust field names based on your actual model
-                            type_name = getattr(ticket_type, 'name', str(ticket_type.id))
-                            price = getattr(ticket_type, 'price', 0.0)
-                            ticket_prices[type_name] = float(price) if price else 0.0
-                        
-                        logger.info(f"Retrieved ticket prices from TicketType table for event {event_id}: {ticket_prices}")
-                        return ticket_prices
-                        
-                except ImportError:
-                    logger.debug("TicketType model not available, trying alternative approaches")
-                except Exception as ticket_type_error:
-                    logger.debug(f"TicketType approach failed: {ticket_type_error}")
+            except ImportError:
+                logger.debug("TicketType model not available")
+            except Exception as ticket_type_error:
+                logger.warning(f"TicketType table approach failed: {ticket_type_error}")
             
-            except Exception as e:
-                logger.debug(f"TicketType table approach not working: {e}")
-            
-            # Approach 2: Get prices from transaction data (simplified approach)
+            # Approach 2: Get prices from transaction data with proper joins
             try:
-                # Use raw SQL for more control and avoid SQLAlchemy join issues
+                from model import TicketType
+                
+                # Use raw SQL with proper joins to get ticket type names and prices
                 raw_sql = """
                     SELECT 
-                        COALESCE(tt.name, CAST(t.ticket_type_id AS TEXT)) as ticket_type_name,
+                        tt.type_name as ticket_type_name,
                         MIN(tr.amount_paid) as min_price
                     FROM ticket t
-                    LEFT JOIN ticket_type tt ON t.ticket_type_id = tt.id
+                    JOIN ticket_type tt ON t.ticket_type_id = tt.id
                     JOIN transaction tr ON t.transaction_id = tr.id
                     WHERE t.event_id = :event_id 
                         AND LOWER(CAST(t.payment_status AS TEXT)) LIKE 'paid'
                         AND tr.payment_status = 'PAID'
                         AND t.transaction_id IS NOT NULL
                         AND tr.amount_paid IS NOT NULL
-                    GROUP BY COALESCE(tt.name, CAST(t.ticket_type_id AS TEXT))
+                    GROUP BY tt.type_name
+                    ORDER BY tt.type_name
                 """
                 
                 result = session.execute(raw_sql, {'event_id': event_id})
@@ -177,11 +169,11 @@ class ReportDataProcessor:
                         price = float(row[1]) if row[1] else 0.0
                         ticket_prices[ticket_type_name] = price
                     
-                    logger.info(f"Retrieved ticket prices using raw SQL for event {event_id}: {ticket_prices}")
+                    logger.info(f"Retrieved ticket prices using raw SQL with names for event {event_id}: {ticket_prices}")
                     return ticket_prices
                     
             except Exception as raw_sql_error:
-                logger.warning(f"Raw SQL approach failed: {raw_sql_error}")
+                logger.warning(f"Raw SQL approach with names failed: {raw_sql_error}")
                 
                 # Rollback to clear any failed transaction state
                 try:
@@ -189,8 +181,46 @@ class ReportDataProcessor:
                 except:
                     pass
             
-            # Approach 3: Simple Python-based approach (most reliable fallback)
+            # Approach 3: SQLAlchemy approach with explicit joins
             try:
+                from model import TicketType
+                
+                # Use SQLAlchemy with explicit select_from
+                price_query = session.query(
+                    TicketType.type_name,
+                    func.min(Transaction.amount_paid).label('min_price')
+                ).select_from(
+                    Ticket.join(TicketType, Ticket.ticket_type_id == TicketType.id)
+                    .join(Transaction, Ticket.transaction_id == Transaction.id)
+                ).filter(
+                    Ticket.event_id == event_id,
+                    cast(Ticket.payment_status, String).ilike("paid"),
+                    Transaction.payment_status == PaymentStatus.PAID,
+                    Ticket.transaction_id.isnot(None)
+                ).group_by(TicketType.type_name).all()
+                
+                if price_query:
+                    for ticket_type_enum, price in price_query:
+                        # Convert enum to string value
+                        type_name = ticket_type_enum.value if hasattr(ticket_type_enum, 'value') else str(ticket_type_enum)
+                        ticket_prices[type_name] = float(price) if price else 0.0
+                    
+                    logger.info(f"Retrieved ticket prices using SQLAlchemy joins for event {event_id}: {ticket_prices}")
+                    return ticket_prices
+                    
+            except Exception as sqlalchemy_error:
+                logger.warning(f"SQLAlchemy approach with joins failed: {sqlalchemy_error}")
+                
+                # Rollback to clear any failed transaction state
+                try:
+                    session.rollback()
+                except:
+                    pass
+            
+            # Approach 4: Python-based approach with proper relationships
+            try:
+                from model import TicketType
+                
                 # Get all paid tickets for the event
                 tickets = session.query(Ticket).filter(
                     Ticket.event_id == event_id,
@@ -202,55 +232,51 @@ class ReportDataProcessor:
                     logger.info(f"No paid tickets found for event {event_id}")
                     return {}
                 
-                # Collect unique transaction IDs
+                # Get transaction IDs and ticket type IDs
                 transaction_ids = list(set([t.transaction_id for t in tickets if t.transaction_id]))
+                ticket_type_ids = list(set([t.ticket_type_id for t in tickets if t.ticket_type_id]))
                 
-                if not transaction_ids:
-                    logger.info(f"No transaction IDs found for event {event_id}")
+                if not transaction_ids or not ticket_type_ids:
+                    logger.info(f"No valid transaction or ticket type IDs found for event {event_id}")
                     return {}
                 
-                # Get all relevant transactions
+                # Get transactions and ticket types
                 transactions = session.query(Transaction).filter(
                     Transaction.id.in_(transaction_ids),
                     Transaction.payment_status == PaymentStatus.PAID
                 ).all()
                 
-                # Create transaction ID to amount mapping
-                tx_amounts = {tx.id: float(tx.amount_paid) for tx in transactions}
+                ticket_types_data = session.query(TicketType).filter(
+                    TicketType.id.in_(ticket_type_ids)
+                ).all()
                 
-                # Group by ticket type and collect prices
+                # Create mappings
+                tx_amounts = {tx.id: float(tx.amount_paid) for tx in transactions}
+                type_names = {tt.id: tt.type_name.value for tt in ticket_types_data}
+                
+                # Group by ticket type name and collect prices
                 type_prices = {}
                 for ticket in tickets:
-                    if ticket.transaction_id in tx_amounts:
-                        # Get ticket type name
-                        type_key = str(ticket.ticket_type_id) if hasattr(ticket, 'ticket_type_id') else str(ticket.ticket_type)
+                    if (ticket.transaction_id in tx_amounts and 
+                        ticket.ticket_type_id in type_names):
                         
-                        # Try to get a better name if possible
-                        try:
-                            if hasattr(ticket, 'ticket_type_id') and ticket.ticket_type_id:
-                                # Try to get the actual ticket type name
-                                ticket_type_obj = session.query(session.query(Ticket).column_descriptions[0]['type'].__table__.c.ticket_type_id.type.python_type).filter_by(id=ticket.ticket_type_id).first()
-                                if ticket_type_obj and hasattr(ticket_type_obj, 'name'):
-                                    type_key = ticket_type_obj.name
-                        except:
-                            pass  # Use the ID as fallback
-                        
+                        type_name = type_names[ticket.ticket_type_id]
                         amount = tx_amounts[ticket.transaction_id]
                         
-                        if type_key not in type_prices:
-                            type_prices[type_key] = []
-                        type_prices[type_key].append(amount)
+                        if type_name not in type_prices:
+                            type_prices[type_name] = []
+                        type_prices[type_name].append(amount)
                 
                 # Calculate minimum price for each type
                 for type_name, amounts in type_prices.items():
                     if amounts:
                         ticket_prices[type_name] = min(amounts)
                 
-                logger.info(f"Retrieved ticket prices using Python approach for event {event_id}: {ticket_prices}")
+                logger.info(f"Retrieved ticket prices using Python approach with names for event {event_id}: {ticket_prices}")
                 return ticket_prices
                 
             except Exception as python_error:
-                logger.warning(f"Python approach failed: {python_error}")
+                logger.warning(f"Python approach with names failed: {python_error}")
                 
                 # Clear transaction state
                 try:
@@ -258,20 +284,42 @@ class ReportDataProcessor:
                 except:
                     pass
             
-            # Approach 4: Last resort - get ticket types without prices
+            # Approach 5: Last resort - get ticket type names without prices from transactions
             try:
-                # Just get the ticket types that exist for this event
-                ticket_types = session.query(Ticket.ticket_type_id).filter(
-                    Ticket.event_id == event_id
-                ).distinct().all()
+                from model import TicketType
                 
-                # Set default price of 0.0 for each type found
-                for (type_id,) in ticket_types:
-                    type_name = f"Type_{type_id}" if type_id else "Unknown"
-                    ticket_prices[type_name] = 0.0
+                # Get ticket types that exist for this event from TicketType table
+                existing_types = session.query(TicketType).filter(
+                    TicketType.event_id == event_id
+                ).all()
                 
-                logger.info(f"Fallback: Using default prices for event {event_id}: {ticket_prices}")
-                return ticket_prices
+                if existing_types:
+                    # Use the actual prices from the TicketType table as fallback
+                    for ticket_type in existing_types:
+                        type_name = ticket_type.type_name.value
+                        price = float(ticket_type.price) if ticket_type.price else 0.0
+                        ticket_prices[type_name] = price
+                    
+                    logger.info(f"Fallback: Using TicketType table prices for event {event_id}: {ticket_prices}")
+                    return ticket_prices
+                else:
+                    # Get unique ticket type IDs from tickets and try to map them
+                    ticket_type_ids = session.query(Ticket.ticket_type_id).filter(
+                        Ticket.event_id == event_id
+                    ).distinct().all()
+                    
+                    if ticket_type_ids:
+                        type_id_list = [tid[0] for tid in ticket_type_ids if tid[0]]
+                        ticket_types_fallback = session.query(TicketType).filter(
+                            TicketType.id.in_(type_id_list)
+                        ).all()
+                        
+                        for ticket_type in ticket_types_fallback:
+                            type_name = ticket_type.type_name.value
+                            ticket_prices[type_name] = 0.0  # Default price
+                    
+                    logger.info(f"Final fallback: Using default prices for event {event_id}: {ticket_prices}")
+                    return ticket_prices
                 
             except Exception as final_error:
                 logger.error(f"All approaches failed for event {event_id}: {final_error}")
@@ -499,19 +547,78 @@ class ChartGenerator:
                 logger.info(f"All data values are zero for pie chart '{title}'. Skipping chart generation.")
                 return None
             labels, sizes = zip(*filtered_labels_sizes)
-            with self._chart_context() as (fig, ax):
-                colors_list = plt.cm.Set3(range(len(labels)))
+            
+            # Use square figure size to ensure perfect circle
+            with self._chart_context((10, 10)) as (fig, ax):
+                # Modern, professional color palette with better contrast
+                colors_palette = [
+                    '#2E86AB',  # Blue
+                    '#A23B72',  # Purple
+                    '#F18F01',  # Orange
+                    '#C73E1D',  # Red
+                    '#1B998B',  # Teal
+                    '#8E7CC3',  # Light Purple
+                    '#F4A261',  # Light Orange
+                    '#E76F51',  # Coral
+                    '#264653',  # Dark Teal
+                    '#E9C46A'   # Yellow
+                ]
+                
+                # Use only the number of colors we need
+                colors_list = colors_palette[:len(labels)]
+                
+                # Create pie chart with better styling
                 wedges, texts, autotexts = ax.pie(
-                    sizes, labels=labels, autopct='%1.1f%%',
-                    colors=colors_list, startangle=90,
-                    explode=[0.05] * len(labels) if labels else None
+                    sizes, 
+                    labels=labels, 
+                    autopct='%1.1f%%',
+                    colors=colors_list, 
+                    startangle=90,
+                    explode=[0.05] * len(labels) if len(labels) > 1 else None,
+                    shadow=True,  # Add subtle shadow for depth
+                    textprops={'fontsize': 10, 'fontweight': 'bold'},
+                    pctdistance=0.85,  # Move percentage text closer to edge
+                    labeldistance=1.1   # Move labels slightly outward
                 )
+                
+                # Style the percentage text for better readability
                 for autotext in autotexts:
                     autotext.set_color('white')
                     autotext.set_fontweight('bold')
-                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+                    autotext.set_fontsize(11)
+                    # Add a subtle outline to make text more readable
+                    autotext.set_path_effects([
+                        plt.matplotlib.patheffects.Stroke(linewidth=2, foreground='black'),
+                        plt.matplotlib.patheffects.Normal()
+                    ])
+                
+                # Style the labels
+                for text in texts:
+                    text.set_fontsize(11)
+                    text.set_fontweight('bold')
+                    text.set_color('#333333')
+                
+                # Enhanced title styling
+                ax.set_title(
+                    title, 
+                    fontsize=18, 
+                    fontweight='bold', 
+                    pad=25,
+                    color='#2E86AB'
+                )
+                
+                # Ensure perfect circle by setting equal aspect ratio and limits
+                ax.set_aspect('equal')
+                ax.set_xlim(-1.5, 1.5)
+                ax.set_ylim(-1.5, 1.5)
+                
+                # Remove spines for clean look
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                
                 plt.tight_layout()
                 return self._save_chart_safely(fig, title)
+                
         except Exception as e:
             logger.error(f"Error creating pie chart '{title}': {e}", exc_info=True)
             return None
@@ -523,24 +630,60 @@ class ChartGenerator:
         try:
             categories = list(data.keys())
             values = [float(v) for v in data.values()]
+            
             with self._chart_context((12, 8)) as (fig, ax):
-                bars = ax.bar(categories, values, color=plt.cm.viridis(range(len(categories))))
+                # Use the same professional color palette
+                colors_palette = [
+                    '#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#1B998B',
+                    '#8E7CC3', '#F4A261', '#E76F51', '#264653', '#E9C46A'
+                ]
+                bar_colors = [colors_palette[i % len(colors_palette)] for i in range(len(categories))]
+                
+                # Create bars with enhanced styling
+                bars = ax.bar(categories, values, color=bar_colors, alpha=0.8, edgecolor='white', linewidth=2)
+                
+                # Add value labels on top of bars
                 for bar in bars:
                     height = bar.get_height()
-                    if 'Revenue' in ylabel:
-                        ax.text(bar.get_x() + bar.get_width()/2., height,
-                                f'{currency_symbol}{height:.2f}',
-                                ha='center', va='bottom', fontweight='bold')
-                    else:
-                        ax.text(bar.get_x() + bar.get_width()/2., height,
-                                f'{height:.0f}',
-                                ha='center', va='bottom', fontweight='bold')
-                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-                ax.set_xlabel(xlabel, fontsize=12, fontweight='bold')
-                ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
-                plt.xticks(rotation=45, ha='right')
+                    if height > 0:  # Only show labels for positive values
+                        if 'Revenue' in ylabel:
+                            label_text = f'{currency_symbol}{height:,.0f}'
+                        else:
+                            label_text = f'{height:,.0f}'
+                        
+                        ax.text(bar.get_x() + bar.get_width()/2., height + max(values) * 0.01,
+                                label_text,
+                                ha='center', va='bottom', fontweight='bold', fontsize=11, color='#333333')
+                
+                # Enhanced title and labels
+                ax.set_title(title, fontsize=18, fontweight='bold', pad=25, color='#2E86AB')
+                ax.set_xlabel(xlabel, fontsize=14, fontweight='bold', color='#333333')
+                ax.set_ylabel(ylabel, fontsize=14, fontweight='bold', color='#333333')
+                
+                # Improve grid and styling
+                ax.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
+                ax.set_axisbelow(True)  # Put grid behind bars
+                
+                # Style the axes
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_color('#cccccc')
+                ax.spines['bottom'].set_color('#cccccc')
+                
+                # Rotate x-axis labels for better readability
+                plt.xticks(rotation=45, ha='right', fontsize=11)
+                plt.yticks(fontsize=11)
+                
+                # Set y-axis to start from 0 and add some padding at the top
+                ax.set_ylim(0, max(values) * 1.1)
+                
+                # Format y-axis for currency if needed
+                if 'Revenue' in ylabel:
+                    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{currency_symbol}{x:,.0f}'))
+                
                 plt.tight_layout()
                 return self._save_chart_safely(fig, title)
+                
         except Exception as e:
             logger.error(f"Error creating bar chart '{title}': {e}", exc_info=True)
             return None
@@ -554,30 +697,70 @@ class ChartGenerator:
             categories = all_ticket_types
             sold_counts = [int(sold_data.get(t, 0)) for t in categories]
             attended_counts = [int(attended_data.get(t, 0)) for t in categories]
+            
             if not categories or (sum(sold_counts) == 0 and sum(attended_counts) == 0):
                 logger.info(f"No valid data to plot for comparison chart '{title}'. Skipping.")
                 return None
-            with self._chart_context((12, 8)) as (fig, ax):
-                x = range(len(categories))
+            
+            with self._chart_context((14, 8)) as (fig, ax):
+                x = np.arange(len(categories))
                 width = 0.35
-                bars1 = ax.bar([i - width/2 for i in x], sold_counts, width,
-                             label='Tickets Sold', color='skyblue', alpha=0.8)
-                bars2 = ax.bar([i + width/2 for i in x], attended_counts, width,
-                             label='Attendees', color='lightcoral', alpha=0.8)
+                
+                # Enhanced color scheme for comparison
+                sold_color = '#2E86AB'      # Professional blue
+                attended_color = '#F18F01'   # Professional orange
+                
+                # Create bars with enhanced styling
+                bars1 = ax.bar(x - width/2, sold_counts, width,
+                            label='Tickets Sold', color=sold_color, alpha=0.8, 
+                            edgecolor='white', linewidth=2)
+                bars2 = ax.bar(x + width/2, attended_counts, width,
+                            label='Attendees', color=attended_color, alpha=0.8,
+                            edgecolor='white', linewidth=2)
+                
+                # Add value labels on bars
                 for bars in [bars1, bars2]:
                     for bar in bars:
                         height = bar.get_height()
                         if height > 0:
-                            ax.text(bar.get_x() + bar.get_width()/2., height,
-                                    f'{int(height)}', ha='center', va='bottom', fontweight='bold')
-                ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-                ax.set_xlabel('Ticket Type', fontsize=12, fontweight='bold')
-                ax.set_ylabel('Count', fontsize=12, fontweight='bold')
+                            ax.text(bar.get_x() + bar.get_width()/2., height + max(max(sold_counts), max(attended_counts)) * 0.01,
+                                    f'{int(height)}', ha='center', va='bottom', 
+                                    fontweight='bold', fontsize=11, color='#333333')
+                
+                # Enhanced styling
+                ax.set_title(title, fontsize=18, fontweight='bold', pad=25, color='#2E86AB')
+                ax.set_xlabel('Ticket Type', fontsize=14, fontweight='bold', color='#333333')
+                ax.set_ylabel('Count', fontsize=14, fontweight='bold', color='#333333')
+                
+                # Improve grid and axes
+                ax.grid(True, linestyle='--', alpha=0.7, color='#cccccc')
+                ax.set_axisbelow(True)
+                
+                # Style the axes
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_color('#cccccc')
+                ax.spines['bottom'].set_color('#cccccc')
+                
+                # Set ticks and labels
                 ax.set_xticks(x)
-                ax.set_xticklabels(categories, rotation=45, ha='right')
-                ax.legend()
+                ax.set_xticklabels(categories, rotation=45, ha='right', fontsize=11)
+                ax.tick_params(axis='y', labelsize=11)
+                
+                # Enhanced legend
+                legend = ax.legend(loc='upper left', frameon=True, fancybox=True, shadow=True, 
+                                fontsize=12, title_fontsize=12)
+                legend.get_frame().set_facecolor('white')
+                legend.get_frame().set_alpha(0.9)
+                
+                # Set y-axis limits with padding
+                max_value = max(max(sold_counts) if sold_counts else [0], 
+                            max(attended_counts) if attended_counts else [0])
+                ax.set_ylim(0, max_value * 1.15)
+                
                 plt.tight_layout()
                 return self._save_chart_safely(fig, title)
+                
         except Exception as e:
             logger.error(f"Error creating comparison chart '{title}': {e}", exc_info=True)
             return None
@@ -682,13 +865,13 @@ class PDFReportGenerator:
         
         summary_data = [
             ['Metric', 'Value'],
-            ['Total Tickets Sold', str(total_tickets_sold)],
-            ['Total Revenue', f"{currency_symbol}{total_revenue:.2f}"],
-            ['Total Attendees', str(number_of_attendees)],
+            ['Total Tickets Sold', f'{total_tickets_sold:,}'],
+            ['Total Revenue', f"{currency_symbol}{total_revenue:,.2f}"],
+            ['Total Attendees', f'{number_of_attendees:,}'],
             ['Attendance Rate', f"{attendance_rate:.1f}%"],
         ]
         
-        # FIXED: Show original ticket type prices instead of calculated average
+        # Add ticket prices
         ticket_prices = report_data.get('ticket_type_prices', {})
         converted_prices = report_data.get('converted_ticket_type_prices', {})
         
@@ -697,7 +880,7 @@ class PDFReportGenerator:
             prices_to_show = converted_prices if converted_prices else ticket_prices
             
             for ticket_type, price in prices_to_show.items():
-                summary_data.append([f'{ticket_type} Ticket Price', f"{currency_symbol}{price:.2f}"])
+                summary_data.append([f'{ticket_type} Ticket Price', f"{currency_symbol}{price:,.2f}"])
         
         if report_data.get('original_currency') and report_data.get('currency') != report_data.get('original_currency'):
             summary_data.append(['Original Currency', report_data.get('original_currency')])
@@ -705,16 +888,29 @@ class PDFReportGenerator:
         
         table = Table(summary_data, colWidths=[3*inch, 2*inch])
         table.setStyle(TableStyle([
+            # Header styling
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 1), (-1, -1), 10),
+            ('FONTSIZE', (0, 0), (-1, 0), 14),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 15),
+            ('TOPPADDING', (0, 0), (-1, 0), 15),
+            
+            # Data rows styling
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#F8F9FA')),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),  # Metric names bold
+            ('FONTNAME', (1, 1), (1, -1), 'Helvetica'),       # Values regular
+            ('FONTSIZE', (0, 1), (-1, -1), 11),
+            ('TOPPADDING', (0, 1), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+            
+            # Border styling
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#CCCCCC')),
+            ('LINEBELOW', (0, 0), (-1, 0), 2, colors.HexColor('#2E86AB')),
+            
+            # Alternating row colors for better readability
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#F8F9FA'), colors.white]),
         ]))
         return table
 
@@ -870,9 +1066,11 @@ class PDFReportGenerator:
             pagesize = self._get_pagesize()
             doc = SimpleDocTemplate(output_path, pagesize=pagesize, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18)
             story = []
+            
             # Title and Event Information
             story.append(Paragraph("EVENT ANALYTICS REPORT", self.title_style))
             story.append(Spacer(1, 20))
+            
             event_name = processed_data.get('event_name', 'N/A')
             event_date = processed_data.get('event_date', 'N/A')
             event_location = processed_data.get('event_location', 'N/A')
@@ -880,6 +1078,7 @@ class PDFReportGenerator:
             filter_end_date = processed_data.get('filter_end_date', 'N/A')
             currency = processed_data.get('currency', 'USD')
             currency_symbol = processed_data.get('currency_symbol', '$')
+            
             event_info = f"""
             <para fontSize=14>
             <b>Event:</b> {event_name}<br/>
@@ -892,10 +1091,12 @@ class PDFReportGenerator:
             """
             story.append(Paragraph(event_info, self.normal_style))
             story.append(Spacer(1, 30))
+            
             # Executive Summary
             story.append(Paragraph("EXECUTIVE SUMMARY", self.subtitle_style))
             story.append(self._create_summary_table(processed_data))
             story.append(Spacer(1, 30))
+            
             # Key Insights
             insights = self._generate_insights(processed_data)
             if insights:
@@ -903,11 +1104,14 @@ class PDFReportGenerator:
                 for insight in insights:
                     story.append(Paragraph(insight, self.normal_style))
                 story.append(Spacer(1, 20))
+            
             if len(story) > 5:
                 story.append(PageBreak())
+            
             # Visual Analytics (Charts)
             if chart_paths:
                 self._add_charts_to_story(story, chart_paths)
+            
             # Detailed Breakdown (Tables)
             story.append(PageBreak())
             story.append(Paragraph("DETAILED BREAKDOWN", self.subtitle_style))
@@ -916,6 +1120,7 @@ class PDFReportGenerator:
                 story.append(Paragraph(table_title, self.header_style))
                 story.append(table)
                 story.append(Spacer(1, 20))
+            
             # Footer
             footer_text = """
             <para alignment="center" fontSize=10 textColor="grey">
@@ -925,14 +1130,15 @@ class PDFReportGenerator:
             """
             story.append(Spacer(1, 50))
             story.append(Paragraph(footer_text, self.normal_style))
+            
             doc.build(story)
             self._cleanup_chart_files(chart_paths)
             return output_path
+            
         except Exception as e:
             logger.error(f"Error generating PDF report: {e}", exc_info=True)
             self._cleanup_chart_files(chart_paths)
             return None
-
 class CSVReportGenerator:
     @staticmethod
     def generate_csv(report_data: Dict[str, Any], output_path: str, session: Session, event_id: int) -> Optional[str]:
