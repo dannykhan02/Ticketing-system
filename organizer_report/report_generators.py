@@ -1,3 +1,4 @@
+
 import matplotlib
 matplotlib.use('Agg')
 from reportlab.lib import colors
@@ -105,15 +106,63 @@ class ReportDataProcessor:
         return processed_data
 
     @staticmethod
+    def get_ticket_type_prices(session: Session, event_id: int) -> Dict[str, float]:
+        """
+        Get the original prices for each ticket type for the event
+        """
+        try:
+            # Query to get distinct ticket types and their prices for the event
+            # Assuming there's a ticket_types table or prices are stored in transactions
+            ticket_prices = {}
+            
+            # Method 1: If prices are stored in a separate ticket_types table
+            # Uncomment and modify this if you have a ticket_types table:
+            """
+            from model import TicketType  # Import your TicketType model
+            ticket_types = session.query(TicketType).filter_by(event_id=event_id).all()
+            for ticket_type in ticket_types:
+                ticket_prices[ticket_type.name] = float(ticket_type.price)
+            """
+            
+            # Method 2: Extract prices from successful transactions
+            # This gets the price from the first successful transaction for each ticket type
+            price_query = session.query(
+                Ticket.ticket_type,
+                func.min(Transaction.amount).label('price')  # Using min to get consistent price
+            ).join(Transaction).filter(
+                Ticket.event_id == event_id,
+                cast(Ticket.payment_status, String).ilike("paid")
+            ).group_by(Ticket.ticket_type).all()
+            
+            for ticket_type, price in price_query:
+                ticket_prices[str(ticket_type)] = float(price) if price else 0.0
+            
+            logger.info(f"Retrieved ticket prices for event {event_id}: {ticket_prices}")
+            return ticket_prices
+            
+        except Exception as e:
+            logger.error(f"Error retrieving ticket prices for event {event_id}: {e}")
+            return {}
+
+    @staticmethod
     def process_report_data(report_data: Dict[str, Any], session: Session, event_id: int, target_currency: str = "KES") -> Dict[str, Any]:
         """
-        Enhanced process_report_data with currency conversion support
+        Enhanced process_report_data with currency conversion support and ticket prices
         """
         processed_data = ReportDataProcessor.convert_enum_keys_to_strings(report_data)
         processed_data = ReportDataProcessor._ensure_numeric_types(processed_data)
+        
         # Calculate total_ticket_sold and attendees
         processed_data['total_tickets_sold'] = ReportDataProcessor.calculate_total_tickets_sold(session, event_id)
         processed_data['number_of_attendees'] = ReportDataProcessor.calculate_attendees(session, event_id)
+        
+        # Get original ticket prices in KSh
+        ticket_prices = ReportDataProcessor.get_ticket_type_prices(session, event_id)
+        processed_data['ticket_type_prices'] = ticket_prices
+        
+        # Store original revenue data before conversion
+        processed_data['original_revenue_by_ticket_type'] = processed_data.get('revenue_by_ticket_type', {}).copy()
+        
         # Add currency conversion if needed
         if target_currency and target_currency != "KES":
             processed_data = ReportDataProcessor.convert_report_currency(processed_data, target_currency, session)
@@ -122,12 +171,14 @@ class ReportDataProcessor:
             processed_data['original_currency'] = "KES"
             processed_data['currency'] = "KES"
             processed_data['currency_symbol'] = "KSh"
+        
         # Set default values for missing fields
         processed_data.setdefault('event_name', f"Event {event_id}")
         processed_data.setdefault('event_date', datetime.now().strftime('%Y-%m-%d'))
         processed_data.setdefault('event_location', 'Conference Center')
         processed_data.setdefault('filter_start_date', 'N/A')
         processed_data.setdefault('filter_end_date', 'N/A')
+        
         return processed_data
 
     @staticmethod
@@ -188,6 +239,20 @@ class ReportDataProcessor:
                         converted_revenue_by_type[ticket_type] = float(ksh_revenue)  # Keep original
 
                 report_data['revenue_by_ticket_type'] = converted_revenue_by_type
+
+            # Convert ticket prices for display in summary table
+            if 'ticket_type_prices' in report_data:
+                converted_prices = {}
+                for ticket_type, ksh_price in report_data['ticket_type_prices'].items():
+                    try:
+                        ksh_amount = Decimal(str(ksh_price))
+                        converted_amount, _, _ = convert_ksh_to_target_currency(ksh_amount, target_currency)
+                        converted_prices[ticket_type] = float(converted_amount)
+                    except Exception as e:
+                        logger.warning(f"Error converting price for ticket type {ticket_type}: {e}")
+                        converted_prices[ticket_type] = float(ksh_price)  # Keep original
+                
+                report_data['converted_ticket_type_prices'] = converted_prices
 
             # Convert daily revenue if present
             if 'daily_revenue' in report_data and report_data['daily_revenue']:
@@ -472,6 +537,7 @@ class PDFReportGenerator:
         if total_tickets_sold > 0:
             attendance_rate = (float(number_of_attendees) / total_tickets_sold) * 100
         currency_symbol = report_data.get('currency_symbol', '$')
+        
         summary_data = [
             ['Metric', 'Value'],
             ['Total Tickets Sold', str(total_tickets_sold)],
@@ -479,12 +545,22 @@ class PDFReportGenerator:
             ['Total Attendees', str(number_of_attendees)],
             ['Attendance Rate', f"{attendance_rate:.1f}%"],
         ]
-        if total_tickets_sold > 0:
-            avg_revenue = (total_revenue / float(total_tickets_sold))
-            summary_data.append(['Average Revenue per Ticket', f"{currency_symbol}{avg_revenue:.2f}"])
+        
+        # FIXED: Show original ticket type prices instead of calculated average
+        ticket_prices = report_data.get('ticket_type_prices', {})
+        converted_prices = report_data.get('converted_ticket_type_prices', {})
+        
+        if ticket_prices:
+            # Use converted prices if available, otherwise use original KSh prices
+            prices_to_show = converted_prices if converted_prices else ticket_prices
+            
+            for ticket_type, price in prices_to_show.items():
+                summary_data.append([f'{ticket_type} Ticket Price', f"{currency_symbol}{price:.2f}"])
+        
         if report_data.get('original_currency') and report_data.get('currency') != report_data.get('original_currency'):
             summary_data.append(['Original Currency', report_data.get('original_currency')])
             summary_data.append(['Displayed Currency', report_data.get('currency')])
+        
         table = Table(summary_data, colWidths=[3*inch, 2*inch])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2E86AB')),
