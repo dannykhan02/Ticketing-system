@@ -885,12 +885,11 @@ class OrganizerSummaryReportResource(Resource, AuthorizationMixin):
             "total_revenue_across_all_events": f"{total_revenue:.2f}",
             "events_summary": events_summary
         }
-class EventReportsResource(Resource):
+class EventReportsResource(Resource, AuthorizationMixin):
     """
-    API resource for retrieving reports specific to a single event.
+    API resource for retrieving the latest 5 reports for a specific event.
+    Returns reports in decreasing order by ID (most recent first).
     """
-    def __init__(self):
-        self._last_request_times = {}  # Simple request deduplication cache
     
     @jwt_required()
     def get(self, event_id):
@@ -898,238 +897,169 @@ class EventReportsResource(Resource):
             current_user_id = get_jwt_identity()
             current_user = User.query.get(current_user_id)
             if not current_user:
-                logger.warning(f"EventReportsResource: User {current_user_id} not found.")
+                logger.warning(f"EventReportsResource: User with ID {current_user_id} not found.")
                 return {'error': 'User not found'}, 404
 
-            # Request deduplication check
-            start_date_str = request.args.get('start_date')
-            end_date_str = request.args.get('end_date')
-            specific_date_str = request.args.get('specific_date')
-            target_currency_code = request.args.get('target_currency', 'KES')
-            
-            cache_key = f"event_report_{event_id}_{specific_date_str or 'range'}_{current_user_id}"
-            current_time = time.time()
-            
-            if cache_key in self._last_request_times:
-                if current_time - self._last_request_times[cache_key] < 5:  # 5 seconds cooldown
-                    logger.info(f"Skipping duplicate request for {cache_key}")
-                    return {
-                        'message': 'Request processed recently, please wait',
-                        'retry_after': 5
-                    }, 429
-            
-            self._last_request_times[cache_key] = current_time
-
-            # Clean old entries from cache (keep only last hour)
-            cutoff_time = current_time - 3600
-            self._last_request_times = {
-                k: v for k, v in self._last_request_times.items() 
-                if v > cutoff_time
-            }
-
-            limit_str = request.args.get('limit')
-            get_all = request.args.get('get_all', 'false').lower() == 'true'
-
-            # Validate event exists and user has permission
+            # Validate event exists
             event = Event.query.get(event_id)
             if not event:
-                logger.warning(f"EventReportsResource: Event {event_id} not found.")
+                logger.warning(f"EventReportsResource: Event with ID {event_id} not found.")
                 return {'error': 'Event not found'}, 404
 
-            # Check authorization using the same logic as GenerateReportResource
-            organizer = Organizer.query.filter_by(user_id=current_user_id).first()
-            if not organizer or organizer.id != event.organizer_id:
-                if current_user.role != UserRole.ADMIN:
-                    logger.warning(f"EventReportsResource: User {current_user_id} not authorized for event {event_id}.")
-                    return {'error': 'Unauthorized to access reports for this event'}, 403
-
-            # Parse dates using the same logic as GenerateReportResource
-            if specific_date_str:
-                try:
-                    specific_date = DateUtils.parse_date_param(specific_date_str, 'specific_date')
-                    start_date = specific_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_date = specific_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                except Exception as e:
-                    logger.error(f"EventReportsResource: Error parsing specific_date '{specific_date_str}': {e}")
-                    return {'error': 'Invalid specific date format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS'}, 400
-            else:
-                start_date = DateUtils.parse_date_param(start_date_str, 'start_date') if start_date_str else None
-                end_date = DateUtils.parse_date_param(end_date_str, 'end_date') if end_date_str else None
-                if not start_date:
-                    start_date = event.timestamp if hasattr(event, 'timestamp') and event.timestamp else datetime.now() - timedelta(days=30)
-                if not end_date:
-                    end_date = datetime.now()
-                end_date = DateUtils.adjust_end_date(end_date)
-
-            # Handle limit parameter
-            limit = None
-            if not get_all:
-                if limit_str:
-                    try:
-                        limit = int(limit_str)
-                        if limit <= 0:
-                            logger.warning(f"EventReportsResource: Invalid limit value: {limit_str}")
-                            return {'error': 'Limit must be a positive integer'}, 400
-                    except ValueError:
-                        logger.warning(f"EventReportsResource: Invalid limit format: {limit_str}")
-                        return {'error': 'Limit must be a valid integer'}, 400
-                else:
-                    limit = 1  # Default to 1 most recent report (like POST request returns one report)
-
-            # Validate target currency
-            target_currency = None
-            if target_currency_code:
-                try:
-                    from model import CurrencyCode
-                    target_currency = Currency.query.filter_by(
-                        code=CurrencyCode(target_currency_code),
-                        is_active=True
-                    ).first()
-                    if not target_currency:
-                        logger.warning(f"EventReportsResource: Target currency '{target_currency_code}' not found or not active.")
-                        return {'error': f'Target currency "{target_currency_code}" not found or not active'}, 400
-                except ValueError:
-                    logger.warning(f"EventReportsResource: Invalid target currency code '{target_currency_code}'.")
-                    return {'error': f'Invalid target currency code "{target_currency_code}"'}, 400
-            else:
-                target_currency_code = 'KES'
-                target_currency = Currency.query.filter_by(
-                    code=CurrencyCode('KES'),
-                    is_active=True
-                ).first()
-
-            # Query reports with date filtering and smart ordering
-            query = Report.query.filter_by(event_id=event_id)
+            # Enhanced authorization check (same as GetReportResource)
+            is_authorized = False
+            organizer = None
             
-            # Apply date filtering
-            if start_date and end_date:
-                query = query.filter(Report.timestamp.between(start_date, end_date))
+            # Admin users have access to all events
+            if current_user.role == UserRole.ADMIN:
+                is_authorized = True
+                logger.info(f"EventReportsResource: Admin user {current_user_id} accessing event {event_id}.")
+            else:
+                # Get organizer record for current user
+                organizer = Organizer.query.filter_by(user_id=current_user_id).first()
+                
+                if not organizer:
+                    logger.warning(f"EventReportsResource: No organizer record found for user {current_user_id}.")
+                    return {'error': 'Organizer profile not found'}, 403
+                
+                # Log authorization details for debugging
+                logger.info(f"EventReportsResource: Checking authorization - User: {current_user_id}, "
+                        f"Organizer ID: {organizer.id}, Event Organizer ID: {event.organizer_id}")
+                
+                # Check 1: Primary check - if organizer owns the event
+                if event.organizer_id == organizer.id:
+                    is_authorized = True
+                    logger.info(f"EventReportsResource: Organizer {organizer.id} authorized to access event {event_id}.")
+                
+                # Check 2: If event's organizer_id matches the user_id (possible data inconsistency)
+                elif str(event.organizer_id) == str(current_user_id):
+                    is_authorized = True
+                    logger.info(f"EventReportsResource: User {current_user_id} authorized via user-event ownership for event {event_id}.")
+                    logger.warning(f"EventReportsResource: Data inconsistency detected - event {event_id} has organizer_id={event.organizer_id} but user's organizer.id={organizer.id}")
+                
+                # Check 3: If current organizer can access events from the target organizer (same organization/team)
+                elif event.organizer_id:
+                    target_organizer = Organizer.query.get(event.organizer_id)
+                    if target_organizer and hasattr(organizer, 'organization_id') and hasattr(target_organizer, 'organization_id'):
+                        if organizer.organization_id == target_organizer.organization_id and organizer.organization_id is not None:
+                            is_authorized = True
+                            logger.info(f"EventReportsResource: Organizer {organizer.id} authorized via same organization ({organizer.organization_id}) for event {event_id}.")
+                
+                # Check 4: Check if the user has admin privileges for this specific organizer/organization
+                if not is_authorized and hasattr(organizer, 'is_admin') and organizer.is_admin:
+                    is_authorized = True
+                    logger.info(f"EventReportsResource: Organizer {organizer.id} authorized via admin privileges for event {event_id}.")
 
-            # Order by: reports with data first, then by most recent ID
-            query = query.order_by(
-                (Report.total_revenue > 0).desc(),
-                Report.id.desc()
-            )
+            if not is_authorized:
+                logger.warning(f"EventReportsResource: User {current_user_id} (organizer: {organizer.id if organizer else 'None'}) "
+                            f"unauthorized to access event {event_id} (owned by organizer: {event.organizer_id}).")
+                return {'error': 'Unauthorized to access reports for this event'}, 403
 
-            # Apply limit
-            if limit:
-                query = query.limit(limit)
+            # Get target currency for conversion
+            target_currency_id = request.args.get('target_currency_id', type=int)
 
-            reports = query.all()
+            # Query for the latest 5 reports for this event, ordered by ID descending (most recent first)
+            reports_query = Report.query.filter_by(event_id=event_id).order_by(Report.id.desc()).limit(5)
+            reports = reports_query.all()
 
             if not reports:
                 logger.info(f"EventReportsResource: No reports found for event {event_id}")
                 return {
                     'event_id': event_id,
                     'event_name': event.name,
-                    'message': 'No reports found for the specified criteria',
-                    'reports': []
+                    'organizer_name': event.organizer.name if hasattr(event, 'organizer') and event.organizer else 'Unknown',
+                    'message': 'No reports found for this event',
+                    'reports': [],
+                    'total_reports_found': 0
                 }, 200
 
-            # Get the most recent report with data (first in our ordered results)
-            report = reports[0]
+            # Process each report using the same logic as GetReportResource
+            processed_reports = []
             
-            # Extract data exactly like GenerateReportResource
-            total_revenue_ksh = float(report.total_revenue) if report.total_revenue else 0.0
-            total_tickets_sold = report.total_tickets_sold if report.total_tickets_sold else 0
-            
-            # Get attendee count with fallback logic like GenerateReportResource
-            actual_attendee_count = report.number_of_attendees if report.number_of_attendees else 0
-            
-            # If stored count is 0, try to extract from report_data
-            if actual_attendee_count == 0 and hasattr(report, 'report_data') and report.report_data:
-                try:
-                    import json
-                    if isinstance(report.report_data, str):
-                        report_data = json.loads(report.report_data)
-                    elif isinstance(report.report_data, dict):
-                        report_data = report.report_data
-                    else:
-                        report_data = {}
-
-                    # Use same fallback logic as GenerateReportResource
-                    actual_attendee_count = report_data.get('attendee_count', 0)
+            for report in reports:
+                # Build enhanced response for each report
+                report_dict = report.as_dict(target_currency_id=target_currency_id)
+                
+                # ==================== ATTENDEE COUNT CORRECTION ====================
+                # Apply the same logic as GetReportResource to fix attendee count
+                report_data = report_dict.get('report_data', {})
+                
+                # Extract attendee count using the same fallback approach
+                actual_attendee_count = report_data.get('attendee_count', 0)
+                if actual_attendee_count == 0:
+                    actual_attendee_count = report_data.get('number_of_attendees', 0)
                     if actual_attendee_count == 0:
-                        actual_attendee_count = report_data.get('number_of_attendees', 0)
-                        if actual_attendee_count == 0:
-                            actual_attendee_count = report_data.get('total_attendees', 0)
+                        actual_attendee_count = report_data.get('total_attendees', 0)
+                
+                # Check debug_info for event_scans_count as fallback
+                debug_info = report_data.get('debug_info', {})
+                if actual_attendee_count == 0 and debug_info.get('event_scans_count'):
+                    actual_attendee_count = debug_info.get('event_scans_count', 0)
+                    logger.info(f"EventReportsResource: Using event_scans_count as attendee count: {actual_attendee_count}")
+                
+                # Update the report data with corrected attendee count
+                if actual_attendee_count > 0:
+                    logger.info(f"EventReportsResource: Correcting attendee count from {report_dict.get('number_of_attendees', 0)} to {actual_attendee_count}")
                     
-                    logger.info(f"EventReportsResource: Extracted attendee count from report data for report {report.id}: {actual_attendee_count}")
+                    # Update main report fields
+                    report_dict['number_of_attendees'] = actual_attendee_count
                     
-                except Exception as e:
-                    logger.debug(f"EventReportsResource: Could not extract attendee count from report data for report {report.id}: {e}")
-
-            # Currency conversion logic identical to GenerateReportResource
-            converted_amount = Decimal(str(total_revenue_ksh))
-            ksh_to_usd_rate = Decimal('1')
-            usd_to_target_rate = Decimal('1')
-            overall_conversion_rate = Decimal('1')
-
-            try:
-                if target_currency_code != 'KES' and total_revenue_ksh > 0:
-                    logger.info(f"EventReportsResource: Converting {total_revenue_ksh} KES to {target_currency_code} for report {report.id}")
-                    converted_amount, ksh_to_usd_rate, usd_to_target_rate = convert_ksh_to_target_currency(
-                        total_revenue_ksh,
-                        target_currency_code
-                    )
-                    overall_conversion_rate = ksh_to_usd_rate * usd_to_target_rate
-                    logger.info(f"EventReportsResource: Conversion successful - {total_revenue_ksh} KES = {converted_amount} {target_currency_code}")
+                    # Update report_data fields
+                    if 'report_data' in report_dict:
+                        report_dict['report_data']['number_of_attendees'] = actual_attendee_count
+                        report_dict['report_data']['attendee_count'] = actual_attendee_count
+                    
+                    # Recalculate attendance rate if we have ticket count
+                    total_tickets = report_dict.get('total_tickets_sold', 0)
+                    if total_tickets > 0:
+                        attendance_rate = (actual_attendee_count / total_tickets) * 100
+                        report_dict['attendance_rate'] = round(attendance_rate, 2)
+                        if 'report_data' in report_dict:
+                            report_dict['report_data']['attendance_rate'] = round(attendance_rate, 2)
+                    
+                    logger.info(f"EventReportsResource: Attendee count corrected for report {report.id}: {actual_attendee_count} attendees")
                 else:
-                    converted_amount = Decimal(str(total_revenue_ksh))
-                    logger.info(f"EventReportsResource: No conversion needed - amount stays {total_revenue_ksh} KES")
-            except Exception as e:
-                logger.warning(f"EventReportsResource: Currency conversion failed for {target_currency_code}: {str(e)}")
-                converted_amount = Decimal(str(total_revenue_ksh))
-                target_currency_code = 'KES'
+                    logger.warning(f"EventReportsResource: Could not determine correct attendee count for report {report.id}")
+                # ==================== END ATTENDEE COUNT CORRECTION ====================
+                
+                processed_reports.append(report_dict)
 
-            # Build response exactly like GenerateReportResource
-            base_url = request.url_root.rstrip('/')
-            pdf_download_url = f"{base_url}/reports/{report.id}/export?format=pdf&currency={target_currency_code}"
-            csv_download_url = f"{base_url}/reports/{report.id}/export?format=csv&currency={target_currency_code}"
-
+            # Build response data
             response_data = {
-                'message': f'Found {len(reports)} report(s) for the specified criteria',
-                'report_id': report.id,
                 'event_id': event_id,
                 'event_name': event.name,
-                'report_data_summary': {
-                    'total_tickets_sold': total_tickets_sold,
-                    'total_revenue_original': float(total_revenue_ksh),
-                    'total_revenue_converted': float(converted_amount.quantize(Decimal('0.01'))),
-                    'number_of_attendees': actual_attendee_count,
-                    'original_currency': 'KES',
-                    'target_currency': target_currency_code,
-                    'currency_symbol': target_currency.symbol if target_currency else 'KSh'
-                },
-                'report_period': {
-                    'start_date': start_date.isoformat(),
-                    'end_date': end_date.isoformat(),
-                    'is_single_day': bool(specific_date_str)
-                },
-                'currency_conversion': {
-                    'original_amount': float(total_revenue_ksh),
-                    'original_currency': 'KES',
-                    'converted_amount': float(converted_amount.quantize(Decimal('0.01'))),
-                    'converted_currency': target_currency_code,
-                    'conversion_steps': {
-                        'ksh_to_usd_rate': float(ksh_to_usd_rate),
-                        'usd_to_target_rate': float(usd_to_target_rate),
-                        'overall_conversion_rate': float(overall_conversion_rate)
-                    },
-                    'conversion_successful': target_currency_code != 'KES' or total_revenue_ksh == 0
-                },
-                'download_links': {
-                    'pdf_url': pdf_download_url,
-                    'csv_url': csv_download_url
+                'organizer_name': event.organizer.name if hasattr(event, 'organizer') and event.organizer else 'Unknown',
+                'total_reports_found': len(processed_reports),
+                'reports': processed_reports,
+                'request_info': {
+                    'requested_by_user_id': current_user_id,
+                    'requested_by_role': current_user.role.value if current_user.role else None,
+                    'requested_by_organizer_id': organizer.id if organizer else None,
+                    'target_currency_id': target_currency_id,
+                    'request_timestamp': datetime.now().isoformat(),
+                    'report_ids_returned': [report['id'] for report in processed_reports]
                 }
             }
 
-            logger.info(f"EventReportsResource: Successfully returned report {report.id} for event {event_id}")
+            # Add currency conversion info if applicable
+            if target_currency_id:
+                target_currency = Currency.query.get(target_currency_id)
+                if target_currency:
+                    response_data['currency_conversion'] = {
+                        'target_currency_id': target_currency_id,
+                        'target_currency_code': target_currency.code.value,
+                        'conversion_applied': True
+                    }
+
+            logger.info(f"EventReportsResource: Successfully retrieved {len(processed_reports)} reports for event {event_id} "
+                    f"for user {current_user_id} (organizer: {organizer.id if organizer else 'None'}) "
+                    f"with currency_id {target_currency_id}. Report IDs: {[r['id'] for r in processed_reports]}")
+            
             return response_data, 200
 
         except Exception as e:
-            logger.exception(f"EventReportsResource: Error fetching event reports for event {event_id}: {e}")
-            return {'error': 'Internal server error', 'details': str(e) if current_app.debug else None}, 500
+            logger.error(f"EventReportsResource: Error retrieving reports for event {event_id} for user {current_user_id}: {e}", exc_info=True)
+            return {'error': 'Internal server error'}, 500
         
 class ReportResourceRegistry:
     """Registry for report-related API resources"""
