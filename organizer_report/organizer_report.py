@@ -1,4 +1,5 @@
 from flask import request, jsonify, send_file, current_app, after_this_request, make_response
+
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Event, User, Report, Organizer, Currency, UserRole, Ticket, Transaction, CurrencyCode, TicketType ,Scan

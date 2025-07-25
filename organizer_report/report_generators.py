@@ -111,8 +111,6 @@ class ReportDataProcessor:
         Get the original prices for each ticket type for the event
         """
         try:
-            # Query to get distinct ticket types and their prices for the event
-            # Assuming there's a ticket_types table or prices are stored in transactions
             ticket_prices = {}
             
             # Method 1: If prices are stored in a separate ticket_types table
@@ -125,17 +123,80 @@ class ReportDataProcessor:
             """
             
             # Method 2: Extract prices from successful transactions
-            # This gets the price from the first successful transaction for each ticket type
-            price_query = session.query(
-                Ticket.ticket_type,
-                func.min(Transaction.amount).label('price')  # Using min to get consistent price
-            ).join(Transaction).filter(
-                Ticket.event_id == event_id,
-                cast(Ticket.payment_status, String).ilike("paid")
-            ).group_by(Ticket.ticket_type).all()
+            # Try different approaches based on your relationship structure
             
-            for ticket_type, price in price_query:
-                ticket_prices[str(ticket_type)] = float(price) if price else 0.0
+            price_query = None
+            
+            # Approach 1: Try direct relationship first (if Ticket has transaction_id)
+            try:
+                price_query = session.query(
+                    Ticket.ticket_type,
+                    func.min(Transaction.amount_paid).label('price')
+                ).join(Transaction, Ticket.transaction_id == Transaction.id).filter(
+                    Ticket.event_id == event_id,
+                    cast(Ticket.payment_status, String).ilike("paid"),
+                    Transaction.payment_status == PaymentStatus.PAID
+                ).group_by(Ticket.ticket_type).all()
+                
+                logger.info(f"Used direct relationship query for event {event_id}")
+                
+            except Exception as direct_error:
+                logger.warning(f"Direct relationship query failed: {direct_error}")
+                
+                # Approach 2: Try junction table relationship
+                try:
+                    from model import TransactionTicket
+                    
+                    price_query = session.query(
+                        Ticket.ticket_type,
+                        func.min(Transaction.amount_paid).label('price')
+                    ).join(TransactionTicket, Ticket.id == TransactionTicket.ticket_id
+                    ).join(Transaction, TransactionTicket.transaction_id == Transaction.id).filter(
+                        Ticket.event_id == event_id,
+                        cast(Ticket.payment_status, String).ilike("paid"),
+                        Transaction.payment_status == PaymentStatus.PAID
+                    ).group_by(Ticket.ticket_type).all()
+                    
+                    logger.info(f"Used junction table query for event {event_id}")
+                    
+                except Exception as junction_error:
+                    logger.warning(f"Junction table query failed: {junction_error}")
+                    
+                    # Approach 3: Fallback - try to get any transaction amounts for this event
+                    try:
+                        # Get all tickets for the event
+                        tickets = session.query(Ticket).filter(
+                            Ticket.event_id == event_id,
+                            cast(Ticket.payment_status, String).ilike("paid")
+                        ).all()
+                        
+                        # Try to find associated transactions
+                        ticket_type_amounts = {}
+                        for ticket in tickets:
+                            ticket_type = str(ticket.ticket_type)
+                            
+                            # Try to get transaction through direct relationship
+                            if hasattr(ticket, 'transaction') and ticket.transaction:
+                                amount = float(ticket.transaction.amount_paid)
+                                if ticket_type not in ticket_type_amounts:
+                                    ticket_type_amounts[ticket_type] = []
+                                ticket_type_amounts[ticket_type].append(amount)
+                        
+                        # Calculate minimum price for each ticket type
+                        for ticket_type, amounts in ticket_type_amounts.items():
+                            if amounts:
+                                ticket_prices[ticket_type] = min(amounts)
+                        
+                        logger.info(f"Used fallback approach for event {event_id}")
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"All approaches failed: {fallback_error}")
+                        return {}
+            
+            # Process the query results if we got them
+            if price_query:
+                for ticket_type, price in price_query:
+                    ticket_prices[str(ticket_type)] = float(price) if price else 0.0
             
             logger.info(f"Retrieved ticket prices for event {event_id}: {ticket_prices}")
             return ticket_prices
@@ -143,7 +204,6 @@ class ReportDataProcessor:
         except Exception as e:
             logger.error(f"Error retrieving ticket prices for event {event_id}: {e}")
             return {}
-
     @staticmethod
     def process_report_data(report_data: Dict[str, Any], session: Session, event_id: int, target_currency: str = "KES") -> Dict[str, Any]:
         """
