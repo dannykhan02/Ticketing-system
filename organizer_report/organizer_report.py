@@ -158,6 +158,89 @@ class GenerateReportResource(Resource):
                 converted_amount = Decimal(str(total_revenue_ksh))
                 target_currency_code = 'KES'
 
+            # ===== NEW: EXTRACT AND PROCESS CHART DATA =====
+            def convert_chart_data_currency(data_dict, conversion_func):
+                """Helper function to convert currency values in chart data"""
+                converted_dict = {}
+                for key, value in data_dict.items():
+                    if isinstance(value, (int, float)) and value > 0:
+                        try:
+                            converted_value, _, _ = conversion_func(float(value), target_currency_code)
+                            converted_dict[key] = float(converted_value.quantize(Decimal('0.01')))
+                        except Exception as e:
+                            logger.warning(f"Failed to convert {key} value {value}: {e}")
+                            converted_dict[key] = float(value)
+                    else:
+                        converted_dict[key] = value
+                return converted_dict
+
+            # Extract chart data from report_data
+            tickets_sold_by_type = report_data.get('tickets_sold_by_type', {})
+            revenue_by_ticket_type = report_data.get('revenue_by_ticket_type', {})
+            attendees_by_ticket_type = report_data.get('attendees_by_ticket_type', {})
+            payment_method_usage = report_data.get('payment_method_usage', {})
+            
+            # Alternative keys that might be used in your report_data
+            if not tickets_sold_by_type:
+                tickets_sold_by_type = report_data.get('ticket_sales_by_type', {})
+            if not revenue_by_ticket_type:
+                revenue_by_ticket_type = report_data.get('revenue_by_type', {})
+            if not attendees_by_ticket_type:
+                attendees_by_ticket_type = report_data.get('attendee_breakdown', {})
+            if not payment_method_usage:
+                payment_method_usage = report_data.get('payment_methods', {})
+
+            # Convert revenue data to target currency if needed
+            if target_currency_code != 'KES' and revenue_by_ticket_type:
+                revenue_by_ticket_type = convert_chart_data_currency(
+                    revenue_by_ticket_type, 
+                    convert_ksh_to_target_currency
+                )
+
+            # Create chart data structure
+            chart_data = {
+                'tickets_sold_by_type': tickets_sold_by_type,
+                'revenue_by_ticket_type': revenue_by_ticket_type,
+                'attendees_by_ticket_type': attendees_by_ticket_type,
+                'payment_method_usage': payment_method_usage,
+                # Additional chart data that might be useful
+                'daily_sales': report_data.get('daily_sales', {}),
+                'hourly_sales': report_data.get('hourly_sales', {}),
+                'sales_trends': report_data.get('sales_trends', []),
+            }
+
+            # If no detailed data exists, create basic chart data from totals
+            if not any([tickets_sold_by_type, revenue_by_ticket_type, attendees_by_ticket_type]):
+                logger.info("GenerateReportResource: No detailed chart data found, creating basic chart data")
+                
+                # Try to get ticket types for this event
+                try:
+                    from model import TicketType  # Adjust import based on your model structure
+                    ticket_types = TicketType.query.filter_by(event_id=event_id).all()
+                    
+                    if ticket_types:
+                        # Distribute totals evenly among ticket types (this is a fallback)
+                        type_count = len(ticket_types)
+                        for ticket_type in ticket_types:
+                            type_name = ticket_type.name
+                            chart_data['tickets_sold_by_type'][type_name] = total_tickets_sold // type_count
+                            chart_data['revenue_by_ticket_type'][type_name] = float(converted_amount) / type_count
+                            chart_data['attendees_by_ticket_type'][type_name] = actual_attendee_count // type_count
+                    else:
+                        # No ticket types, use general data
+                        chart_data['tickets_sold_by_type'] = {'General': total_tickets_sold}
+                        chart_data['revenue_by_ticket_type'] = {'General': float(converted_amount)}
+                        chart_data['attendees_by_ticket_type'] = {'General': actual_attendee_count}
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to create fallback chart data: {e}")
+                    chart_data['tickets_sold_by_type'] = {'General': total_tickets_sold}
+                    chart_data['revenue_by_ticket_type'] = {'General': float(converted_amount)}
+                    chart_data['attendees_by_ticket_type'] = {'General': actual_attendee_count}
+
+            logger.info(f"GenerateReportResource: Chart data prepared: {list(chart_data.keys())}")
+            # ===== END CHART DATA PROCESSING =====
+
             base_url = request.url_root.rstrip('/')
             pdf_download_url = f"{base_url}/reports/{report_id}/export?format=pdf&currency={target_currency_code}"
             csv_download_url = f"{base_url}/reports/{report_id}/export?format=csv&currency={target_currency_code}"
@@ -195,7 +278,15 @@ class GenerateReportResource(Resource):
                     'pdf_url': pdf_download_url,
                     'csv_url': csv_download_url
                 },
-                'email_sent': False
+                'email_sent': False,
+                # ===== NEW: ADD CHART DATA TO RESPONSE =====
+                'chart_data': chart_data,
+                'has_detailed_data': bool(any([
+                    report_data.get('tickets_sold_by_type'),
+                    report_data.get('revenue_by_ticket_type'),
+                    report_data.get('attendees_by_ticket_type')
+                ]))
+                # ===== END NEW CHART DATA =====
             }
 
             if send_email:
@@ -256,6 +347,7 @@ class GenerateReportResource(Resource):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info(f"GenerateReportResource: Report generation request processed in {duration:.2f} seconds for report {report_id}")
             logger.info(f"GenerateReportResource: Final API response attendee count: {actual_attendee_count}")
+            logger.info(f"GenerateReportResource: Chart data included: {bool(chart_data)}")
 
             return response_data, 200
         except Exception as e:
