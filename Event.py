@@ -20,47 +20,25 @@ def allowed_file(filename):
 class EventResource(Resource):
 
     
-    @jwt_required()
     def get(self, event_id=None):
-        """Retrieve an event by ID or return organizer's events if no ID is provided."""
-        try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
-
-            if not user:
-                return {"error": "User not found"}, 404
-
-            if event_id:
+        """Retrieve an event by ID or return all events if no ID is provided."""
+        if event_id:
+            try:
                 event = Event.query.get(event_id)
-                if not event:
-                    return {"message": "Event not found"}, 404
-                
-                # If user is an organizer, check if they own the event
-                if user.role == UserRole.ORGANIZER:
-                    organizer = Organizer.query.filter_by(user_id=user.id).first()
-                    if organizer and event.organizer_id != organizer.id:
-                        return {"error": "Access denied. You can only view your own events"}, 403
-                
-                return event.as_dict(), 200
+                if event:
+                    return event.as_dict(), 200
+                return {"message": "Event not found"}, 404
+            except (OperationalError, SQLAlchemyError) as e:
+                logger.error(f"Database error: {str(e)}")
+                return {"message": "Database connection error"}, 500
 
-            # Get query parameters
-            page = request.args.get('page', 1, type=int)
-            per_page = request.args.get('per_page', 7, type=int)
-            show_all = request.args.get('show_all', 'false').lower() == 'true'
+        # Get query parameters
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 7, type=int)
 
-            # Base query
-            query = Event.query
-
-            # If user is an organizer and not explicitly requesting all events, filter by organizer
-            if user.role == UserRole.ORGANIZER and not show_all:
-                organizer = Organizer.query.filter_by(user_id=user.id).first()
-                if not organizer:
-                    return {"error": "Organizer profile not found"}, 404
-                
-                query = query.filter(Event.organizer_id == organizer.id)
-
-            # Paginate results
-            events = query.paginate(page=page, per_page=per_page, error_out=False)
+        try:
+            # Get all events with pagination
+            events = Event.query.paginate(page=page, per_page=per_page, error_out=False)
 
             if not events.items:
                 return {
@@ -76,7 +54,6 @@ class EventResource(Resource):
                     'name': event.name,
                     'description': event.description,
                     'date': event.date.isoformat(),
-                    'end_date': event.end_date.isoformat() if event.end_date else None,
                     'start_time': event.start_time.isoformat(),
                     'end_time': event.end_time.isoformat() if event.end_time else None,
                     'location': event.location,
@@ -105,6 +82,7 @@ class EventResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching events: {str(e)}")
             return {"message": "Error fetching events"}, 500
+    
     @jwt_required()
     def post(self):
         """Create a new event (Only organizers can create events)."""
