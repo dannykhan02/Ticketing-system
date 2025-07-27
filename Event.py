@@ -19,15 +19,33 @@ def allowed_file(filename):
 
 class EventResource(Resource):
 
-    
     def get(self, event_id=None):
-        """Retrieve an event by ID or return all events if no ID is provided."""
+        """Retrieve an event by ID or return events based on user role and permissions."""
+        # Check if user is authenticated (optional authentication)
+        user = None
+        try:
+            from flask_jwt_extended import verify_jwt_in_request
+            verify_jwt_in_request(optional=True)  # Optional authentication
+            identity = get_jwt_identity()
+            if identity:
+                user = User.query.get(identity)
+        except:
+            # No authentication or invalid token - continue as public user
+            pass
+
         if event_id:
             try:
                 event = Event.query.get(event_id)
-                if event:
-                    return event.as_dict(), 200
-                return {"message": "Event not found"}, 404
+                if not event:
+                    return {"message": "Event not found"}, 404
+                
+                # If user is an organizer, check if they own the event
+                if user and user.role == UserRole.ORGANIZER:
+                    organizer = Organizer.query.filter_by(user_id=user.id).first()
+                    if organizer and event.organizer_id != organizer.id:
+                        return {"error": "Access denied. You can only view your own events"}, 403
+                
+                return event.as_dict(), 200
             except (OperationalError, SQLAlchemyError) as e:
                 logger.error(f"Database error: {str(e)}")
                 return {"message": "Database connection error"}, 500
@@ -35,10 +53,22 @@ class EventResource(Resource):
         # Get query parameters
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 7, type=int)
+        show_all = request.args.get('show_all', 'false').lower() == 'true'
 
         try:
-            # Get all events with pagination
-            events = Event.query.paginate(page=page, per_page=per_page, error_out=False)
+            # Base query
+            query = Event.query
+
+            # If user is an organizer and not explicitly requesting all events, filter by organizer
+            if user and user.role == UserRole.ORGANIZER and not show_all:
+                organizer = Organizer.query.filter_by(user_id=user.id).first()
+                if not organizer:
+                    return {"error": "Organizer profile not found"}, 404
+                
+                query = query.filter(Event.organizer_id == organizer.id)
+
+            # Paginate results
+            events = query.paginate(page=page, per_page=per_page, error_out=False)
 
             if not events.items:
                 return {
@@ -82,6 +112,7 @@ class EventResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching events: {str(e)}")
             return {"message": "Error fetching events"}, 500
+
     
     @jwt_required()
     def post(self):
