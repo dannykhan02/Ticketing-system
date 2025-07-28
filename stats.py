@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta
 from sqlalchemy import func, text
 from functools import wraps
+from config import Config
 import redis
 
 # Configure logging with security events
@@ -25,8 +26,9 @@ security_logger = logging.getLogger('security')
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["100 per hour"],
-    storage_uri="redis://localhost:6379"  # Configure based on your Redis setup
+    storage_uri=Config.REDIS_URL  # ✅ Correct: Redis connection string
 )
+
 
 # Security configuration
 SECURITY_CONFIG = {
