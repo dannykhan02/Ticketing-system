@@ -3,7 +3,7 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from model import db, User, Event, TicketType, Organizer, UserRole, PaymentStatus
+from model import db, User, Event, TicketType, Organizer, UserRole, PaymentStatus,Transaction
 import psutil
 import logging
 import hashlib
@@ -307,96 +307,89 @@ class SystemStatsResource(Resource):
 
 
 class AdminDetailedStatsResource(Resource):
-    decorators = [limiter.limit("5 per minute"), validate_user_session]
-    
+    @jwt_required()
     def get(self):
-        """Enhanced admin-only detailed statistics with strict access control."""
         try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
-            
-            # Strict admin verification
-            if user.role != UserRole.ADMIN:
-                security_audit_log(
-                    user.id, 'UNAUTHORIZED_ADMIN_ACCESS', 
-                    get_remote_address(), request.headers.get('User-Agent', ''),
-                    f"attempted_role:{user.role.value}"
-                )
-                return {"error": "Admin access required"}, 403
-            
-            # Additional security check for sensitive operations
-            if SECURITY_CONFIG['REQUIRE_2FA_FOR_ADMIN']:
-                # Implement 2FA verification here
-                # For now, just log the access
-                security_audit_log(
-                    user.id, 'ADMIN_DETAILED_STATS_ACCESS', 
-                    get_remote_address(), request.headers.get('User-Agent', ''),
-                    'detailed_stats_accessed'
-                )
-            
-            # Get basic stats
-            basic_stats_resource = SystemStatsResource()
-            basic_stats = basic_stats_resource._get_admin_basic_stats()
-            
-            # Add detailed metrics (implement based on actual needs)
-            detailed_stats = {
-                **basic_stats,
-                "advancedMetrics": {
-                    "usersByRole": self._get_users_by_role(),
-                    "revenueByMonth": self._get_revenue_by_month(),
-                    "systemLoad": {
-                        "cpuCores": psutil.cpu_count(),
-                        "memoryTotal": psutil.virtual_memory().total,
-                        "diskTotal": psutil.disk_usage('/').total,
-                    }
-                }
+            stats = {
+                "revenue_by_month": self._get_revenue_by_month(),
+                "total_revenue": self._get_total_revenue(),
+                "transactions_count": self._get_transaction_count(),
+                "total_users": self._get_total_users(),
+                "active_events": self._get_active_events()
             }
-            
-            return detailed_stats, 200
-            
+            return jsonify(stats)
         except Exception as e:
-            logger.error(f"Error in admin detailed stats: {str(e)[:100]}")
-            return {"error": "Service temporarily unavailable"}, 503
-
-    def _get_users_by_role(self):
-        """Get user distribution by role."""
-        try:
-            users_by_role = db.session.query(
-                User.role, 
-                func.count(User.id)
-            ).group_by(User.role).all()
-            
-            return {str(role.value): count for role, count in users_by_role}
-        except Exception:
-            return {}
+            logger.error(f"Error in admin detailed stats: {str(e)}")
+            return {"message": "Error fetching admin stats"}, 503
 
     def _get_revenue_by_month(self):
-        """Get revenue trends (last 6 months)."""
+        """Get revenue trends for the last 6 months."""
         try:
-            from model import Ticket
             six_months_ago = datetime.utcnow() - timedelta(days=180)
-            
+
             revenue_by_month = db.session.query(
-                func.date_trunc('month', Event.date).label('month'),
-                func.coalesce(func.sum(TicketType.price), 0).label('revenue')
-            ).join(
-                TicketType, Event.id == TicketType.event_id
-            ).join(
-                Ticket, TicketType.id == Ticket.ticket_type_id
+                func.date_trunc('month', Transaction.timestamp).label('month'),
+                func.coalesce(func.sum(Transaction.amount_paid), 0).label('revenue')
             ).filter(
-                Event.date >= six_months_ago.date(),
-                Ticket.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
-            ).group_by('month').order_by('month').all()
-            
+                Transaction.timestamp >= six_months_ago,
+                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
+            ).group_by(
+                func.date_trunc('month', Transaction.timestamp)
+            ).order_by('month').all()
+
             return [
                 {
                     "month": month.strftime('%Y-%m'),
                     "revenue": float(revenue)
                 } for month, revenue in revenue_by_month
             ]
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error fetching revenue by month: {str(e)}")
             return []
 
+    def _get_total_revenue(self):
+        """Calculate total revenue from successful transactions."""
+        try:
+            total = db.session.query(
+                func.coalesce(func.sum(Transaction.amount_paid), 0)
+            ).filter(
+                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
+            ).scalar()
+
+            return float(total)
+        except Exception as e:
+            logger.error(f"Error fetching total revenue: {str(e)}")
+            return 0.0
+
+    def _get_transaction_count(self):
+        """Count total transactions in the last 30 days."""
+        try:
+            last_30_days = datetime.utcnow() - timedelta(days=30)
+            count = db.session.query(func.count(Transaction.id)).filter(
+                Transaction.timestamp >= last_30_days,
+                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
+            ).scalar()
+            return count or 0
+        except Exception as e:
+            logger.error(f"Error fetching transaction count: {str(e)}")
+            return 0
+
+    def _get_total_users(self):
+        """Get total number of registered users."""
+        try:
+            return db.session.query(func.count(User.id)).scalar()
+        except Exception as e:
+            logger.error(f"Error fetching total users: {str(e)}")
+            return 0
+
+    def _get_active_events(self):
+        """Count active (upcoming) events."""
+        try:
+            today = datetime.utcnow().date()
+            return db.session.query(func.count(Event.id)).filter(Event.date >= today).scalar()
+        except Exception as e:
+            logger.error(f"Error fetching active events: {str(e)}")
+            return 0
 
 def register_secure_system_stats_resources(api):
     """Register system statistics resources with security controls."""
