@@ -2,7 +2,7 @@ from flask import request, jsonify
 from flask_restful import Resource
 from sqlalchemy import func
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod, TransactionTicket
+from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod, TransactionTicket, Organizer
 from config import Config
 # Import Paystack functionalities
 from paystack import initialize_paystack_payment, refund_paystack_payment
@@ -526,14 +526,6 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         return False
 
 
-from flask import request
-from flask_restful import Resource
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from sqlalchemy import func
-from model import db, Ticket, Event, TicketType, User, PaymentStatus, UserRole, Organizer
-import logging
-
-logger = logging.getLogger(__name__)
 
 class TicketResource(Resource):
 
