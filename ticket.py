@@ -662,8 +662,6 @@ class TicketResource(Resource):
                 Ticket, Event.id == Ticket.event_id
             ).join(
                 TicketType, Ticket.ticket_type_id == TicketType.id
-            ).join(
-                Event, Ticket.event_id == Event.id
             ).filter(
                 Ticket.payment_status == PaymentStatus.PAID,
                 Event.organizer_id == organizer.id  # Filter by events created by this organizer
@@ -712,6 +710,7 @@ class TicketResource(Resource):
             logger.error(f"Error getting organizer tickets: {e}")
             return {"error": "Failed to retrieve organizer ticket data"}, 500
 
+    
     def _get_attendee_tickets(self, user):
         """Attendee can see their own tickets grouped by type."""
         try:
