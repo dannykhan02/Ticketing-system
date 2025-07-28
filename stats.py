@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, text
 from functools import wraps
 from config import Config
+import calendar
 import redis
 
 # Configure logging with security events
@@ -307,7 +308,6 @@ class SystemStatsResource(Resource):
 
 
 class AdminDetailedStatsResource(Resource):
-    @jwt_required()
     def get(self):
         try:
             stats = {
@@ -315,7 +315,8 @@ class AdminDetailedStatsResource(Resource):
                 "total_revenue": self._get_total_revenue(),
                 "transactions_count": self._get_transaction_count(),
                 "total_users": self._get_total_users(),
-                "active_events": self._get_active_events()
+                "active_events": self._get_active_events(),
+                "system_health": self._get_system_health()  # ✅ Added system health metrics
             }
             return jsonify(stats)
         except Exception as e:
@@ -323,73 +324,51 @@ class AdminDetailedStatsResource(Resource):
             return {"message": "Error fetching admin stats"}, 503
 
     def _get_revenue_by_month(self):
-        """Get revenue trends for the last 6 months."""
-        try:
-            six_months_ago = datetime.utcnow() - timedelta(days=180)
+        current_year = datetime.datetime.now().year
+        revenue_by_month = []
 
-            revenue_by_month = db.session.query(
-                func.date_trunc('month', Transaction.timestamp).label('month'),
-                func.coalesce(func.sum(Transaction.amount_paid), 0).label('revenue')
-            ).filter(
-                Transaction.timestamp >= six_months_ago,
-                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
-            ).group_by(
-                func.date_trunc('month', Transaction.timestamp)
-            ).order_by('month').all()
+        for month in range(1, 13):
+            start_date = datetime.datetime(current_year, month, 1)
+            last_day = calendar.monthrange(current_year, month)[1]
+            end_date = datetime.datetime(current_year, month, last_day, 23, 59, 59)
 
-            return [
-                {
-                    "month": month.strftime('%Y-%m'),
-                    "revenue": float(revenue)
-                } for month, revenue in revenue_by_month
-            ]
-        except Exception as e:
-            logger.error(f"Error fetching revenue by month: {str(e)}")
-            return []
+            monthly_revenue = db.session.query(func.sum(Transaction.amount)) \
+                .filter(Transaction.created_at >= start_date,
+                        Transaction.created_at <= end_date) \
+                .scalar()
+
+            revenue_by_month.append({
+                "month": f"{current_year}-{month:02}",
+                "revenue": monthly_revenue or 0.0
+            })
+
+        return revenue_by_month
 
     def _get_total_revenue(self):
-        """Calculate total revenue from successful transactions."""
-        try:
-            total = db.session.query(
-                func.coalesce(func.sum(Transaction.amount_paid), 0)
-            ).filter(
-                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
-            ).scalar()
-
-            return float(total)
-        except Exception as e:
-            logger.error(f"Error fetching total revenue: {str(e)}")
-            return 0.0
+        total = db.session.query(func.sum(Transaction.amount)).scalar()
+        return total or 0.0
 
     def _get_transaction_count(self):
-        """Count total transactions in the last 30 days."""
-        try:
-            last_30_days = datetime.utcnow() - timedelta(days=30)
-            count = db.session.query(func.count(Transaction.id)).filter(
-                Transaction.timestamp >= last_30_days,
-                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
-            ).scalar()
-            return count or 0
-        except Exception as e:
-            logger.error(f"Error fetching transaction count: {str(e)}")
-            return 0
+        return db.session.query(Transaction).count()
 
     def _get_total_users(self):
-        """Get total number of registered users."""
-        try:
-            return db.session.query(func.count(User.id)).scalar()
-        except Exception as e:
-            logger.error(f"Error fetching total users: {str(e)}")
-            return 0
+        return db.session.query(User).count()
 
     def _get_active_events(self):
-        """Count active (upcoming) events."""
-        try:
-            today = datetime.utcnow().date()
-            return db.session.query(func.count(Event.id)).filter(Event.date >= today).scalar()
-        except Exception as e:
-            logger.error(f"Error fetching active events: {str(e)}")
-            return 0
+        today = datetime.datetime.utcnow()
+        return db.session.query(Event).filter(Event.start_date <= today, Event.end_date >= today).count()
+
+    def _get_system_health(self):
+        cpu_load = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        return {
+            "cpuLoad": round(cpu_load, 1),
+            "memoryUsage": round(memory.percent, 1),
+            "diskUsage": round((disk.used / disk.total) * 100, 1),
+            "status": "healthy" if cpu_load < 80 and memory.percent < 80 else "warning"
+        }
 
 def register_secure_system_stats_resources(api):
     """Register system statistics resources with security controls."""
