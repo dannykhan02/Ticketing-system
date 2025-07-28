@@ -1,5 +1,6 @@
 from flask import request, jsonify
 from flask_restful import Resource
+from sqlalchemy import func
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from model import db, Ticket, Event, TicketType, User, Transaction, PaymentStatus, UserRole, PaymentMethod, TransactionTicket
 from config import Config
@@ -525,12 +526,11 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         return False
 
 
-
 class TicketResource(Resource):
 
     @jwt_required()
     def get(self, ticket_id=None):
-        """Get a specific ticket or all tickets for the authenticated user."""
+        """Get tickets based on user role and requirements."""
         try:
             identity = get_jwt_identity()  
             user = User.query.get(identity)
@@ -538,47 +538,307 @@ class TicketResource(Resource):
             if not user:
                 return {"error": "User not found"}, 404
 
+            # If requesting a specific ticket
             if ticket_id:
-                ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
-                if not ticket:
-                    return {"error": "Ticket not found or does not belong to you"}, 404
-                event = ticket.event
-                ticket_type = ticket.ticket_type
-                return {
-                    "ticket_id": ticket.id,
-                    "event": event.name,
-                    "date": event.date.strftime('%Y-%m-%d') if event.date else None,
-                    "time": event.start_time.strftime('%H:%M:%S') if event.start_time else None,
-                    "location": event.location,
-                    "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
-                    "quantity": ticket.quantity,
-                    "price":  float(ticket_type.price),
-                    "status": ticket.payment_status.value,
-                    "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
-                }, 200
-            else:
-                tickets = Ticket.query.filter_by(user_id=user.id).all()
-                ticket_list = []
-                for ticket in tickets:
-                    event = ticket.event
-                    ticket_type = ticket.ticket_type
-                    ticket_list.append({
-                        "ticket_id": ticket.id,
-                        "event": event.name,
-                        "date": event.date.strftime('%Y-%m-%d') if event.date else None,
-                        "time": event.start_time.strftime('%H:%M:%S') if event.start_time else None,
-                        "location": event.location,
-                        "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
-                        "quantity": ticket.quantity,
-                        "price":  float(ticket_type.price),
-                        "status": ticket.payment_status.value,
-                        "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
-                    })
-                return ticket_list, 200
+                return self._get_specific_ticket(user, ticket_id)
+            
+            # Get tickets based on user role
+            if user.role == UserRole.ADMIN:
+                return self._get_admin_tickets(user)
+            elif user.role == UserRole.ORGANIZER:
+                return self._get_organizer_tickets(user)
+            else:  # ATTENDEE or other roles
+                return self._get_attendee_tickets(user)
 
         except Exception as e:
-            logger.error(f"Error checking ticket status: {e}")
+            logger.error(f"Error retrieving tickets: {e}")
             return {"error": "An internal error occurred"}, 500
+
+    def _get_specific_ticket(self, user, ticket_id):
+        """Get a specific ticket by ID."""
+        ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
+        if not ticket:
+            return {"error": "Ticket not found or does not belong to you"}, 404
+        
+        return self._format_single_ticket(ticket), 200
+
+    def _get_admin_tickets(self, user):
+        """Admin can see all tickets grouped by events and ticket types (only paid tickets)."""
+        try:
+            # Get all paid tickets with event and ticket type information
+            tickets_query = db.session.query(
+                Event.id.label('event_id'),
+                Event.name.label('event_name'),
+                Event.date,
+                Event.location,
+                TicketType.id.label('ticket_type_id'),
+                TicketType.type_name,
+                TicketType.price,
+                func.count(Ticket.id).label('tickets_sold'),
+                func.sum(Ticket.quantity).label('total_quantity')
+            ).join(
+                Ticket, Event.id == Ticket.event_id
+            ).join(
+                TicketType, Ticket.ticket_type_id == TicketType.id
+            ).filter(
+                Ticket.payment_status == PaymentStatus.PAID
+            ).group_by(
+                Event.id, Event.name, Event.date, Event.location,
+                TicketType.id, TicketType.type_name, TicketType.price
+            ).all()
+
+            # Group by events
+            events_data = {}
+            for ticket_data in tickets_query:
+                event_id = ticket_data.event_id
+                if event_id not in events_data:
+                    events_data[event_id] = {
+                        "event_id": event_id,
+                        "event_name": ticket_data.event_name,
+                        "date": ticket_data.date.strftime('%Y-%m-%d') if ticket_data.date else None,
+                        "location": ticket_data.location,
+                        "ticket_types": [],
+                        "total_tickets_sold": 0
+                    }
+                
+                # Add ticket type data
+                ticket_type_info = {
+                    "ticket_type_id": ticket_data.ticket_type_id,
+                    "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
+                    "price": float(ticket_data.price),
+                    "tickets_sold": ticket_data.tickets_sold,
+                    "total_quantity": ticket_data.total_quantity,
+                    "revenue": float(ticket_data.price * ticket_data.total_quantity)
+                }
+                
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
+                events_data[event_id]["total_tickets_sold"] += ticket_data.tickets_sold
+
+            # Get admin's own tickets
+            admin_tickets = self._get_user_own_tickets(user.id)
+
+            return {
+                "role": "admin",
+                "all_events_tickets": list(events_data.values()),
+                "my_tickets": admin_tickets
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting admin tickets: {e}")
+            return {"error": "Failed to retrieve admin ticket data"}, 500
+
+    def _get_organizer_tickets(self, user):
+        """Organizer can see tickets for their events grouped by type (only paid tickets)."""
+        try:
+            # Get events organized by this user (assuming there's an organizer_id field in events or similar relationship)
+            # Note: You might need to adjust this based on your actual Event-Organizer relationship
+            
+            # Get tickets for events organized by this user, grouped by ticket type
+            tickets_query = db.session.query(
+                Event.id.label('event_id'),
+                Event.name.label('event_name'),
+                Event.date,
+                Event.location,
+                TicketType.id.label('ticket_type_id'),
+                TicketType.type_name,
+                TicketType.price,
+                func.count(Ticket.id).label('tickets_sold'),
+                func.sum(Ticket.quantity).label('total_quantity')
+            ).join(
+                Ticket, Event.id == Ticket.event_id
+            ).join(
+                TicketType, Ticket.ticket_type_id == TicketType.id
+            ).filter(
+                Ticket.payment_status == PaymentStatus.PAID,
+                # Add condition to filter events organized by this user
+                # You might need to adjust this based on your actual model relationships
+                Ticket.organizer_id == user.id  # Assuming organizer_id exists in Ticket model
+            ).group_by(
+                Event.id, Event.name, Event.date, Event.location,
+                TicketType.id, TicketType.type_name, TicketType.price
+            ).all()
+
+            # Group by events
+            events_data = {}
+            for ticket_data in tickets_query:
+                event_id = ticket_data.event_id
+                if event_id not in events_data:
+                    events_data[event_id] = {
+                        "event_id": event_id,
+                        "event_name": ticket_data.event_name,
+                        "date": ticket_data.date.strftime('%Y-%m-%d') if ticket_data.date else None,
+                        "location": ticket_data.location,
+                        "ticket_types": [],
+                        "total_tickets_sold": 0
+                    }
+                
+                # Add ticket type data
+                ticket_type_info = {
+                    "ticket_type_id": ticket_data.ticket_type_id,
+                    "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
+                    "price": float(ticket_data.price),
+                    "tickets_sold": ticket_data.tickets_sold,
+                    "total_quantity": ticket_data.total_quantity,
+                    "revenue": float(ticket_data.price * ticket_data.total_quantity)
+                }
+                
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
+                events_data[event_id]["total_tickets_sold"] += ticket_data.tickets_sold
+
+            # Get organizer's own tickets (tickets they bought as an attendee)
+            organizer_tickets = self._get_user_own_tickets(user.id)
+
+            return {
+                "role": "organizer",
+                "my_events_tickets": list(events_data.values()),
+                "my_tickets": organizer_tickets
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting organizer tickets: {e}")
+            return {"error": "Failed to retrieve organizer ticket data"}, 500
+
+    def _get_attendee_tickets(self, user):
+        """Attendee can see their own tickets grouped by type."""
+        try:
+            # Get user's tickets grouped by ticket type
+            tickets_query = db.session.query(
+                Event.id.label('event_id'),
+                Event.name.label('event_name'),
+                Event.date,
+                Event.start_time,
+                Event.location,
+                TicketType.id.label('ticket_type_id'),
+                TicketType.type_name,
+                TicketType.price,
+                func.count(Ticket.id).label('tickets_count'),
+                func.sum(Ticket.quantity).label('total_quantity'),
+                Ticket.payment_status,
+                func.min(Ticket.purchase_date).label('first_purchase_date')
+            ).join(
+                Event, Ticket.event_id == Event.id
+            ).join(
+                TicketType, Ticket.ticket_type_id == TicketType.id
+            ).filter(
+                Ticket.user_id == user.id
+            ).group_by(
+                Event.id, Event.name, Event.date, Event.start_time, Event.location,
+                TicketType.id, TicketType.type_name, TicketType.price,
+                Ticket.payment_status
+            ).all()
+
+            # Group by events and ticket types
+            events_data = {}
+            for ticket_data in tickets_query:
+                event_id = ticket_data.event_id
+                if event_id not in events_data:
+                    events_data[event_id] = {
+                        "event_id": event_id,
+                        "event_name": ticket_data.event_name,
+                        "date": ticket_data.date.strftime('%Y-%m-%d') if ticket_data.date else None,
+                        "time": ticket_data.start_time.strftime('%H:%M:%S') if ticket_data.start_time else None,
+                        "location": ticket_data.location,
+                        "ticket_types": []
+                    }
+                
+                ticket_type_info = {
+                    "ticket_type_id": ticket_data.ticket_type_id,
+                    "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
+                    "price": float(ticket_data.price),
+                    "quantity_purchased": ticket_data.total_quantity,
+                    "tickets_count": ticket_data.tickets_count,
+                    "status": ticket_data.payment_status.value,
+                    "purchase_date": ticket_data.first_purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket_data.first_purchase_date else None,
+                    "total_amount": float(ticket_data.price * ticket_data.total_quantity)
+                }
+                
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
+
+            return {
+                "role": "attendee",
+                "my_tickets": list(events_data.values())
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting attendee tickets: {e}")
+            return {"error": "Failed to retrieve attendee ticket data"}, 500
+
+    def _get_user_own_tickets(self, user_id):
+        """Get tickets that a user has purchased for themselves, grouped by type."""
+        try:
+            tickets_query = db.session.query(
+                Event.id.label('event_id'),
+                Event.name.label('event_name'),
+                Event.date,
+                Event.start_time,
+                Event.location,
+                TicketType.id.label('ticket_type_id'),
+                TicketType.type_name,
+                TicketType.price,
+                func.count(Ticket.id).label('tickets_count'),
+                func.sum(Ticket.quantity).label('total_quantity'),
+                Ticket.payment_status,
+                func.min(Ticket.purchase_date).label('first_purchase_date')
+            ).join(
+                Event, Ticket.event_id == Event.id
+            ).join(
+                TicketType, Ticket.ticket_type_id == TicketType.id
+            ).filter(
+                Ticket.user_id == user_id
+            ).group_by(
+                Event.id, Event.name, Event.date, Event.start_time, Event.location,
+                TicketType.id, TicketType.type_name, TicketType.price,
+                Ticket.payment_status
+            ).all()
+
+            events_data = {}
+            for ticket_data in tickets_query:
+                event_id = ticket_data.event_id
+                if event_id not in events_data:
+                    events_data[event_id] = {
+                        "event_id": event_id,
+                        "event_name": ticket_data.event_name,
+                        "date": ticket_data.date.strftime('%Y-%m-%d') if ticket_data.date else None,
+                        "time": ticket_data.start_time.strftime('%H:%M:%S') if ticket_data.start_time else None,
+                        "location": ticket_data.location,
+                        "ticket_types": []
+                    }
+                
+                ticket_type_info = {
+                    "ticket_type_id": ticket_data.ticket_type_id,
+                    "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
+                    "price": float(ticket_data.price),
+                    "quantity_purchased": ticket_data.total_quantity,
+                    "tickets_count": ticket_data.tickets_count,
+                    "status": ticket_data.payment_status.value,
+                    "purchase_date": ticket_data.first_purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket_data.first_purchase_date else None,
+                    "total_amount": float(ticket_data.price * ticket_data.total_quantity)
+                }
+                
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
+
+            return list(events_data.values())
+
+        except Exception as e:
+            logger.error(f"Error getting user own tickets: {e}")
+            return []
+
+    def _format_single_ticket(self, ticket):
+        """Format a single ticket for response."""
+        event = ticket.event
+        ticket_type = ticket.ticket_type
+        return {
+            "ticket_id": ticket.id,
+            "event": event.name,
+            "date": event.date.strftime('%Y-%m-%d') if event.date else None,
+            "time": event.start_time.strftime('%H:%M:%S') if event.start_time else None,
+            "location": event.location,
+            "ticket_type": ticket_type.type_name.value if hasattr(ticket_type.type_name, "value") else str(ticket_type.type_name),
+            "quantity": ticket.quantity,
+            "price": float(ticket_type.price),
+            "status": ticket.payment_status.value,
+            "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
+        }
 
     @jwt_required()
     def post(self):
