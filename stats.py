@@ -277,7 +277,7 @@ class SystemStatsResource(Resource):
             ).join(
                 Ticket, TicketType.id == Ticket.ticket_type_id
             ).filter(
-                Ticket.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
+                Ticket.payment_status.in_([PaymentStatus.PAID])
             ).scalar()
             
             stats = {
