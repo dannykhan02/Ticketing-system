@@ -526,6 +526,15 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         return False
 
 
+from flask import request
+from flask_restful import Resource
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import func
+from model import db, Ticket, Event, TicketType, User, PaymentStatus, UserRole, Organizer
+import logging
+
+logger = logging.getLogger(__name__)
+
 class TicketResource(Resource):
 
     @jwt_required()
@@ -614,7 +623,7 @@ class TicketResource(Resource):
                 events_data[event_id]["ticket_types"].append(ticket_type_info)
                 events_data[event_id]["total_tickets_sold"] += ticket_data.tickets_sold
 
-            # Get admin's own tickets
+            # Get admin's own tickets (tickets they bought as an attendee)
             admin_tickets = self._get_user_own_tickets(user.id)
 
             return {
@@ -630,9 +639,14 @@ class TicketResource(Resource):
     def _get_organizer_tickets(self, user):
         """Organizer can see tickets for their events grouped by type (only paid tickets)."""
         try:
-            # Get events organized by this user (assuming there's an organizer_id field in events or similar relationship)
-            # Note: You might need to adjust this based on your actual Event-Organizer relationship
-            
+            # First, get the organizer profile for this user
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {
+                    "role": "organizer",
+                    "my_events_tickets": []
+                }, 200
+
             # Get tickets for events organized by this user, grouped by ticket type
             tickets_query = db.session.query(
                 Event.id.label('event_id'),
@@ -648,11 +662,11 @@ class TicketResource(Resource):
                 Ticket, Event.id == Ticket.event_id
             ).join(
                 TicketType, Ticket.ticket_type_id == TicketType.id
+            ).join(
+                Event, Ticket.event_id == Event.id
             ).filter(
                 Ticket.payment_status == PaymentStatus.PAID,
-                # Add condition to filter events organized by this user
-                # You might need to adjust this based on your actual model relationships
-                Ticket.organizer_id == user.id  # Assuming organizer_id exists in Ticket model
+                Event.organizer_id == organizer.id  # Filter by events created by this organizer
             ).group_by(
                 Event.id, Event.name, Event.date, Event.location,
                 TicketType.id, TicketType.type_name, TicketType.price
@@ -839,6 +853,7 @@ class TicketResource(Resource):
             "status": ticket.payment_status.value,
             "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
         }
+
 
     @jwt_required()
     def post(self):
