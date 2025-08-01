@@ -25,22 +25,8 @@ class Config:
     MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
     MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER") or MAIL_USERNAME or "no-reply@example.com"
 
-    # Database URI
-    raw_db_url = os.getenv("EXTERNAL_DATABASE_URL")
-    if raw_db_url and raw_db_url.startswith("postgres://"):
-        raw_db_url = raw_db_url.replace("postgres://", "postgresql://", 1)
-    SQLALCHEMY_DATABASE_URI = raw_db_url
+    # Database URI - Let app.py handle the URL construction
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_size': 5,
-        'max_overflow': 10,
-        'pool_timeout': 30,
-        'pool_recycle': 1800,
-        'pool_pre_ping': True,
-        'connect_args': {
-            'sslmode': 'require'
-        }
-    }
 
     # JWT
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-jwt-secret")
@@ -52,12 +38,8 @@ class Config:
     PASSKEY = os.getenv("PASSKEY")
     CALLBACK_URL = os.getenv("CALLBACK_URL")
 
-    # Session
-    SESSION_TYPE = "sqlalchemy"
-    SESSION_SQLALCHEMY_TABLE = 'sessions'
-    SESSION_PERMANENT = True
-    SESSION_USE_SIGNER = True
-    SESSION_KEY_PREFIX = "session:"
+    # Session Configuration - Remove conflicting session configs
+    # These will be set in app.py after proper initialization
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
@@ -70,4 +52,3 @@ class Config:
     CURRENCY_API_KEY = os.getenv("CURRENCY_API_KEY")
 
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
