@@ -33,19 +33,32 @@ from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
 from stats import register_secure_system_stats_resources
 
-# ✅ Normalize and validate DATABASE_URL
-DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL")
+# ✅ Use INTERNAL_DATABASE_URL for better performance on Render
+DATABASE_URL = os.getenv("INTERNAL_DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("EXTERNAL_DATABASE_URL environment variable is not set")
+    raise ValueError("Neither INTERNAL_DATABASE_URL nor EXTERNAL_DATABASE_URL environment variable is set")
 
-# Fix postgres:// to postgresql:// and ensure SSL
+# Fix postgres:// to postgresql:// 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Add SSL parameter if not present
-if "sslmode=" not in DATABASE_URL:
-    separator = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
+# ✅ More robust SSL parameter handling
+def prepare_database_url(url):
+    """Prepare database URL with proper SSL configuration for Render"""
+    # Check if this is an internal Render URL (doesn't need SSL)
+    if "dpg-" in url and "-a/" in url:
+        # Internal Render URL - no SSL needed
+        return url
+    
+    # External URL - check if SSL parameters already exist
+    if "sslmode=" in url:
+        return url
+    
+    # Add SSL parameters for external connections
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}sslmode=prefer"
+
+DATABASE_URL = prepare_database_url(DATABASE_URL)
 
 # ✅ Create Flask app
 app = Flask(__name__)
@@ -54,20 +67,34 @@ app.config.from_object(Config)
 # Override database URI with our fixed version
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 
-# ✅ Enhanced SSL configuration for PostgreSQL
-app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    'pool_size': 5,
-    'max_overflow': 10,
-    'pool_timeout': 30,
-    'pool_recycle': 1800,
-    'pool_pre_ping': True,
-    'connect_args': {
-        'sslmode': 'require',
-        'sslcert': None,
-        'sslkey': None,
-        'sslrootcert': None,
+# ✅ Enhanced and more flexible SSL configuration for PostgreSQL
+def get_engine_options(database_url):
+    """Get appropriate engine options based on database URL"""
+    base_options = {
+        'pool_size': 3,
+        'max_overflow': 5,
+        'pool_timeout': 20,
+        'pool_recycle': 3600,
+        'pool_pre_ping': True,
     }
-}
+    
+    # Internal Render connections don't need SSL
+    if "dpg-" in database_url and "-a/" in database_url:
+        base_options['connect_args'] = {
+            'connect_timeout': 10,
+            'application_name': 'ticketing_system'
+        }
+    else:
+        # External connections might need SSL
+        base_options['connect_args'] = {
+            'sslmode': 'prefer',
+            'connect_timeout': 10,
+            'application_name': 'ticketing_system'
+        }
+    
+    return base_options
+
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = get_engine_options(DATABASE_URL)
 
 # External APIs
 app.config['CURRENCY_API_KEY'] = os.getenv('CURRENCY_API_KEY')
@@ -92,15 +119,14 @@ CORS(app,
 # ✅ Initialize extensions
 db.init_app(app)
 
-# ✅ Setup Flask-Session with proper configuration
-app.config['SESSION_TYPE'] = 'sqlalchemy'
-app.config['SESSION_SQLALCHEMY'] = db
-app.config['SESSION_SQLALCHEMY_TABLE'] = 'sessions'
+# ✅ Setup Flask-Session with filesystem fallback for reliability
+app.config['SESSION_TYPE'] = 'filesystem'  # Start with filesystem
+app.config['SESSION_FILE_DIR'] = '/tmp/flask_sessions'  # Render-compatible path
 app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = True
 app.config['SESSION_KEY_PREFIX'] = 'session:'
 
-# Create session instance but don't initialize yet
+# Create session instance
 session = Session()
 
 api = Api(app)
@@ -116,22 +142,95 @@ cloudinary.config(
     api_secret=os.getenv('CLOUDINARY_API_SECRET')
 )
 
-# ✅ Initialize session after all database setup is complete
-def init_session_tables():
-    """Initialize session tables safely"""
+# ✅ Enhanced initialization with better error handling and retries
+def initialize_app():
+    """Initialize the application with proper error handling and retries"""
+    import time
+    max_retries = 3
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            with app.app_context():
+                print(f"🔄 Initializing app (attempt {attempt + 1}/{max_retries})...")
+                
+                # Test database connection first
+                db.engine.execute("SELECT 1").fetchone()
+                print("✅ Database connection successful")
+                
+                # Create all database tables
+                db.create_all()
+                print("✅ Database tables created")
+                
+                # Initialize session
+                session.init_app(app)
+                print("✅ Session initialized")
+                
+                # Seed currencies if needed
+                seed_currencies()
+                
+                print("🎉 Application initialized successfully!")
+                return True
+                
+        except Exception as e:
+            print(f"❌ Initialization attempt {attempt + 1} failed: {e}")
+            
+            if attempt < max_retries - 1:
+                print(f"⏳ Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print("❌ All initialization attempts failed")
+                # Fallback to basic configuration
+                session.init_app(app)
+                print("⚠️ Running with minimal configuration")
+                return False
+    
+    return False
+
+def seed_currencies():
+    """Seed currencies with error handling"""
     try:
-        with app.app_context():
-            # Ensure all tables are created first
-            db.create_all()
-            # Now initialize Flask-Session
-            session.init_app(app)
-            print("✅ Session tables initialized successfully")
+        if Currency.query.count() == 0:
+            print("🔁 Seeding currencies...")
+            from sqlalchemy.exc import IntegrityError
+            
+            currency_info = {
+                "USD": {"name": "US Dollar", "symbol": "$"},
+                "EUR": {"name": "Euro", "symbol": "€"},
+                "GBP": {"name": "British Pound", "symbol": "£"},
+                "KES": {"name": "Kenyan Shilling", "symbol": "KSh"},
+                "UGX": {"name": "Ugandan Shilling", "symbol": "USh"},
+                "TZS": {"name": "Tanzanian Shilling", "symbol": "TSh"},
+                "NGN": {"name": "Nigerian Naira", "symbol": "₦"},
+                "GHS": {"name": "Ghanaian Cedi", "symbol": "₵"},
+                "ZAR": {"name": "South African Rand", "symbol": "R"},
+                "JPY": {"name": "Japanese Yen", "symbol": "¥"},
+                "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
+                "AUD": {"name": "Australian Dollar", "symbol": "A$"},
+            }
+            
+            currency_objects = []
+            for code in CurrencyCode:
+                info = currency_info.get(code.value)
+                if info:  # Only add if we have info for this currency
+                    currency = Currency(
+                        code=code,
+                        name=info["name"],
+                        symbol=info["symbol"],
+                        is_base_currency=(code.value == "USD")
+                    )
+                    currency_objects.append(currency)
+            
+            db.session.bulk_save_objects(currency_objects)
+            db.session.commit()
+            print("✅ Currency seeding complete.")
+        else:
+            print("ℹ️ Currencies already exist, skipping seeding.")
+            
     except Exception as e:
-        print(f"❌ Error initializing session tables: {e}")
-        # Fallback to filesystem sessions if database sessions fail
-        app.config['SESSION_TYPE'] = 'filesystem'
-        session.init_app(app)
-        print("⚠️ Falling back to filesystem sessions")
+        print(f"⚠️ Currency seeding failed: {e}")
+        db.session.rollback()
 
 # ✅ Register all routes
 app.register_blueprint(auth_bp, url_prefix="/auth")
@@ -147,60 +246,25 @@ register_currency_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 register_secure_system_stats_resources(api)
 
-# ✅ Initialize everything properly
-def initialize_app():
-    """Initialize the application with proper error handling"""
-    with app.app_context():
-        try:
-            # Create all database tables
-            db.create_all()
-            print("✅ Database tables created")
-            
-            # Initialize session tables
-            session.init_app(app)
-            print("✅ Session initialized")
-            
-            # Seed currencies if needed
-            if Currency.query.count() == 0:
-                print("🔁 Seeding currencies...")
-                from sqlalchemy.exc import IntegrityError
-                currency_info = {
-                    "USD": {"name": "US Dollar", "symbol": "$"},
-                    "EUR": {"name": "Euro", "symbol": "€"},
-                    "GBP": {"name": "British Pound", "symbol": "£"},
-                    "KES": {"name": "Kenyan Shilling", "symbol": "KSh"},
-                    "UGX": {"name": "Ugandan Shilling", "symbol": "USh"},
-                    "TZS": {"name": "Tanzanian Shilling", "symbol": "TSh"},
-                    "NGN": {"name": "Nigerian Naira", "symbol": "₦"},
-                    "GHS": {"name": "Ghanaian Cedi", "symbol": "₵"},
-                    "ZAR": {"name": "South African Rand", "symbol": "R"},
-                    "JPY": {"name": "Japanese Yen", "symbol": "¥"},
-                    "CAD": {"name": "Canadian Dollar", "symbol": "CA$"},
-                    "AUD": {"name": "Australian Dollar", "symbol": "A$"},
-                }
-                currency_objects = []
-                for code in CurrencyCode:
-                    info = currency_info.get(code.value)
-                    currency = Currency(
-                        code=code,
-                        name=info["name"],
-                        symbol=info["symbol"],
-                        is_base_currency=(code.value == "USD")
-                    )
-                    currency_objects.append(currency)
-                db.session.bulk_save_objects(currency_objects)
-                try:
-                    db.session.commit()
-                    print("✅ Currency seeding complete.")
-                except IntegrityError:
-                    db.session.rollback()
-                    print("⚠️ Currency seeding skipped (already exists).")
-        except Exception as e:
-            print(f"❌ Initialization error: {e}")
-            # If database sessions fail, use filesystem sessions
-            app.config['SESSION_TYPE'] = 'filesystem'
-            session.init_app(app)
-            print("⚠️ Using filesystem sessions as fallback")
+# ✅ Add a basic health check route
+@app.route('/')
+def health_check():
+    return {"status": "healthy", "message": "Ticketing system is running"}, 200
+
+@app.route('/health')
+def detailed_health_check():
+    try:
+        # Test database connection
+        db.engine.execute("SELECT 1").fetchone()
+        db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return {
+        "status": "ok",
+        "database": db_status,
+        "timestamp": os.getenv("RENDER_GIT_COMMIT", "unknown")
+    }, 200
 
 # ✅ Run app locally
 if __name__ == "__main__":
