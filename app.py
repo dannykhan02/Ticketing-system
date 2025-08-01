@@ -155,7 +155,8 @@ def initialize_app():
                 print(f"🔄 Initializing app (attempt {attempt + 1}/{max_retries})...")
                 
                 # Test database connection first
-                db.engine.execute("SELECT 1").fetchone()
+                with db.engine.connect() as conn:
+                    conn.execute(db.text("SELECT 1")).fetchone()
                 print("✅ Database connection successful")
                 
                 # Create all database tables
@@ -255,7 +256,8 @@ def health_check():
 def detailed_health_check():
     try:
         # Test database connection
-        db.engine.execute("SELECT 1").fetchone()
+        with db.engine.connect() as conn:
+            conn.execute(db.text("SELECT 1")).fetchone()
         db_status = "connected"
     except Exception as e:
         db_status = f"error: {str(e)}"
