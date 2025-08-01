@@ -33,10 +33,10 @@ from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
 from stats import register_secure_system_stats_resources
 
-# ✅ Use INTERNAL_DATABASE_URL for better performance on Render
-DATABASE_URL = os.getenv("INTERNAL_DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
+# ✅ Use EXTERNAL_DATABASE_URL first, then try INTERNAL as fallback
+DATABASE_URL = os.getenv("EXTERNAL_DATABASE_URL") or os.getenv("INTERNAL_DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("Neither INTERNAL_DATABASE_URL nor EXTERNAL_DATABASE_URL environment variable is set")
+    raise ValueError("Neither EXTERNAL_DATABASE_URL nor INTERNAL_DATABASE_URL environment variable is set")
 
 # Fix postgres:// to postgresql:// 
 if DATABASE_URL.startswith("postgres://"):
@@ -45,16 +45,11 @@ if DATABASE_URL.startswith("postgres://"):
 # ✅ More robust SSL parameter handling
 def prepare_database_url(url):
     """Prepare database URL with proper SSL configuration for Render"""
-    # Check if this is an internal Render URL (doesn't need SSL)
-    if "dpg-" in url and "-a/" in url:
-        # Internal Render URL - no SSL needed
-        return url
-    
-    # External URL - check if SSL parameters already exist
+    # Always use SSL for external connections
     if "sslmode=" in url:
         return url
     
-    # Add SSL parameters for external connections
+    # Add SSL parameters for Render PostgreSQL connections
     separator = "&" if "?" in url else "?"
     return f"{url}{separator}sslmode=prefer"
 
@@ -70,29 +65,18 @@ app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
 # ✅ Enhanced and more flexible SSL configuration for PostgreSQL
 def get_engine_options(database_url):
     """Get appropriate engine options based on database URL"""
-    base_options = {
+    return {
         'pool_size': 3,
         'max_overflow': 5,
         'pool_timeout': 20,
         'pool_recycle': 3600,
         'pool_pre_ping': True,
-    }
-    
-    # Internal Render connections don't need SSL
-    if "dpg-" in database_url and "-a/" in database_url:
-        base_options['connect_args'] = {
-            'connect_timeout': 10,
-            'application_name': 'ticketing_system'
-        }
-    else:
-        # External connections might need SSL
-        base_options['connect_args'] = {
+        'connect_args': {
             'sslmode': 'prefer',
             'connect_timeout': 10,
             'application_name': 'ticketing_system'
         }
-    
-    return base_options
+    }
 
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = get_engine_options(DATABASE_URL)
 
@@ -143,6 +127,22 @@ cloudinary.config(
 )
 
 # ✅ Enhanced initialization with better error handling and retries
+def test_database_connection():
+    """Test database connection with fallback for different SQLAlchemy versions"""
+    try:
+        # Try SQLAlchemy 2.x syntax first
+        with db.engine.connect() as conn:
+            result = conn.execute(db.text("SELECT 1")).fetchone()
+            return True
+    except AttributeError:
+        try:
+            # Fallback to SQLAlchemy 1.x syntax
+            result = db.engine.execute("SELECT 1").fetchone()
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
 def initialize_app():
     """Initialize the application with proper error handling and retries"""
     import time
@@ -155,9 +155,10 @@ def initialize_app():
                 print(f"🔄 Initializing app (attempt {attempt + 1}/{max_retries})...")
                 
                 # Test database connection first
-                with db.engine.connect() as conn:
-                    conn.execute(db.text("SELECT 1")).fetchone()
-                print("✅ Database connection successful")
+                if test_database_connection():
+                    print("✅ Database connection successful")
+                else:
+                    raise Exception("Database connection test failed")
                 
                 # Create all database tables
                 db.create_all()
@@ -183,8 +184,11 @@ def initialize_app():
             else:
                 print("❌ All initialization attempts failed")
                 # Fallback to basic configuration
-                session.init_app(app)
-                print("⚠️ Running with minimal configuration")
+                try:
+                    session.init_app(app)
+                    print("⚠️ Running with minimal configuration")
+                except Exception as session_error:
+                    print(f"⚠️ Session initialization also failed: {session_error}")
                 return False
     
     return False
@@ -255,16 +259,18 @@ def health_check():
 @app.route('/health')
 def detailed_health_check():
     try:
-        # Test database connection
-        with db.engine.connect() as conn:
-            conn.execute(db.text("SELECT 1")).fetchone()
-        db_status = "connected"
+        # Test database connection with fallback
+        if test_database_connection():
+            db_status = "connected"
+        else:
+            db_status = "connection failed"
     except Exception as e:
         db_status = f"error: {str(e)}"
     
     return {
         "status": "ok",
         "database": db_status,
+        "database_url": DATABASE_URL.split('@')[0] + '@***',  # Hide credentials
         "timestamp": os.getenv("RENDER_GIT_COMMIT", "unknown")
     }, 200
 
