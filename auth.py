@@ -237,63 +237,29 @@ def register():
 
     return jsonify({"msg": "User registered successfully"}), 201
 
-# Updated register-first-admin function
 @auth_bp.route('/register-first-admin', methods=['POST'])
 def register_first_admin():
-    """Register the first admin user - only works on completely fresh system"""
-    
-    # SECURITY CHECK 1: Check if any admin users currently exist
-    existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
-    if existing_admin:
-        return jsonify({"msg": "Admin user already exists. Use normal registration process."}), 403
-    
-    # SECURITY CHECK 2: Ensure this is truly a fresh system with no users at all
-    total_users = User.query.count()
-    if total_users > 0:
-        logger.warning(f"Attempted first admin registration on non-empty system. Users: {total_users}, IP: {request.remote_addr}")
-        return jsonify({"msg": "System already has users. First admin registration not allowed."}), 403
-    
     data = request.get_json()
-    
-    email = data.get("email", "").strip().lower() if data.get("email") else ""
-    phone = data.get("phone_number", "").strip() if data.get("phone_number") else ""
-    password = data.get("password", "") if data.get("password") else ""
-    full_name = data.get("full_name", "").strip() if data.get("full_name") else ""
-
-    # Validation
-    if not email or not password or not full_name or not phone:
-        return jsonify({"msg": "Email, phone number, password, and full name are required"}), 400
+    email = data.get("email")
+    phone = data.get("phone_number")
+    password = data.get("password")
+    full_name = data.get("full_name")  # Extract full_name
 
     if not is_valid_email(email):
         return jsonify({"msg": "Invalid email address"}), 400
 
-    if not is_valid_safaricom_phone(phone):
+    if not phone or not is_valid_safaricom_phone(phone):
         return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
 
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    try:
-        # Create the first admin user
-        hashed_password = generate_password_hash(password)
-        new_admin = User(
-            email=email, 
-            phone_number=phone, 
-            password=hashed_password, 
-            full_name=full_name, 
-            role=UserRole.ADMIN
-        )
-        
-        db.session.add(new_admin)
-        db.session.commit()
+    hashed_password = generate_password_hash(password)
+    new_admin = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role=UserRole.ADMIN)
+    db.session.add(new_admin)
+    db.session.commit()
 
-        logger.info(f"FIRST ADMIN CREATED - System initialized with admin: {email}")
-        return jsonify({"msg": "First admin registered successfully"}), 201
-
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"First admin registration error: {str(e)}")
-        return jsonify({"msg": "First admin registration failed"}), 500
+    return jsonify({"msg": "First admin registered successfully"}), 201
 
 @auth_bp.route('/admin/register-admin', methods=['POST'])
 @role_required('ADMIN')
