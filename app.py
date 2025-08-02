@@ -33,7 +33,9 @@ from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
-from stats import register_secure_system_stats_resources
+
+# ✅ Updated stats import - using unified stats system
+from stats import register_unified_stats_resources
 
 def get_database_url():
     """Get the correct database URL with proper priority and validation"""
@@ -343,7 +345,10 @@ register_admin_report_resources(api)
 register_admin_resources(api)
 register_currency_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
-register_secure_system_stats_resources(api)
+
+# ✅ Updated stats registration - using unified stats system
+register_unified_stats_resources(api)
+
 print("✅ Routes registered")
 
 # ✅ Enhanced health check routes
@@ -353,7 +358,8 @@ def health_check():
     return {
         "status": "healthy", 
         "message": "Ticketing system is running",
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "version": "2.0"  # Updated version
     }, 200
 
 @app.route('/health')
@@ -362,7 +368,8 @@ def detailed_health_check():
     health_info = {
         "status": "ok",
         "timestamp": time.time(),
-        "version": os.getenv("RENDER_GIT_COMMIT", "unknown")
+        "version": os.getenv("RENDER_GIT_COMMIT", "2.0"),
+        "api_version": "2.0"
     }
     
     # Test database connection
@@ -380,6 +387,9 @@ def detailed_health_check():
     if DATABASE_URL:
         health_info["database_url"] = DATABASE_URL.split('@')[0] + '@***'
     
+    # Add stats system info
+    health_info["stats_system"] = "unified_v2"
+    
     status_code = 200 if health_info["status"] == "ok" else 503
     return health_info, status_code
 
@@ -389,30 +399,107 @@ def readiness_check():
     try:
         with app.app_context():
             if test_database_connection(max_retries=1):
-                return {"status": "ready"}, 200
+                return {
+                    "status": "ready", 
+                    "api_version": "2.0",
+                    "stats_system": "unified"
+                }, 200
             else:
-                return {"status": "not ready", "reason": "database unavailable"}, 503
+                return {
+                    "status": "not ready", 
+                    "reason": "database unavailable"
+                }, 503
     except Exception as e:
-        return {"status": "not ready", "reason": str(e)}, 503
+        return {
+            "status": "not ready", 
+            "reason": str(e)
+        }, 503
+
+# ✅ API info endpoint
+@app.route('/api/info')
+def api_info():
+    """API information endpoint"""
+    return {
+        "api_version": "2.0",
+        "stats_system": "unified",
+        "endpoints": {
+            "stats": "/api/stats",
+            "detailed_stats": "/api/stats?detailed=true",
+            "health": "/api/system/health"
+        },
+        "features": [
+            "role_based_stats",
+            "unified_endpoints", 
+            "enhanced_security",
+            "audit_logging"
+        ]
+    }, 200
 
 # ✅ Error handlers
 @app.errorhandler(500)
 def internal_error(error):
-    return {"error": "Internal server error", "status": 500}, 500
+    """Enhanced 500 error handler"""
+    return {
+        "error": "Internal server error", 
+        "status": 500,
+        "api_version": "2.0"
+    }, 500
 
 @app.errorhandler(404)
 def not_found(error):
-    return {"error": "Resource not found", "status": 404}, 404
+    """Enhanced 404 error handler"""
+    return {
+        "error": "Resource not found", 
+        "status": 404,
+        "api_version": "2.0",
+        "available_endpoints": {
+            "stats": "/api/stats",
+            "health": "/api/system/health",
+            "info": "/api/info"
+        }
+    }, 404
+
+@app.errorhandler(403)
+def forbidden(error):
+    """403 error handler"""
+    return {
+        "error": "Access forbidden", 
+        "status": 403,
+        "api_version": "2.0"
+    }, 403
+
+@app.errorhandler(429)
+def rate_limit_exceeded(error):
+    """429 rate limit error handler"""
+    return {
+        "error": "Rate limit exceeded", 
+        "status": 429,
+        "api_version": "2.0",
+        "retry_after": getattr(error, 'retry_after', 60)
+    }, 429
 
 # ✅ Application startup
 if __name__ == "__main__":
     # Development mode
     print("🏃‍♂️ Running in development mode")
+    print("📊 Using unified stats system v2.0")
     initialize_app()
     app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
 else:
     # Production mode (Gunicorn)
     print("🏭 Running in production mode")
+    print("📊 Using unified stats system v2.0")
     app_initialized = initialize_app()
     if not app_initialized:
         print("⚠️ Application started with degraded functionality")
+
+# ✅ Application information (printed at startup)
+print("=" * 60)
+print("🎫 TICKETING SYSTEM v2.0 READY")
+print("📊 Stats System: Unified API")
+print("🔒 Security: Enhanced with audit logging")
+print("📡 Endpoints:")
+print("   - Main Stats: /api/stats")
+print("   - Health Check: /api/system/health") 
+print("   - API Info: /api/info")
+print("=" * 60)

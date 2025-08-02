@@ -3,7 +3,7 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from model import db, User, Event, TicketType, Organizer, UserRole, PaymentStatus,Transaction
+from model import db, User, Event, TicketType, Organizer, UserRole, PaymentStatus, Transaction, Ticket
 import psutil
 import logging
 import hashlib
@@ -14,7 +14,6 @@ from functools import wraps
 from config import Config
 import calendar
 import redis
-import datetime
 
 
 # Configure logging with security events
@@ -29,9 +28,8 @@ security_logger = logging.getLogger('security')
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["100 per hour"],
-    storage_uri=Config.REDIS_URL  # ✅ Correct: Redis connection string
+    storage_uri=Config.REDIS_URL if hasattr(Config, 'REDIS_URL') else "memory://"
 )
-
 
 # Security configuration
 SECURITY_CONFIG = {
@@ -79,7 +77,7 @@ def validate_user_session(f):
                 )
                 return {"error": "Account disabled"}, 403
             
-            # Check for suspicious activity (optional: implement Redis-based tracking)
+            # Check for suspicious activity
             if _is_suspicious_activity(user.id, get_remote_address()):
                 security_audit_log(
                     user.id, 'SUSPICIOUS_ACTIVITY_BLOCKED', 
@@ -121,11 +119,12 @@ def sanitize_system_data(data):
         
     return sanitized
 
-class SystemStatsResource(Resource):
-    decorators = [limiter.limit("10 per minute"), validate_user_session]
+class UnifiedStatsResource(Resource):
+    """Unified stats endpoint that handles all user roles with proper authorization."""
+    decorators = [limiter.limit("20 per minute"), validate_user_session]
     
     def get(self):
-        """Get system statistics - role-based access with enhanced security."""
+        """Get statistics based on user role with enhanced security."""
         start_time = time.time()
         
         try:
@@ -145,7 +144,12 @@ class SystemStatsResource(Resource):
             elif user.role == UserRole.ORGANIZER:
                 stats = self._get_organizer_stats(user)
             elif user.role == UserRole.ADMIN:
-                stats = self._get_admin_basic_stats()
+                # Check if detailed stats are requested
+                detailed = request.args.get('detailed', 'false').lower() == 'true'
+                if detailed:
+                    stats = self._get_admin_detailed_stats()
+                else:
+                    stats = self._get_admin_basic_stats()
             else:
                 security_audit_log(
                     user.id, 'INVALID_ROLE_ACCESS', 
@@ -154,7 +158,7 @@ class SystemStatsResource(Resource):
                 )
                 return {"error": "Invalid user role"}, 403
             
-            # Add timing info for monitoring (but not to response for security)
+            # Add timing info for monitoring
             processing_time = time.time() - start_time
             if processing_time > 2.0:  # Log slow queries
                 logger.warning(f"Slow stats query: {processing_time:.2f}s for user {user.id}")
@@ -162,7 +166,7 @@ class SystemStatsResource(Resource):
             return stats, 200
             
         except Exception as e:
-            logger.error(f"Error in stats endpoint: {str(e)[:100]}")  # Limit error length
+            logger.error(f"Error in stats endpoint: {str(e)}")
             security_audit_log(
                 identity if 'identity' in locals() else 'unknown', 
                 'STATS_ERROR', 
@@ -174,7 +178,6 @@ class SystemStatsResource(Resource):
     def _get_attendee_stats(self):
         """Minimal stats for attendees - public information only."""
         try:
-            # Use parameterized queries to prevent injection
             today = datetime.utcnow().date()
             
             # Only basic, non-sensitive platform metrics
@@ -184,12 +187,13 @@ class SystemStatsResource(Resource):
             ).scalar()
             
             return {
+                "userRole": "attendee",
                 "platformStats": {
-                    "totalEvents": total_events,
-                    "upcomingEvents": upcoming_events,
+                    "totalEvents": total_events or 0,
+                    "upcomingEvents": upcoming_events or 0,
                 },
                 "lastUpdated": datetime.utcnow().isoformat(),
-                "apiVersion": "1.0"
+                "apiVersion": "2.0"
             }
         except Exception as e:
             logger.error(f"Error fetching attendee stats: {e}")
@@ -198,7 +202,6 @@ class SystemStatsResource(Resource):
     def _get_organizer_stats(self, user):
         """Stats for organizers - their own data only with data isolation."""
         try:
-            # Verify organizer relationship
             organizer = db.session.query(Organizer).filter_by(user_id=user.id).first()
             if not organizer:
                 return {"error": "Organizer profile not found"}, 404
@@ -221,31 +224,33 @@ class SystemStatsResource(Resource):
                 Event.date >= today
             ).scalar()
             
-            # Revenue calculation with proper joins and filters
-            from model import Ticket
+            # Fixed revenue calculation - use amount_paid instead of amount
             organizer_revenue = db.session.query(
-                func.coalesce(func.sum(TicketType.price), 0)
-            ).select_from(TicketType).join(
-                Event, TicketType.event_id == Event.id
+                func.coalesce(func.sum(Transaction.amount_paid), 0)
             ).join(
-                Ticket, TicketType.id == Ticket.ticket_type_id
+                Ticket, Transaction.id == Ticket.transaction_id
+            ).join(
+                TicketType, Ticket.ticket_type_id == TicketType.id
+            ).join(
+                Event, TicketType.event_id == Event.id
             ).filter(
                 Event.organizer_id == organizer.id,
-                Ticket.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
+                Transaction.payment_status.in_([PaymentStatus.COMPLETED, PaymentStatus.PAID])
             ).scalar()
             
             return {
+                "userRole": "organizer",
                 "platformStats": {
-                    "totalEvents": total_events,
-                    "upcomingEvents": upcoming_events,
+                    "totalEvents": total_events or 0,
+                    "upcomingEvents": upcoming_events or 0,
                 },
                 "organizerStats": {
-                    "myEvents": organizer_events,
-                    "myUpcomingEvents": organizer_upcoming,
+                    "myEvents": organizer_events or 0,
+                    "myUpcomingEvents": organizer_upcoming or 0,
                     "myRevenue": float(organizer_revenue or 0),
                 },
                 "lastUpdated": datetime.utcnow().isoformat(),
-                "apiVersion": "1.0"
+                "apiVersion": "2.0"
             }
             
         except Exception as e:
@@ -256,16 +261,14 @@ class SystemStatsResource(Resource):
         """Basic admin stats with security controls."""
         try:
             # System metrics (sanitized)
-            cpu_load = psutil.cpu_percent(interval=0.1)  # Shorter interval for security
+            cpu = psutil.cpu_percent(interval=0.1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             
             # Database stats with optimized queries
-            stats_query = db.session.query(
-                func.count(User.id).label('total_users'),
-                func.count(Event.id).label('total_events'),
-                func.count(Organizer.id).label('total_organizers')
-            ).select_from(User).outerjoin(Event).outerjoin(Organizer).first()
+            total_users = db.session.query(func.count(User.id)).scalar()
+            total_events = db.session.query(func.count(Event.id)).scalar()
+            total_organizers = db.session.query(func.count(Organizer.id)).scalar()
             
             # Active users (last 30 days)
             thirty_days_ago = datetime.utcnow() - timedelta(days=30)
@@ -273,109 +276,234 @@ class SystemStatsResource(Resource):
                 User.created_at >= thirty_days_ago
             ).scalar()
             
-            # Revenue calculation
-            from model import Ticket
+            # Fixed revenue calculation
             total_revenue = db.session.query(
-                func.coalesce(func.sum(TicketType.price), 0)
-            ).join(
-                Ticket, TicketType.id == Ticket.ticket_type_id
+                func.coalesce(func.sum(Transaction.amount_paid), 0)
             ).filter(
-                Ticket.payment_status.in_([PaymentStatus.PAID])
+                Transaction.payment_status.in_([PaymentStatus.PAID, PaymentStatus.COMPLETED])
             ).scalar()
             
             stats = {
+                "userRole": "admin",
                 "systemHealth": {
-                    "cpuLoad": round(cpu_load, 1),
+                    "cpuLoad": round(cpu, 1),
                     "memoryUsage": round(memory.percent, 1),
                     "diskUsage": round((disk.used / disk.total) * 100, 1),
-                    "status": "healthy" if cpu_load < 80 and memory.percent < 80 else "warning"
+                    "status": "healthy" if cpu < 80 and memory.percent < 80 else "warning"
                 },
                 "businessMetrics": {
-                    "totalUsers": stats_query.total_users,
-                    "activeUsers": active_users,
-                    "totalEvents": stats_query.total_events,
-                    "totalOrganizers": stats_query.total_organizers,
+                    "totalUsers": total_users or 0,
+                    "activeUsers": active_users or 0,
+                    "totalEvents": total_events or 0,
+                    "totalOrganizers": total_organizers or 0,
                     "totalRevenue": float(total_revenue or 0),
                 },
                 "lastUpdated": datetime.utcnow().isoformat(),
-                "apiVersion": "1.0"
+                "apiVersion": "2.0"
             }
             
-            # Sanitize sensitive data
             return sanitize_system_data(stats)
             
         except Exception as e:
-            logger.error(f"Error fetching admin stats: {e}")
+            logger.error(f"Error fetching admin basic stats: {e}")
             return {"error": "Unable to fetch statistics"}, 500
 
-
-class AdminDetailedStatsResource(Resource):
-    def get(self):
+    def _get_admin_detailed_stats(self):
+        """Detailed admin stats with comprehensive metrics."""
         try:
-            stats = {
-                "revenue_by_month": self._get_revenue_by_month(),
-                "total_revenue": self._get_total_revenue(),
-                "transactions_count": self._get_transaction_count(),
-                "total_users": self._get_total_users(),
-                "active_events": self._get_active_events(),
-                "system_health": self._get_system_health()  # ✅ Added system health metrics
+            # Get basic stats first
+            basic_stats = self._get_admin_basic_stats()
+            if "error" in basic_stats:
+                return basic_stats
+            
+            # Add detailed metrics
+            detailed_metrics = {
+                "revenueByMonth": self._get_revenue_by_month(),
+                "transactionMetrics": self._get_transaction_metrics(),
+                "eventMetrics": self._get_event_metrics(),
+                "userGrowth": self._get_user_growth_stats()
             }
-            return jsonify(stats)
+            
+            # Merge basic and detailed stats
+            basic_stats.update(detailed_metrics)
+            basic_stats["detailed"] = True
+            
+            return basic_stats
+            
         except Exception as e:
-            logger.error(f"Error in admin detailed stats: {str(e)}")
-            return {"message": "Error fetching admin stats"}, 503
+            logger.error(f"Error fetching admin detailed stats: {e}")
+            return {"error": "Unable to fetch detailed statistics"}, 500
 
     def _get_revenue_by_month(self):
-        current_year = datetime.datetime.now().year
-        revenue_by_month = []
+        """Get revenue breakdown by month for current year."""
+        try:
+            current_year = datetime.now().year
+            revenue_by_month = []
 
-        for month in range(1, 13):
-            start_date = datetime.datetime(current_year, month, 1)
-            last_day = calendar.monthrange(current_year, month)[1]
-            end_date = datetime.datetime(current_year, month, last_day, 23, 59, 59)
+            for month in range(1, 13):
+                start_date = datetime(current_year, month, 1)
+                last_day = calendar.monthrange(current_year, month)[1]
+                end_date = datetime(current_year, month, last_day, 23, 59, 59)
 
-            monthly_revenue = db.session.query(func.sum(Transaction.amount)) \
-                .filter(Transaction.created_at >= start_date,
-                        Transaction.created_at <= end_date) \
-                .scalar()
+                # Fixed: use amount_paid instead of amount
+                monthly_revenue = db.session.query(
+                    func.coalesce(func.sum(Transaction.amount_paid), 0)
+                ).filter(
+                    Transaction.timestamp >= start_date,
+                    Transaction.timestamp <= end_date,
+                    Transaction.payment_status.in_([PaymentStatus.PAID, PaymentStatus.COMPLETED])
+                ).scalar()
 
-            revenue_by_month.append({
-                "month": f"{current_year}-{month:02}",
-                "revenue": monthly_revenue or 0.0
-            })
+                revenue_by_month.append({
+                    "month": f"{current_year}-{month:02}",
+                    "revenue": float(monthly_revenue or 0)
+                })
 
-        return revenue_by_month
+            return revenue_by_month
+        except Exception as e:
+            logger.error(f"Error calculating monthly revenue: {e}")
+            return []
 
-    def _get_total_revenue(self):
-        total = db.session.query(func.sum(Transaction.amount)).scalar()
-        return total or 0.0
+    def _get_transaction_metrics(self):
+        """Get transaction-related metrics."""
+        try:
+            total_transactions = db.session.query(func.count(Transaction.id)).scalar()
+            
+            successful_transactions = db.session.query(func.count(Transaction.id)).filter(
+                Transaction.payment_status.in_([PaymentStatus.PAID, PaymentStatus.COMPLETED])
+            ).scalar()
+            
+            pending_transactions = db.session.query(func.count(Transaction.id)).filter(
+                Transaction.payment_status == PaymentStatus.PENDING
+            ).scalar()
+            
+            failed_transactions = db.session.query(func.count(Transaction.id)).filter(
+                Transaction.payment_status.in_([PaymentStatus.FAILED, PaymentStatus.CANCELLED])
+            ).scalar()
+            
+            return {
+                "totalTransactions": total_transactions or 0,
+                "successfulTransactions": successful_transactions or 0,
+                "pendingTransactions": pending_transactions or 0,
+                "failedTransactions": failed_transactions or 0,
+                "successRate": round((successful_transactions / max(total_transactions, 1)) * 100, 2)
+            }
+        except Exception as e:
+            logger.error(f"Error calculating transaction metrics: {e}")
+            return {}
 
-    def _get_transaction_count(self):
-        return db.session.query(Transaction).count()
+    def _get_event_metrics(self):
+        """Get event-related metrics."""
+        try:
+            today = datetime.utcnow().date()
+            
+            active_events = db.session.query(func.count(Event.id)).filter(
+                Event.start_date <= today,
+                Event.end_date >= today
+            ).scalar()
+            
+            past_events = db.session.query(func.count(Event.id)).filter(
+                Event.end_date < today
+            ).scalar()
+            
+            future_events = db.session.query(func.count(Event.id)).filter(
+                Event.start_date > today
+            ).scalar()
+            
+            return {
+                "activeEvents": active_events or 0,
+                "pastEvents": past_events or 0,
+                "futureEvents": future_events or 0
+            }
+        except Exception as e:
+            logger.error(f"Error calculating event metrics: {e}")
+            return {}
 
-    def _get_total_users(self):
-        return db.session.query(User).count()
+    def _get_user_growth_stats(self):
+        """Get user growth statistics."""
+        try:
+            # Users registered in last 7 days
+            seven_days_ago = datetime.utcnow() - timedelta(days=7)
+            weekly_users = db.session.query(func.count(User.id)).filter(
+                User.created_at >= seven_days_ago
+            ).scalar()
+            
+            # Users registered in last 30 days
+            thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+            monthly_users = db.session.query(func.count(User.id)).filter(
+                User.created_at >= thirty_days_ago
+            ).scalar()
+            
+            return {
+                "newUsersThisWeek": weekly_users or 0,
+                "newUsersThisMonth": monthly_users or 0
+            }
+        except Exception as e:
+            logger.error(f"Error calculating user growth: {e}")
+            return {}
 
-    def _get_active_events(self):
-        today = datetime.datetime.utcnow()
-        return db.session.query(Event).filter(Event.start_date <= today, Event.end_date >= today).count()
 
-    def _get_system_health(self):
-        cpu_load = psutil.cpu_percent(interval=0.1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
+class SystemHealthResource(Resource):
+    """Dedicated system health endpoint for monitoring."""
+    decorators = [limiter.limit("30 per minute")]
+    
+    @jwt_required()
+    def get(self):
+        """Get system health metrics (admin only)."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+            
+            if user.role != UserRole.ADMIN:
+                return {"error": "Admin access required"}, 403
+            
+            # System metrics
+            cpu = psutil.cpu_percent(interval=0.1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            # Database connection test
+            db_healthy = True
+            try:
+                db.session.execute(text("SELECT 1")).fetchone()
+            except Exception:
+                db_healthy = False
+            
+            health_status = {
+                "overall": "healthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "system": {
+                    "cpu": round(cpu, 1),
+                    "memory": round(memory.percent, 1),
+                    "disk": round((disk.used / disk.total) * 100, 1)
+                },
+                "services": {
+                    "database": "healthy" if db_healthy else "unhealthy",
+                    "redis": "unknown"  # Add Redis check if needed
+                }
+            }
+            
+            # Determine overall health
+            if cpu > 90 or memory.percent > 90 or not db_healthy:
+                health_status["overall"] = "unhealthy"
+            elif cpu > 80 or memory.percent > 80:
+                health_status["overall"] = "warning"
+            
+            status_code = 200 if health_status["overall"] in ["healthy", "warning"] else 503
+            return health_status, status_code
+            
+        except Exception as e:
+            logger.error(f"Error in health check: {e}")
+            return {"error": "Health check failed"}, 503
 
-        return {
-            "cpuLoad": round(cpu_load, 1),
-            "memoryUsage": round(memory.percent, 1),
-            "diskUsage": round((disk.used / disk.total) * 100, 1),
-            "status": "healthy" if cpu_load < 80 and memory.percent < 80 else "warning"
-        }
 
-def register_secure_system_stats_resources(api):
-    """Register system statistics resources with security controls."""
-    api.add_resource(SystemStatsResource, "/system/stats")
-    api.add_resource(AdminDetailedStatsResource, "/system/admin-detailed-stats")
+def register_unified_stats_resources(api):
+    """Register unified statistics resources."""
+    # Main stats endpoint - handles all roles
+    api.add_resource(UnifiedStatsResource, "/api/stats")
+    
+    # Dedicated health endpoint for monitoring
+    api.add_resource(SystemHealthResource, "/api/system/health")
 
 
 # Security middleware and utilities
@@ -394,18 +522,3 @@ class SecurityMiddleware:
         """Detect and log suspicious access patterns."""
         # Implement pattern detection
         pass
-
-
-# Additional security recommendations to implement:
-"""
-1. HTTPS Only: Ensure all communications are over HTTPS
-2. CSRF Protection: Implement CSRF tokens for state-changing operations
-3. Content Security Policy: Add CSP headers
-4. SQL Injection Prevention: Use parameterized queries (implemented above)
-5. Rate Limiting: Implement per-user and per-IP rate limiting (implemented above)
-6. Audit Logging: Log all access attempts (implemented above)
-7. Data Encryption: Encrypt sensitive data at rest
-8. Regular Security Audits: Implement automated security scanning
-9. Dependency Updates: Keep all dependencies updated
-10. Error Handling: Never expose internal system details in errors (implemented above)
-"""
