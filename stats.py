@@ -224,10 +224,10 @@ class UnifiedStatsResource(Resource):
                 Event.date >= today
             ).scalar()
             
-            # Fixed revenue calculation - use amount_paid instead of amount
+            # Fixed revenue calculation with explicit joins and select_from
             organizer_revenue = db.session.query(
                 func.coalesce(func.sum(Transaction.amount_paid), 0)
-            ).join(
+            ).select_from(Transaction).join(
                 Ticket, Transaction.id == Ticket.transaction_id
             ).join(
                 TicketType, Ticket.ticket_type_id == TicketType.id
@@ -265,7 +265,7 @@ class UnifiedStatsResource(Resource):
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             
-            # Database stats with optimized queries
+            # Database stats with separate queries to avoid join issues
             total_users = db.session.query(func.count(User.id)).scalar()
             total_events = db.session.query(func.count(Event.id)).scalar()
             total_organizers = db.session.query(func.count(Organizer.id)).scalar()
@@ -276,7 +276,7 @@ class UnifiedStatsResource(Resource):
                 User.created_at >= thirty_days_ago
             ).scalar()
             
-            # Fixed revenue calculation
+            # Fixed revenue calculation - separate query
             total_revenue = db.session.query(
                 func.coalesce(func.sum(Transaction.amount_paid), 0)
             ).filter(
@@ -345,10 +345,10 @@ class UnifiedStatsResource(Resource):
                 last_day = calendar.monthrange(current_year, month)[1]
                 end_date = datetime(current_year, month, last_day, 23, 59, 59)
 
-                # Fixed: use amount_paid instead of amount
+                # Fixed: use explicit select_from to avoid join ambiguity
                 monthly_revenue = db.session.query(
                     func.coalesce(func.sum(Transaction.amount_paid), 0)
-                ).filter(
+                ).select_from(Transaction).filter(
                     Transaction.timestamp >= start_date,
                     Transaction.timestamp <= end_date,
                     Transaction.payment_status.in_([PaymentStatus.PAID, PaymentStatus.COMPLETED])
@@ -367,17 +367,26 @@ class UnifiedStatsResource(Resource):
     def _get_transaction_metrics(self):
         """Get transaction-related metrics."""
         try:
-            total_transactions = db.session.query(func.count(Transaction.id)).scalar()
+            # Use explicit select_from for all transaction queries
+            total_transactions = db.session.query(
+                func.count(Transaction.id)
+            ).select_from(Transaction).scalar()
             
-            successful_transactions = db.session.query(func.count(Transaction.id)).filter(
+            successful_transactions = db.session.query(
+                func.count(Transaction.id)
+            ).select_from(Transaction).filter(
                 Transaction.payment_status.in_([PaymentStatus.PAID, PaymentStatus.COMPLETED])
             ).scalar()
             
-            pending_transactions = db.session.query(func.count(Transaction.id)).filter(
+            pending_transactions = db.session.query(
+                func.count(Transaction.id)
+            ).select_from(Transaction).filter(
                 Transaction.payment_status == PaymentStatus.PENDING
             ).scalar()
             
-            failed_transactions = db.session.query(func.count(Transaction.id)).filter(
+            failed_transactions = db.session.query(
+                func.count(Transaction.id)
+            ).select_from(Transaction).filter(
                 Transaction.payment_status.in_([PaymentStatus.FAILED, PaymentStatus.CANCELLED])
             ).scalar()
             
@@ -397,16 +406,23 @@ class UnifiedStatsResource(Resource):
         try:
             today = datetime.utcnow().date()
             
-            active_events = db.session.query(func.count(Event.id)).filter(
+            # Use explicit select_from for all event queries
+            active_events = db.session.query(
+                func.count(Event.id)
+            ).select_from(Event).filter(
                 Event.start_date <= today,
                 Event.end_date >= today
             ).scalar()
             
-            past_events = db.session.query(func.count(Event.id)).filter(
+            past_events = db.session.query(
+                func.count(Event.id)
+            ).select_from(Event).filter(
                 Event.end_date < today
             ).scalar()
             
-            future_events = db.session.query(func.count(Event.id)).filter(
+            future_events = db.session.query(
+                func.count(Event.id)
+            ).select_from(Event).filter(
                 Event.start_date > today
             ).scalar()
             
@@ -424,13 +440,17 @@ class UnifiedStatsResource(Resource):
         try:
             # Users registered in last 7 days
             seven_days_ago = datetime.utcnow() - timedelta(days=7)
-            weekly_users = db.session.query(func.count(User.id)).filter(
+            weekly_users = db.session.query(
+                func.count(User.id)
+            ).select_from(User).filter(
                 User.created_at >= seven_days_ago
             ).scalar()
             
             # Users registered in last 30 days
             thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-            monthly_users = db.session.query(func.count(User.id)).filter(
+            monthly_users = db.session.query(
+                func.count(User.id)
+            ).select_from(User).filter(
                 User.created_at >= thirty_days_ago
             ).scalar()
             
@@ -444,18 +464,30 @@ class UnifiedStatsResource(Resource):
 
 
 class SystemHealthResource(Resource):
-    """Dedicated system health endpoint for monitoring."""
-    decorators = [limiter.limit("30 per minute")]
+    """Dedicated system health endpoint for monitoring - ADMIN ONLY."""
+    decorators = [limiter.limit("30 per minute"), validate_user_session]
     
-    @jwt_required()
     def get(self):
         """Get system health metrics (admin only)."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
             
+            # Strict admin-only access control
             if user.role != UserRole.ADMIN:
+                security_audit_log(
+                    user.id, 'UNAUTHORIZED_HEALTH_ACCESS_ATTEMPT', 
+                    get_remote_address(), request.headers.get('User-Agent', ''),
+                    f"role:{user.role.value}"
+                )
                 return {"error": "Admin access required"}, 403
+            
+            # Log admin access to health endpoint
+            security_audit_log(
+                user.id, 'HEALTH_ENDPOINT_ACCESS', 
+                get_remote_address(), request.headers.get('User-Agent', ''),
+                'admin_health_check'
+            )
             
             # System metrics
             cpu = psutil.cpu_percent(interval=0.1)
