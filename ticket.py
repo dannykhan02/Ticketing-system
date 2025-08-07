@@ -887,11 +887,6 @@ class TicketResource(Resource):
             
             logger.info(f"Ticket type found: ID={ticket_type.id}, Price={ticket_type.price}, Available={ticket_type.quantity}")
 
-            # Validate availability
-            if ticket_type.quantity == 0:
-                logger.warning(f"Ticket type {ticket_type.id} is sold out")
-                return {"error": "Tickets for this type are sold out"}, 400
-
             quantity = int(data["quantity"])
             logger.info(f"Requested quantity: {quantity}")
             
@@ -899,9 +894,27 @@ class TicketResource(Resource):
                 logger.error(f"Invalid quantity requested: {quantity}")
                 return {"error": "Quantity must be at least 1"}, 400
 
-            if ticket_type.quantity < quantity:
-                logger.error(f"Insufficient tickets: requested={quantity}, available={ticket_type.quantity}")
-                return {"error": f"Only {ticket_type.quantity} tickets are available"}, 400
+            # ============ KEY CHANGE: Check both available tickets AND pending tickets ============
+            available_tickets = ticket_type.quantity
+            
+            # Find existing PENDING tickets that can be reused (from any abandoned/failed payments)
+            pending_tickets = Ticket.query.filter_by(
+                ticket_type_id=ticket_type.id,
+                event_id=event.id,
+                payment_status=PaymentStatus.PENDING
+            ).limit(quantity).all()
+            
+            pending_count = len(pending_tickets)
+            logger.info(f"Found {pending_count} pending tickets that can be reused")
+            
+            # Total available = regular available + pending tickets we can reuse
+            total_available = available_tickets + pending_count
+            logger.info(f"Total availability: {available_tickets} regular + {pending_count} pending = {total_available}")
+
+            # Check if we have enough tickets (either available or pending to reuse)
+            if total_available < quantity:
+                logger.error(f"Insufficient tickets: requested={quantity}, total_available={total_available}")
+                return {"error": f"Only {total_available} tickets are available"}, 400
 
             amount = ticket_type.price * quantity
             logger.info(f"Total amount calculated: {amount}")
@@ -930,40 +943,68 @@ class TicketResource(Resource):
             
             logger.info(f"Transaction created successfully: ID={transaction.id}")
             
-            # Create tickets
-            logger.info(f"Creating {quantity} ticket records...")
+            # ============ SMART TICKET ALLOCATION: Reuse pending tickets first ============
             tickets = []
             transaction_tickets = []
             
-            for i in range(quantity):
-                temp_qr_code = f"pending_{uuid.uuid4()}"
-                new_ticket = Ticket(
-                    event_id=event.id,
-                    ticket_type_id=ticket_type.id,
-                    quantity=1,
-                    phone_number=user.phone_number,
-                    email=user.email,
-                    payment_status=PaymentStatus.PENDING,
-                    transaction_id=transaction.id,
-                    user_id=user.id,
-                    qr_code=temp_qr_code
-                )
-                db.session.add(new_ticket)
-                tickets.append(new_ticket)
-                logger.debug(f"Created ticket {i+1}/{quantity} with temp QR: {temp_qr_code}")
+            # Step 1: Reuse pending tickets (update them with new user info)
+            tickets_to_reuse = min(pending_count, quantity)
+            if tickets_to_reuse > 0:
+                logger.info(f"Reusing {tickets_to_reuse} pending tickets...")
+                
+                for i in range(tickets_to_reuse):
+                    existing_ticket = pending_tickets[i]
+                    
+                    # Find and remove old transaction relationships
+                    old_relationships = TransactionTicket.query.filter_by(ticket_id=existing_ticket.id).all()
+                    for rel in old_relationships:
+                        db.session.delete(rel)
+                    
+                    # Update the existing ticket with new user information
+                    existing_ticket.user_id = user.id
+                    existing_ticket.email = user.email
+                    existing_ticket.phone_number = user.phone_number
+                    existing_ticket.transaction_id = transaction.id
+                    existing_ticket.payment_status = PaymentStatus.PENDING
+                    existing_ticket.qr_code = f"pending_{uuid.uuid4()}"  # New temporary QR code
+                    
+                    tickets.append(existing_ticket)
+                    logger.info(f"Reused ticket {i+1}/{tickets_to_reuse}: ID={existing_ticket.id}")
+            
+            # Step 2: Create new tickets for remaining quantity
+            remaining_quantity = quantity - tickets_to_reuse
+            if remaining_quantity > 0:
+                logger.info(f"Creating {remaining_quantity} new ticket records...")
+                
+                for i in range(remaining_quantity):
+                    temp_qr_code = f"pending_{uuid.uuid4()}"
+                    new_ticket = Ticket(
+                        event_id=event.id,
+                        ticket_type_id=ticket_type.id,
+                        quantity=1,
+                        phone_number=user.phone_number,
+                        email=user.email,
+                        payment_status=PaymentStatus.PENDING,
+                        transaction_id=transaction.id,
+                        user_id=user.id,
+                        qr_code=temp_qr_code
+                    )
+                    db.session.add(new_ticket)
+                    tickets.append(new_ticket)
+                    logger.info(f"Created new ticket {i+1}/{remaining_quantity} with temp QR: {temp_qr_code}")
             
             db.session.flush()
             
-            # Verify ticket creation
+            # Verify all tickets have IDs
             failed_tickets = [i for i, ticket in enumerate(tickets) if not ticket.id]
             if failed_tickets:
-                logger.error(f"Failed to create tickets at indices: {failed_tickets}")
+                logger.error(f"Failed to process tickets at indices: {failed_tickets}")
                 db.session.rollback()
-                return {"error": "Failed to create tickets"}, 500
+                return {"error": "Failed to process tickets"}, 500
             
-            logger.info(f"All {len(tickets)} tickets created successfully")
+            logger.info(f"All {len(tickets)} tickets processed successfully ({tickets_to_reuse} reused + {remaining_quantity} new)")
             
-            # Create transaction-ticket relationships
+            # Create new transaction-ticket relationships
             logger.info("Creating transaction-ticket relationships...")
             for i, ticket in enumerate(tickets):
                 transaction_ticket = TransactionTicket(
@@ -1090,6 +1131,7 @@ class TicketResource(Resource):
             logger.error(f"Unexpected error in ticket creation: {e}", exc_info=True)
             db.session.rollback()
             return {"error": "An internal error occurred"}, 500
+    
     @jwt_required()
     def put(self, ticket_id):
         """Update a ticket (Only the ticket owner can update)."""
