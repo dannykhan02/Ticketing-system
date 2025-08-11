@@ -1131,7 +1131,7 @@ class TicketResource(Resource):
             logger.error(f"Unexpected error in ticket creation: {e}", exc_info=True)
             db.session.rollback()
             return {"error": "An internal error occurred"}, 500
-    
+        
     @jwt_required()
     def put(self, ticket_id):
         """Update a ticket (Only the ticket owner can update)."""
