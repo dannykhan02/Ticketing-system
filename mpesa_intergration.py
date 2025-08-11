@@ -168,11 +168,11 @@ class STKCallback(Resource):
         phone_number = next((item["Value"] for item in callback_metadata if item["Name"] == "PhoneNumber"), "")
         merchant_request_id = callback_data.get("MerchantRequestID", None)
 
-        logging.info(f"MerchantRequestID: {merchant_request_id}")
+        logging.info(f"Processing callback - ResultCode: {result_code}, MerchantRequestID: {merchant_request_id}")
 
         if result_code == 0:
             # Payment Successful
-            logging.info(f"Payment Success: {mpesa_receipt_number}")
+            logging.info(f"Payment successful: Code={result_code}, Message={result_desc}")
 
             # Find the existing PENDING transaction using merchant_request_id
             transaction = Transaction.query.filter_by(
@@ -191,7 +191,7 @@ class STKCallback(Resource):
 
             # Update the existing transaction
             transaction.payment_status = PaymentStatus.PAID
-            transaction.payment_reference = mpesa_receipt_number  # Update with actual M-Pesa receipt
+            transaction.payment_reference = mpesa_receipt_number
             transaction.mpesa_receipt_number = mpesa_receipt_number
             if transaction_date:
                 try:
@@ -227,19 +227,28 @@ class STKCallback(Resource):
             return {"message": "Payment successful and ticket operation completed"}, 200
 
         else:
-            # Payment failed
+            # Payment failed/cancelled - Handle different result codes
             error_message = result_desc
-            if result_code == 1:
-                error_message = "Insufficient funds"
-            elif result_code == 1032:
-                error_message = "Request cancelled by user"
-            elif result_code == 1037:
-                error_message = "Transaction timeout"
-            elif result_code == 2001:
-                error_message = "Insufficient funds"
-            elif result_code == 2006:
-                error_message = "User did not enter PIN"
-            # Add more result codes and messages as needed
+            payment_status = PaymentStatus.FAILED
+            
+            # Map common M-Pesa result codes to user-friendly messages
+            user_friendly_messages = {
+                1: "Insufficient funds in your M-Pesa account",
+                1032: "Payment request was cancelled by user", 
+                1037: "Payment request timed out",
+                2001: "Insufficient funds in your M-Pesa account",
+                2006: "User did not enter PIN",
+                4999: "Payment is still being processed"
+            }
+            
+            user_message = user_friendly_messages.get(result_code, error_message)
+            
+            # Special handling for user cancellation
+            if result_code == 1032:
+                logging.info(f"Payment cancelled by user: Code={result_code}, Message={result_desc}")
+                payment_status = PaymentStatus.CANCELED  # Use CANCELED instead of FAILED for user cancellations
+            else:
+                logging.info(f"Payment failed/cancelled: Code={result_code}, Message={result_desc}")
 
             # Find and update the existing transaction
             transaction = Transaction.query.filter_by(
@@ -248,19 +257,88 @@ class STKCallback(Resource):
             ).first()
 
             if transaction:
-                transaction.payment_status = PaymentStatus.FAILED
+                transaction.payment_status = payment_status
                 
                 # Update associated tickets
                 transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
                 for trans_ticket in transaction_tickets:
                     ticket = Ticket.query.get(trans_ticket.ticket_id)
                     if ticket:
-                        ticket.payment_status = PaymentStatus.FAILED
+                        ticket.payment_status = payment_status
 
                 db.session.commit()
-                logging.info(f"Transaction {transaction.id} marked as FAILED")
+                logging.info(f"Transaction {transaction.id} marked as {payment_status.name}")
 
-            return {"error": "Payment failed", "details": error_message}, 400
+            # Return success status (200) but with cancellation/failure info
+            # This prevents your frontend from showing error alerts
+            if result_code == 1032:
+                return {
+                    "status": "cancelled",
+                    "message": "Payment was cancelled by user", 
+                    "user_message": "You cancelled the payment request. You can try again if needed."
+                }, 200  # Changed to 200 status
+            else:
+                return {
+                    "status": "failed",
+                    "message": user_message,
+                    "user_message": user_message,
+                    "result_code": result_code
+                }, 200  # Changed to 200 status
+
+
+# Also update your status check function to handle cancellations gracefully
+def handle_payment_status_response(status_result, transaction_id):
+    """Handle the status check response and return appropriate user messages"""
+    
+    if status_result.get('status') == 'failed':
+        response_data = status_result.get('response_data', {})
+        result_code = response_data.get('ResultCode', '')
+        
+        if str(result_code) == '1032':
+            # User cancellation - return user-friendly message
+            return {
+                "success": False,
+                "status": "cancelled",
+                "message": "Payment was cancelled by user",
+                "user_message": "You cancelled the payment request. You can try purchasing tickets again if needed.",
+                "show_retry": True
+            }
+        else:
+            # Other failures
+            return {
+                "success": False, 
+                "status": "failed",
+                "message": status_result.get('message', 'Payment failed'),
+                "user_message": "Payment failed. Please try again or contact support.",
+                "show_retry": True
+            }
+    
+    elif status_result.get('status') == 'pending':
+        return {
+            "success": False,
+            "status": "pending", 
+            "message": "Payment is still processing",
+            "user_message": "Your payment is being processed. Please wait a moment...",
+            "show_retry": False
+        }
+    
+    elif status_result.get('status') == 'success':
+        return {
+            "success": True,
+            "status": "success",
+            "message": "Payment completed successfully",
+            "user_message": "Payment successful! Your tickets have been confirmed.",
+            "show_retry": False
+        }
+    
+    else:
+        return {
+            "success": False,
+            "status": "unknown",
+            "message": "Payment status unknown", 
+            "user_message": "Unable to confirm payment status. Please check your M-Pesa messages or contact support.",
+            "show_retry": True
+        }
 
 class TransactionStatus(Resource):
     @jwt_required()
