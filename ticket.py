@@ -16,11 +16,11 @@ import qrcode
 import logging
 import os
 from datetime import datetime
- 
+
 import uuid
 import requests
 import io
-import time 
+import time
 from io import BytesIO
 import base64
 from sqlalchemy.exc import OperationalError
@@ -28,11 +28,13 @@ from sqlalchemy.exc import OperationalError
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 CONSUMER_KEY = os.getenv("CONSUMER_KEY")
 CONSUMER_SECRET = os.getenv("CONSUMER_SECRET")
 BUSINESS_SHORTCODE = os.getenv("BUSINESS_SHORTCODE")
 PASSKEY = os.getenv("PASSKEY")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
+
 def get_valid_phone(request_json, user):
     """
     Returns a cleaned phone number or raises ValueError
@@ -43,56 +45,55 @@ def get_valid_phone(request_json, user):
         raise ValueError("phone_number missing in request")
     if not raw_from_user:
         raise ValueError("Your profile has no phone_number; update it first")
-
     return normalize_phone_number(raw_from_body), normalize_phone_number(raw_from_user)
 
 def complete_ticket_operation(transaction):
     """Updates ticket status once payment is successful and sends confirmation email."""
     try:
         logger.info(f"Completing ticket operation for Transaction ID: {transaction.id}")
-        
+
         # Get all tickets associated with this transaction
         transaction_tickets = TransactionTicket.query.filter_by(transaction_id=transaction.id).all()
-        
+
         if not transaction_tickets:
             logging.error(f"No tickets found for transaction ID {transaction.id}")
             raise ValueError("No tickets found for this transaction")
-        
+
         tickets = []
         qr_attachments = []  # Changed from separate arrays to attachment tuples
-        
+
         # Update all tickets status and generate QR code attachments
         for trans_ticket in transaction_tickets:
             ticket = Ticket.query.get(trans_ticket.ticket_id)
             if not ticket:
                 logger.warning(f"Ticket with ID {trans_ticket.ticket_id} not found")
                 continue
-            
+
             # Update ticket status
             ticket.payment_status = PaymentStatus.PAID
-            
+
             # Generate QR code attachment for this ticket
             qr_filename, qr_data = generate_qr_attachment(ticket)
-            
+
             # Only add if QR code generation was successful
             if qr_filename and qr_data:
                 tickets.append(ticket)
                 qr_attachments.append((ticket, qr_filename, qr_data))
-                
+
                 # Log success
                 logger.info(f"Ticket {ticket.id} marked as PAID. Payment Ref: {transaction.payment_reference}")
             else:
                 logger.error(f"Failed to generate QR code for ticket {ticket.id}")
-        
+
         db.session.commit()
-        
+
         # Send confirmation email with QR code attachments
         if tickets:
             user = User.query.get(tickets[0].user_id)
             send_ticket_confirmation_email(user, tickets, transaction, qr_attachments)
         else:
             logger.error("No valid tickets with QR codes to send email for")
-            
+
     except Exception as e:
         logger.error(f"Error updating tickets for transaction {transaction.id}: {str(e)}")
         db.session.rollback()  # Add rollback on error
@@ -103,41 +104,41 @@ def generate_qr_attachment(ticket):
     try:
         # Check if ticket has qr_code data, fallback to ticket ID
         qr_code_data = getattr(ticket, 'qr_code', None) or str(ticket.id)
-        
+
         if not qr_code_data:
             logging.error(f"Ticket {ticket.id} has no QR code data")
             return None, None
-            
+
         logger.info(f"Generating QR attachment for ticket {ticket.id} with data: {str(qr_code_data)[:50]}...")
-        
+
         # Create QR code with enhanced settings
         qr = qrcode.QRCode(
-            version=None, 
-            error_correction=qrcode.constants.ERROR_CORRECT_H,  
-            box_size=10, 
-            border=4,  
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_H,
+            box_size=10,
+            border=4,
         )
-        
+
         qr.add_data(qr_code_data)
         qr.make(fit=True)
-        
+
         img = qr.make_image(
-            fill_color="#1a1a1a", 
-            back_color="#ffffff",  
-            image_factory=None  
+            fill_color="#1a1a1a",
+            back_color="#ffffff",
+            image_factory=None
         )
-        
+
         # Convert to PNG with high quality
         img_buffer = BytesIO()
         img.save(img_buffer, format="PNG", quality=100)
         img_buffer.seek(0)
-        
+
         # Generate filename using ticket ID
         filename = f"ticket_{ticket.id}.png"
-        
+
         logger.info(f"Successfully generated QR attachment for ticket {ticket.id}")
         return (filename, img_buffer.getvalue())
-        
+
     except Exception as e:
         logging.error(f"QR generation failed for ticket {ticket.id}: {str(e)}")
         return None, None
@@ -148,34 +149,34 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         if not tickets:
             logger.error("No tickets to send email for")
             return False
-        
+
         # Validate that we have matching data
         if len(tickets) != len(qr_attachments):
             logger.error("Mismatch between tickets and QR attachments")
             return False
-            
+
         first_ticket = tickets[0]
         event = Event.query.get(first_ticket.event_id)
-        
+
         if not event:
             logger.error(f"Event not found for ticket {first_ticket.id}")
             return False
-        
+
         # Format event details
         event_date = event.date.strftime('%A, %B %d, %Y') if event.date else "Date not available"
         start_time = event.start_time.strftime('%H:%M:%S') if event.start_time else "Start time not available"
         end_time = event.end_time.strftime('%H:%M:%S') if event.end_time else "Till Late"
-        
+
         # Group tickets by type for better organization
         tickets_by_type = {}
         for ticket in tickets:
             ticket_type = TicketType.query.get(ticket.ticket_type_id)
             ticket_type_name = ticket_type.type_name if ticket_type else "Standard"
-            
+
             if ticket_type_name not in tickets_by_type:
                 tickets_by_type[ticket_type_name] = []
             tickets_by_type[ticket_type_name].append(ticket)
-        
+
         # Create ticket type sections
         ticket_type_sections = ""
         for ticket_type_name, type_tickets in tickets_by_type.items():
@@ -186,7 +187,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
                         {''.join([f'''
                             <div class="ticket-item">
                                 <div class="qr-box">
-                                    <img src="cid:qr_{ticket.id}" 
+                                    <img src="cid:qr_{ticket.id}"
                                          class="qr-code-img"
                                          alt="Ticket QR Code">
                                     <div class="qr-instructions">
@@ -199,7 +200,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
                     </div>
                 </div>
             """
-        
+
         # Create HTML email content
         html_content = f"""<!DOCTYPE html>
         <html>
@@ -208,7 +209,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
-                
+
                 body {{
                     font-family: 'Poppins', Arial, sans-serif;
                     line-height: 1.6;
@@ -340,7 +341,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
                     background: linear-gradient(135deg, #6a3093 0%, #4a154b 100%);
                     border-radius: 5px;
                 }}
-                
+
                 /* Mobile Responsive Styles */
                 @media only screen and (max-width: 480px) {{
                     .email-body {{
@@ -380,77 +381,77 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
                 </div>
                 <div class="email-body">
                     <p>Dear {user.full_name} ({user.phone_number}),</p>
-                    
+
                     <div class="highlight">
                         <h2>🎉 Your Ticket Booking is Confirmed! 🎉</h2>
                     </div>
-                    
+
                     <div class="event-details">
                         <h3 class="section-title">📌 Event Details</h3>
-                        
+
                         <div class="event-property">
                             <div class="property-label">Event:</div>
                             <div class="property-value">{event.name}</div>
                         </div>
-                        
+
                         <div class="event-property">
                             <div class="property-label">Location:</div>
                             <div class="property-value">{event.location}</div>
                         </div>
-                        
+
                         <div class="event-property">
                             <div class="property-label">Date:</div>
                             <div class="property-value">{event_date}</div>
                         </div>
-                        
+
                         <div class="event-property">
                             <div class="property-label">Time:</div>
                             <div class="property-value">{start_time} - {end_time}</div>
                         </div>
-                        
+
                         <div class="event-property">
                             <div class="property-label">Description:</div>
                             <div class="property-value">{event.description}</div>
                         </div>
                     </div>
-                    
+
                     <h3 class="section-title">🎟️ Ticket Summary</h3>
-                    
+
                     <div class="event-property">
                         <div class="property-label">Total Tickets:</div>
                         <div class="property-value">{len(tickets)}</div>
                     </div>
-                    
+
                     <div class="event-property">
                         <div class="property-label">Purchase Date:</div>
                         <div class="property-value">{tickets[0].purchase_date.strftime('%Y-%m-%d %H:%M:%S')}</div>
                     </div>
-                    
+
                     <div class="event-property">
                         <div class="property-label">Amount Paid:</div>
                         <div class="property-value">{transaction.amount_paid}</div>
                     </div>
-                    
+
                     <div class="event-property">
                         <div class="property-label">Payment Method:</div>
                         <div class="property-value">{transaction.payment_method.value if transaction else 'Pending'}</div>
                     </div>
-                    
+
                     <div class="event-property">
                         <div class="property-label">Reference:</div>
                         <div class="property-value">{transaction.payment_reference}</div>
                     </div>
-                    
+
                     <h3 class="section-title">📱 Your QR Codes</h3>
                     <p>Please present these codes at the entrance for seamless check-in. Each QR code represents one ticket.</p>
-                    
+
                     {ticket_type_sections}
-                    
+
                     <div class="highlight">
                         <p>You can share these QR codes with your guests. Each code can only be scanned once.</p>
                         <p>Save this email for quicker entry at the event.</p>
                     </div>
-                    
+
                     <div class="footer">
                         <p>Thank you for your purchase! We look forward to seeing you at the event.</p>
                         <p>If you have any questions, please contact our support team.</p>
@@ -460,33 +461,26 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         </body>
         </html>
         """
-        
+
         # Create text version
         text_content = f"""Hi {user.full_name},
-
             🎉 Your Ticket Booking is Confirmed! 🎉
-
             Event Details:
             - Event: {event.name}
             - Location: {event.location}
             - Date: {event_date}
             - Time: {start_time} - {end_time}
             - Description: {event.description}
-
             Ticket Summary:
             - Total Tickets: {len(tickets)}
             - Purchase Date: {tickets[0].purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
             - Amount Paid: {transaction.amount_paid}
             - Payment Method: {transaction.payment_method.value if transaction else 'Pending'}
             - Reference: {transaction.payment_reference}
-
             You have purchased the following tickets:
             {chr(10).join([f"- {TicketType.query.get(ticket.ticket_type_id).type_name if TicketType.query.get(ticket.ticket_type_id) else 'Standard'} (ID: {ticket.id})" for ticket in tickets])}
-
             Please present the attached QR codes at the event entrance for scanning.
-
             Thank you for your purchase! We look forward to seeing you at the event.
-
             If you have any questions, please contact our support team."""
 
         # Create email message with attachments
@@ -496,16 +490,15 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
             sender=(Config.MAIL_DEFAULT_SENDER, Config.MAIL_USERNAME),
             charset="utf-8"
         )
-        
+
         # Set HTML and text content
         msg.html = html_content
         msg.body = text_content
-        
+
         # Attach QR codes with Content-ID for embedding
         for ticket, qr_filename, qr_data in qr_attachments:
             mime_type, _ = mimetypes.guess_type(qr_filename)
             mime_type = mime_type or "application/octet-stream"
-
             msg.attach(
                 filename=qr_filename,
                 content_type=mime_type,
@@ -513,7 +506,7 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
                 headers=[("Content-ID", f"<qr_{ticket.id}>")]
             )
 
-    # Try to send the email
+        # Try to send the email
         try:
             mail.send(msg)
             logger.info(f"Confirmation email sent to {user.email} with {len(qr_attachments)} tickets")
@@ -521,28 +514,24 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
         except Exception as e:
             logger.error(f"Error sending confirmation email to {user.email}: {e}")
             return False
+
     except Exception as e:
         logger.error(f"Error sending confirmation email: {str(e)}")
         return False
 
-
-
 class TicketResource(Resource):
-
     @jwt_required()
     def get(self, ticket_id=None):
         """Get tickets based on user role and requirements."""
         try:
-            identity = get_jwt_identity()  
+            identity = get_jwt_identity()
             user = User.query.get(identity)
-
             if not user:
                 return {"error": "User not found"}, 404
-
             # If requesting a specific ticket
             if ticket_id:
                 return self._get_specific_ticket(user, ticket_id)
-            
+
             # Get tickets based on user role
             if user.role == UserRole.ADMIN:
                 return self._get_admin_tickets(user)
@@ -550,7 +539,6 @@ class TicketResource(Resource):
                 return self._get_organizer_tickets(user)
             else:  # ATTENDEE or other roles
                 return self._get_attendee_tickets(user)
-
         except Exception as e:
             logger.error(f"Error retrieving tickets: {e}")
             return {"error": "An internal error occurred"}, 500
@@ -560,7 +548,7 @@ class TicketResource(Resource):
         ticket = Ticket.query.filter_by(id=ticket_id, user_id=user.id).first()
         if not ticket:
             return {"error": "Ticket not found or does not belong to you"}, 404
-        
+
         return self._format_single_ticket(ticket), 200
 
     def _get_admin_tickets(self, user):
@@ -601,7 +589,7 @@ class TicketResource(Resource):
                         "ticket_types": [],
                         "total_tickets_sold": 0
                     }
-                
+
                 # Add ticket type data
                 ticket_type_info = {
                     "ticket_type_id": ticket_data.ticket_type_id,
@@ -611,13 +599,12 @@ class TicketResource(Resource):
                     "total_quantity": ticket_data.total_quantity,
                     "revenue": float(ticket_data.price * ticket_data.total_quantity)
                 }
-                
+
                 events_data[event_id]["ticket_types"].append(ticket_type_info)
                 events_data[event_id]["total_tickets_sold"] += ticket_data.tickets_sold
 
             # Get admin's own tickets (tickets they bought as an attendee)
             admin_tickets = self._get_user_own_tickets(user.id)
-
             return {
                 "role": "admin",
                 "all_events_tickets": list(events_data.values()),
@@ -675,7 +662,7 @@ class TicketResource(Resource):
                         "ticket_types": [],
                         "total_tickets_sold": 0
                     }
-                
+
                 # Add ticket type data
                 ticket_type_info = {
                     "ticket_type_id": ticket_data.ticket_type_id,
@@ -685,13 +672,12 @@ class TicketResource(Resource):
                     "total_quantity": ticket_data.total_quantity,
                     "revenue": float(ticket_data.price * ticket_data.total_quantity)
                 }
-                
+
                 events_data[event_id]["ticket_types"].append(ticket_type_info)
                 events_data[event_id]["total_tickets_sold"] += ticket_data.tickets_sold
 
             # Get organizer's own tickets (tickets they bought as an attendee)
             organizer_tickets = self._get_user_own_tickets(user.id)
-
             return {
                 "role": "organizer",
                 "my_events_tickets": list(events_data.values()),
@@ -702,7 +688,6 @@ class TicketResource(Resource):
             logger.error(f"Error getting organizer tickets: {e}")
             return {"error": "Failed to retrieve organizer ticket data"}, 500
 
-    
     def _get_attendee_tickets(self, user):
         """Attendee can see their own tickets grouped by type."""
         try:
@@ -745,7 +730,7 @@ class TicketResource(Resource):
                         "location": ticket_data.location,
                         "ticket_types": []
                     }
-                
+
                 ticket_type_info = {
                     "ticket_type_id": ticket_data.ticket_type_id,
                     "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
@@ -756,9 +741,8 @@ class TicketResource(Resource):
                     "purchase_date": ticket_data.first_purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket_data.first_purchase_date else None,
                     "total_amount": float(ticket_data.price * ticket_data.total_quantity)
                 }
-                
-                events_data[event_id]["ticket_types"].append(ticket_type_info)
 
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
             return {
                 "role": "attendee",
                 "my_tickets": list(events_data.values())
@@ -808,7 +792,7 @@ class TicketResource(Resource):
                         "location": ticket_data.location,
                         "ticket_types": []
                     }
-                
+
                 ticket_type_info = {
                     "ticket_type_id": ticket_data.ticket_type_id,
                     "ticket_type": ticket_data.type_name.value if hasattr(ticket_data.type_name, "value") else str(ticket_data.type_name),
@@ -819,9 +803,8 @@ class TicketResource(Resource):
                     "purchase_date": ticket_data.first_purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket_data.first_purchase_date else None,
                     "total_amount": float(ticket_data.price * ticket_data.total_quantity)
                 }
-                
-                events_data[event_id]["ticket_types"].append(ticket_type_info)
 
+                events_data[event_id]["ticket_types"].append(ticket_type_info)
             return list(events_data.values())
 
         except Exception as e:
@@ -845,26 +828,24 @@ class TicketResource(Resource):
             "purchase_date": ticket.purchase_date.strftime('%Y-%m-%d %H:%M:%S') if ticket.purchase_date else None
         }
 
-
     @jwt_required()
     def post(self):
         """Create new tickets for the authenticated user after successful payment."""
         logger.info("=== TICKET CREATION STARTED ===")
-        
+
         try:
             identity = get_jwt_identity()
             logger.info(f"JWT Identity retrieved: {identity}")
-            
+
             user = User.query.get(identity)
             if not user:
                 logger.error(f"User not found for identity: {identity}")
                 return {"error": "User not found"}, 404
-            
-            logger.info(f"User found: ID={user.id}, Email={user.email}, Phone={user.phone_number}")
 
+            logger.info(f"User found: ID={user.id}, Email={user.email}, Phone={user.phone_number}")
             data = request.get_json()
             logger.info(f"Request data received: {data}")
-            
+
             required_fields = ["event_id", "ticket_type_id", "quantity", "payment_method"]
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
@@ -876,7 +857,7 @@ class TicketResource(Resource):
             if not event:
                 logger.error(f"Event not found: {data['event_id']}")
                 return {"error": "Event not found"}, 404
-            
+
             logger.info(f"Event found: ID={event.id}, Name={getattr(event, 'name', 'N/A')}")
 
             # Validate ticket type
@@ -884,29 +865,28 @@ class TicketResource(Resource):
             if not ticket_type:
                 logger.error(f"Ticket type not found: {data['ticket_type_id']} for event {event.id}")
                 return {"error": "Ticket type not found for this event"}, 404
-            
-            logger.info(f"Ticket type found: ID={ticket_type.id}, Price={ticket_type.price}, Available={ticket_type.quantity}")
 
+            logger.info(f"Ticket type found: ID={ticket_type.id}, Price={ticket_type.price}, Available={ticket_type.quantity}")
             quantity = int(data["quantity"])
             logger.info(f"Requested quantity: {quantity}")
-            
+
             if quantity <= 0:
                 logger.error(f"Invalid quantity requested: {quantity}")
                 return {"error": "Quantity must be at least 1"}, 400
 
             # ============ KEY CHANGE: Check both available tickets AND pending tickets ============
             available_tickets = ticket_type.quantity
-            
+
             # Find existing PENDING tickets that can be reused (from any abandoned/failed payments)
             pending_tickets = Ticket.query.filter_by(
                 ticket_type_id=ticket_type.id,
                 event_id=event.id,
                 payment_status=PaymentStatus.PENDING
             ).limit(quantity).all()
-            
+
             pending_count = len(pending_tickets)
             logger.info(f"Found {pending_count} pending tickets that can be reused")
-            
+
             # Total available = regular available + pending tickets we can reuse
             total_available = available_tickets + pending_count
             logger.info(f"Total availability: {available_tickets} regular + {pending_count} pending = {total_available}")
@@ -935,31 +915,31 @@ class TicketResource(Resource):
             )
             db.session.add(transaction)
             db.session.flush()
-            
+
             if not transaction.id:
                 logger.error("Failed to create transaction - no ID assigned")
                 db.session.rollback()
                 return {"error": "Failed to create transaction"}, 500
-            
+
             logger.info(f"Transaction created successfully: ID={transaction.id}")
-            
+
             # ============ SMART TICKET ALLOCATION: Reuse pending tickets first ============
             tickets = []
             transaction_tickets = []
-            
+
             # Step 1: Reuse pending tickets (update them with new user info)
             tickets_to_reuse = min(pending_count, quantity)
             if tickets_to_reuse > 0:
                 logger.info(f"Reusing {tickets_to_reuse} pending tickets...")
-                
+
                 for i in range(tickets_to_reuse):
                     existing_ticket = pending_tickets[i]
-                    
+
                     # Find and remove old transaction relationships
                     old_relationships = TransactionTicket.query.filter_by(ticket_id=existing_ticket.id).all()
                     for rel in old_relationships:
                         db.session.delete(rel)
-                    
+
                     # Update the existing ticket with new user information
                     existing_ticket.user_id = user.id
                     existing_ticket.email = user.email
@@ -967,15 +947,15 @@ class TicketResource(Resource):
                     existing_ticket.transaction_id = transaction.id
                     existing_ticket.payment_status = PaymentStatus.PENDING
                     existing_ticket.qr_code = f"pending_{uuid.uuid4()}"  # New temporary QR code
-                    
+
                     tickets.append(existing_ticket)
                     logger.info(f"Reused ticket {i+1}/{tickets_to_reuse}: ID={existing_ticket.id}")
-            
+
             # Step 2: Create new tickets for remaining quantity
             remaining_quantity = quantity - tickets_to_reuse
             if remaining_quantity > 0:
                 logger.info(f"Creating {remaining_quantity} new ticket records...")
-                
+
                 for i in range(remaining_quantity):
                     temp_qr_code = f"pending_{uuid.uuid4()}"
                     new_ticket = Ticket(
@@ -992,18 +972,18 @@ class TicketResource(Resource):
                     db.session.add(new_ticket)
                     tickets.append(new_ticket)
                     logger.info(f"Created new ticket {i+1}/{remaining_quantity} with temp QR: {temp_qr_code}")
-            
+
             db.session.flush()
-            
+
             # Verify all tickets have IDs
             failed_tickets = [i for i, ticket in enumerate(tickets) if not ticket.id]
             if failed_tickets:
                 logger.error(f"Failed to process tickets at indices: {failed_tickets}")
                 db.session.rollback()
                 return {"error": "Failed to process tickets"}, 500
-            
+
             logger.info(f"All {len(tickets)} tickets processed successfully ({tickets_to_reuse} reused + {remaining_quantity} new)")
-            
+
             # Create new transaction-ticket relationships
             logger.info("Creating transaction-ticket relationships...")
             for i, ticket in enumerate(tickets):
@@ -1014,28 +994,28 @@ class TicketResource(Resource):
                 db.session.add(transaction_ticket)
                 transaction_tickets.append(transaction_ticket)
                 logger.debug(f"Created relationship {i+1}: transaction={transaction.id}, ticket={ticket.id}")
-            
+
             db.session.commit()
             logger.info("Transaction and tickets committed to database")
 
             # Process Payment
             payment_method = data["payment_method"].upper()
             logger.info(f"Processing payment via {payment_method}")
-            
+
             if payment_method == "MPESA":
                 logger.info("=== MPESA PAYMENT PROCESSING ===")
-                
+
                 # Validate phone number
                 if "phone_number" not in data:
                     logger.error("Phone number not provided in request data")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
                     return {"error": "Phone number must be the registered one"}, 400
-                
+
                 user_phone_normalized = normalize_phone_number(user.phone_number)
                 request_phone_normalized = normalize_phone_number(data["phone_number"])
-                
+
                 logger.info(f"Phone validation: user={user_phone_normalized}, request={request_phone_normalized}")
-                
+
                 if request_phone_normalized != user_phone_normalized:
                     logger.error("Phone number mismatch - rolling back transaction")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
@@ -1053,13 +1033,13 @@ class TicketResource(Resource):
                 logger.info("Initiating STK Push...")
                 mpesa = STKPush()
                 response, status_code = mpesa.post(mpesa_data)
-                
+
                 logger.info(f"STK Push response: status={status_code}, response={response}")
-                
+
                 # Handle STK Push response
                 if status_code == 200:
                     logger.info("STK Push successful")
-                    
+
                     # Store M-Pesa references - check for both formats
                     if 'MerchantRequestID' in response:
                         transaction.merchant_request_id = response['MerchantRequestID']
@@ -1067,16 +1047,16 @@ class TicketResource(Resource):
                     elif 'merchant_request_id' in response:
                         transaction.merchant_request_id = response['merchant_request_id']
                         logger.info(f"Stored merchant_request_id: {response['merchant_request_id']}")
-                    
+
                     if 'CheckoutRequestID' in response:
                         transaction.checkout_request_id = response['CheckoutRequestID']
                         logger.info(f"Stored CheckoutRequestID: {response['CheckoutRequestID']}")
                     elif 'checkout_request_id' in response:
                         transaction.checkout_request_id = response['checkout_request_id']
                         logger.info(f"Stored checkout_request_id: {response['checkout_request_id']}")
-                    
+
                     db.session.commit()
-                    
+
                     # Handle status checking - check for both formats
                     checkout_request_id = response.get('CheckoutRequestID') or response.get('checkout_request_id')
                     if checkout_request_id:
@@ -1093,7 +1073,7 @@ class TicketResource(Resource):
 
             elif payment_method == "PAYSTACK":
                 logger.info("=== PAYSTACK PAYMENT PROCESSING ===")
-                
+
                 if not user.email:
                     logger.error("User email not available for Paystack payment")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
@@ -1101,7 +1081,7 @@ class TicketResource(Resource):
 
                 logger.info(f"Initializing Paystack payment for email: {user.email}, amount: {amount}")
                 init = initialize_paystack_payment(user.email, int(amount * 100))
-                
+
                 if isinstance(init, dict) and "error" in init:
                     logger.error(f"Paystack initialization failed: {init}")
                     self._rollback_transaction(transaction, tickets, transaction_tickets)
@@ -1110,7 +1090,7 @@ class TicketResource(Resource):
                 transaction.payment_reference = init["reference"]
                 db.session.commit()
                 logger.info(f"Paystack payment initialized with reference: {init['reference']}")
-                
+
                 return {
                     "message": "Payment initialized",
                     "authorization_url": init["authorization_url"],
@@ -1131,6 +1111,187 @@ class TicketResource(Resource):
             logger.error(f"Unexpected error in ticket creation: {e}", exc_info=True)
             db.session.rollback()
             return {"error": "An internal error occurred"}, 500
+
+    def _handle_mpesa_with_status_check(self, transaction, checkout_request_id, tickets, transaction_tickets):
+        """Handle M-Pesa payment with status checking"""
+        try:
+            logger.info(f"Starting M-Pesa status check for transaction {transaction.id}")
+
+            # Initial response to user
+            initial_response = {
+                "message": "STK Push initiated. Please complete payment on your phone.",
+                "transaction_id": transaction.id,
+                "checkout_request_id": checkout_request_id,
+                "status": "pending"
+            }
+
+            # Start background status checking
+            max_attempts = 30  # 30 attempts = 5 minutes (10 second intervals)
+            attempt = 0
+
+            while attempt < max_attempts:
+                time.sleep(10)  # Wait 10 seconds between checks
+                attempt += 1
+
+                logger.info(f"Status check attempt {attempt}/{max_attempts} for transaction {transaction.id}")
+
+                # Check transaction status in database first
+                db.session.refresh(transaction)
+
+                if transaction.payment_status == PaymentStatus.PAID:
+                    logger.info(f"Transaction {transaction.id} confirmed as PAID")
+                    return {
+                        "message": "Payment successful! Tickets confirmed.",
+                        "status": "success",
+                        "transaction_id": transaction.id
+                    }, 200
+
+                elif transaction.payment_status == PaymentStatus.CANCELED:
+                    logger.info(f"Transaction {transaction.id} was cancelled by user")
+                    return {
+                        "message": "Payment was cancelled by user",
+                        "status": "cancelled",
+                        "transaction_id": transaction.id
+                    }, 200
+
+                elif transaction.payment_status == PaymentStatus.FAILED:
+                    logger.info(f"Transaction {transaction.id} failed")
+                    return {
+                        "message": "Payment failed",
+                        "status": "failed",
+                        "transaction_id": transaction.id
+                    }, 200
+
+                # If still pending after 20 attempts (200 seconds), check via M-Pesa API
+                if attempt >= 20:
+                    status_result = self._check_mpesa_transaction_status(checkout_request_id)
+
+                    if status_result['status'] != 'pending':
+                        logger.info(f"M-Pesa API status check result: {status_result['status']}")
+
+                        if status_result['status'] == 'success':
+                            # Update transaction and complete ticket operation
+                            transaction.payment_status = PaymentStatus.PAID
+
+                            for trans_ticket in transaction_tickets:
+                                ticket = Ticket.query.get(trans_ticket.ticket_id)
+                                if ticket:
+                                    ticket.payment_status = PaymentStatus.PAID
+
+                            db.session.commit()
+
+                            # Complete ticket operation (send email, etc.)
+                            complete_ticket_operation(transaction)
+
+                            return {
+                                "message": "Payment successful! Tickets confirmed.",
+                                "status": "success",
+                                "transaction_id": transaction.id
+                            }, 200
+
+                        elif status_result['status'] == 'cancelled':
+                            transaction.payment_status = PaymentStatus.CANCELED
+                            db.session.commit()
+                            return {
+                                "message": "Payment was cancelled",
+                                "status": "cancelled",
+                                "transaction_id": transaction.id
+                            }, 200
+
+                        else:  # failed
+                            transaction.payment_status = PaymentStatus.FAILED
+                            db.session.commit()
+                            return {
+                                "message": "Payment failed",
+                                "status": "failed",
+                                "transaction_id": transaction.id
+                            }, 200
+
+            # If we've exhausted all attempts and still pending
+            logger.warning(f"Transaction {transaction.id} status check timed out")
+            return {
+                "message": "Payment status check timed out. Please check your M-Pesa messages.",
+                "status": "timeout",
+                "transaction_id": transaction.id
+            }, 202
+
+        except Exception as e:
+            logger.error(f"Error in M-Pesa status check: {e}")
+            return {
+                "error": "Payment processing error",
+                "transaction_id": transaction.id
+            }, 500
+
+    def _check_mpesa_transaction_status(self, checkout_request_id):
+        """Check M-Pesa transaction status via API"""
+        try:
+            access_token = get_access_token()
+            if not access_token:
+                return {"status": "error", "message": "Failed to get access token"}
+
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            password = base64.b64encode(f"{BUSINESS_SHORTCODE}{PASSKEY}{timestamp}".encode()).decode()
+
+            payload = {
+                "BusinessShortCode": BUSINESS_SHORTCODE,
+                "Password": password,
+                "Timestamp": timestamp,
+                "CheckoutRequestID": checkout_request_id
+            }
+
+            url = "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query"
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                data = response.json()
+                result_code = data.get("ResultCode")
+
+                if result_code == "0":
+                    return {"status": "success", "response_data": data}
+                elif result_code == "1032":
+                    return {"status": "cancelled", "response_data": data}
+                elif result_code in ["1037", "1001"]:  # Timeout or other failures
+                    return {"status": "failed", "response_data": data}
+                else:
+                    return {"status": "pending", "response_data": data}
+            else:
+                logger.error(f"M-Pesa status check failed: {response.status_code}")
+                return {"status": "error", "message": "API request failed"}
+
+        except requests.RequestException as e:
+            logger.error(f"Network error during M-Pesa status check: {e}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Error checking M-Pesa status: {e}")
+            return {"status": "error", "message": "Status check failed"}
+
+    def _rollback_transaction(self, transaction, tickets, transaction_tickets):
+        """Rollback transaction and clean up tickets on payment failure"""
+        try:
+            logger.info(f"Rolling back transaction {transaction.id}")
+
+            # Delete transaction-ticket relationships
+            for trans_ticket in transaction_tickets:
+                db.session.delete(trans_ticket)
+
+            # Delete tickets
+            for ticket in tickets:
+                db.session.delete(ticket)
+
+            # Delete transaction
+            db.session.delete(transaction)
+
+            db.session.commit()
+            logger.info(f"Transaction {transaction.id} and associated data rolled back successfully")
+
+        except Exception as e:
+            logger.error(f"Error during rollback for transaction {transaction.id}: {e}")
+            db.session.rollback()
 
 def register_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
