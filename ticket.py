@@ -60,7 +60,7 @@ def complete_ticket_operation(transaction):
             raise ValueError("No tickets found for this transaction")
 
         tickets = []
-        qr_attachments = []  # Changed from separate arrays to attachment tuples
+        qr_attachments = []
 
         # Update all tickets status and generate QR code attachments
         for trans_ticket in transaction_tickets:
@@ -96,7 +96,7 @@ def complete_ticket_operation(transaction):
 
     except Exception as e:
         logger.error(f"Error updating tickets for transaction {transaction.id}: {str(e)}")
-        db.session.rollback()  # Add rollback on error
+        db.session.rollback()
         raise
 
 def generate_qr_attachment(ticket):
@@ -464,24 +464,24 @@ def send_ticket_confirmation_email(user, tickets, transaction, qr_attachments):
 
         # Create text version
         text_content = f"""Hi {user.full_name},
-            🎉 Your Ticket Booking is Confirmed! 🎉
-            Event Details:
-            - Event: {event.name}
-            - Location: {event.location}
-            - Date: {event_date}
-            - Time: {start_time} - {end_time}
-            - Description: {event.description}
-            Ticket Summary:
-            - Total Tickets: {len(tickets)}
-            - Purchase Date: {tickets[0].purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
-            - Amount Paid: {transaction.amount_paid}
-            - Payment Method: {transaction.payment_method.value if transaction else 'Pending'}
-            - Reference: {transaction.payment_reference}
-            You have purchased the following tickets:
-            {chr(10).join([f"- {TicketType.query.get(ticket.ticket_type_id).type_name if TicketType.query.get(ticket.ticket_type_id) else 'Standard'} (ID: {ticket.id})" for ticket in tickets])}
-            Please present the attached QR codes at the event entrance for scanning.
-            Thank you for your purchase! We look forward to seeing you at the event.
-            If you have any questions, please contact our support team."""
+Your Ticket Booking is Confirmed!
+Event Details:
+- Event: {event.name}
+- Location: {event.location}
+- Date: {event_date}
+- Time: {start_time} - {end_time}
+- Description: {event.description}
+Ticket Summary:
+- Total Tickets: {len(tickets)}
+- Purchase Date: {tickets[0].purchase_date.strftime('%Y-%m-%d %H:%M:%S')}
+- Amount Paid: {transaction.amount_paid}
+- Payment Method: {transaction.payment_method.value if transaction else 'Pending'}
+- Reference: {transaction.payment_reference}
+You have purchased the following tickets:
+{chr(10).join([f"- {TicketType.query.get(ticket.ticket_type_id).type_name if TicketType.query.get(ticket.ticket_type_id) else 'Standard'} (ID: {ticket.id})" for ticket in tickets])}
+Please present the attached QR codes at the event entrance for scanning.
+Thank you for your purchase! We look forward to seeing you at the event.
+If you have any questions, please contact our support team."""
 
         # Create email message with attachments
         msg = Message(
@@ -874,10 +874,10 @@ class TicketResource(Resource):
                 logger.error(f"Invalid quantity requested: {quantity}")
                 return {"error": "Quantity must be at least 1"}, 400
 
-            # ============ KEY CHANGE: Check both available tickets AND pending tickets ============
+            # Check both available tickets and pending tickets
             available_tickets = ticket_type.quantity
 
-            # Find existing PENDING tickets that can be reused (from any abandoned/failed payments)
+            # Find existing PENDING tickets that can be reused
             pending_tickets = Ticket.query.filter_by(
                 ticket_type_id=ticket_type.id,
                 event_id=event.id,
@@ -891,7 +891,7 @@ class TicketResource(Resource):
             total_available = available_tickets + pending_count
             logger.info(f"Total availability: {available_tickets} regular + {pending_count} pending = {total_available}")
 
-            # Check if we have enough tickets (either available or pending to reuse)
+            # Check if we have enough tickets
             if total_available < quantity:
                 logger.error(f"Insufficient tickets: requested={quantity}, total_available={total_available}")
                 return {"error": f"Only {total_available} tickets are available"}, 400
@@ -923,11 +923,11 @@ class TicketResource(Resource):
 
             logger.info(f"Transaction created successfully: ID={transaction.id}")
 
-            # ============ SMART TICKET ALLOCATION: Reuse pending tickets first ============
+            # Reuse pending tickets first
             tickets = []
             transaction_tickets = []
 
-            # Step 1: Reuse pending tickets (update them with new user info)
+            # Step 1: Reuse pending tickets
             tickets_to_reuse = min(pending_count, quantity)
             if tickets_to_reuse > 0:
                 logger.info(f"Reusing {tickets_to_reuse} pending tickets...")
@@ -946,7 +946,7 @@ class TicketResource(Resource):
                     existing_ticket.phone_number = user.phone_number
                     existing_ticket.transaction_id = transaction.id
                     existing_ticket.payment_status = PaymentStatus.PENDING
-                    existing_ticket.qr_code = f"pending_{uuid.uuid4()}"  # New temporary QR code
+                    existing_ticket.qr_code = f"pending_{uuid.uuid4()}"
 
                     tickets.append(existing_ticket)
                     logger.info(f"Reused ticket {i+1}/{tickets_to_reuse}: ID={existing_ticket.id}")
@@ -1040,7 +1040,7 @@ class TicketResource(Resource):
                 if status_code == 200:
                     logger.info("STK Push successful")
 
-                    # Store M-Pesa references - check for both formats
+                    # Store M-Pesa references
                     if 'MerchantRequestID' in response:
                         transaction.merchant_request_id = response['MerchantRequestID']
                         logger.info(f"Stored MerchantRequestID: {response['MerchantRequestID']}")
@@ -1057,7 +1057,7 @@ class TicketResource(Resource):
 
                     db.session.commit()
 
-                    # Handle status checking - check for both formats
+                    # Handle status checking
                     checkout_request_id = response.get('CheckoutRequestID') or response.get('checkout_request_id')
                     if checkout_request_id:
                         logger.info(f"Starting status check for CheckoutRequestID: {checkout_request_id}")
@@ -1115,112 +1115,24 @@ class TicketResource(Resource):
     def _handle_mpesa_with_status_check(self, transaction, checkout_request_id, tickets, transaction_tickets):
         """Handle M-Pesa payment with status checking"""
         try:
-            logger.info(f"Starting M-Pesa status check for transaction {transaction.id}")
+            transaction_id = transaction.id
+            logger.info(f"Starting M-Pesa status check for transaction {transaction_id}")
 
-            # Initial response to user
-            initial_response = {
-                "message": "STK Push initiated. Please complete payment on your phone.",
-                "transaction_id": transaction.id,
-                "checkout_request_id": checkout_request_id,
-                "status": "pending"
-            }
-
-            # Start background status checking
-            max_attempts = 30  # 30 attempts = 5 minutes (10 second intervals)
-            attempt = 0
-
-            while attempt < max_attempts:
-                time.sleep(10)  # Wait 10 seconds between checks
-                attempt += 1
-
-                logger.info(f"Status check attempt {attempt}/{max_attempts} for transaction {transaction.id}")
-
-                # Check transaction status in database first
-                db.session.refresh(transaction)
-
-                if transaction.payment_status == PaymentStatus.PAID:
-                    logger.info(f"Transaction {transaction.id} confirmed as PAID")
-                    return {
-                        "message": "Payment successful! Tickets confirmed.",
-                        "status": "success",
-                        "transaction_id": transaction.id
-                    }, 200
-
-                elif transaction.payment_status == PaymentStatus.CANCELED:
-                    logger.info(f"Transaction {transaction.id} was cancelled by user")
-                    return {
-                        "message": "Payment was cancelled by user",
-                        "status": "cancelled",
-                        "transaction_id": transaction.id
-                    }, 200
-
-                elif transaction.payment_status == PaymentStatus.FAILED:
-                    logger.info(f"Transaction {transaction.id} failed")
-                    return {
-                        "message": "Payment failed",
-                        "status": "failed",
-                        "transaction_id": transaction.id
-                    }, 200
-
-                # If still pending after 20 attempts (200 seconds), check via M-Pesa API
-                if attempt >= 20:
-                    status_result = self._check_mpesa_transaction_status(checkout_request_id)
-
-                    if status_result['status'] != 'pending':
-                        logger.info(f"M-Pesa API status check result: {status_result['status']}")
-
-                        if status_result['status'] == 'success':
-                            # Update transaction and complete ticket operation
-                            transaction.payment_status = PaymentStatus.PAID
-
-                            for trans_ticket in transaction_tickets:
-                                ticket = Ticket.query.get(trans_ticket.ticket_id)
-                                if ticket:
-                                    ticket.payment_status = PaymentStatus.PAID
-
-                            db.session.commit()
-
-                            # Complete ticket operation (send email, etc.)
-                            complete_ticket_operation(transaction)
-
-                            return {
-                                "message": "Payment successful! Tickets confirmed.",
-                                "status": "success",
-                                "transaction_id": transaction.id
-                            }, 200
-
-                        elif status_result['status'] == 'cancelled':
-                            transaction.payment_status = PaymentStatus.CANCELED
-                            db.session.commit()
-                            return {
-                                "message": "Payment was cancelled",
-                                "status": "cancelled",
-                                "transaction_id": transaction.id
-                            }, 200
-
-                        else:  # failed
-                            transaction.payment_status = PaymentStatus.FAILED
-                            db.session.commit()
-                            return {
-                                "message": "Payment failed",
-                                "status": "failed",
-                                "transaction_id": transaction.id
-                            }, 200
-
-            # If we've exhausted all attempts and still pending
-            logger.warning(f"Transaction {transaction.id} status check timed out")
+            # Return immediate response
             return {
-                "message": "Payment status check timed out. Please check your M-Pesa messages.",
-                "status": "timeout",
-                "transaction_id": transaction.id
-            }, 202
+                "message": "STK Push initiated successfully. Please complete payment on your phone.",
+                "transaction_id": transaction_id,
+                "checkout_request_id": checkout_request_id,
+                "status": "pending",
+                "instructions": "You will receive a confirmation once payment is completed."
+            }, 200
 
         except Exception as e:
-            logger.error(f"Error in M-Pesa status check: {e}")
+            logger.error(f"Error in M-Pesa status check initialization: {e}")
             return {
-                "error": "Payment processing error",
-                "transaction_id": transaction.id
-            }, 500
+                "message": "STK Push initiated. Please complete payment on your phone.",
+                "status": "pending"
+            }, 200
 
     def _check_mpesa_transaction_status(self, checkout_request_id):
         """Check M-Pesa transaction status via API"""
@@ -1255,7 +1167,7 @@ class TicketResource(Resource):
                     return {"status": "success", "response_data": data}
                 elif result_code == "1032":
                     return {"status": "cancelled", "response_data": data}
-                elif result_code in ["1037", "1001"]:  # Timeout or other failures
+                elif result_code in ["1037", "1001"]:
                     return {"status": "failed", "response_data": data}
                 else:
                     return {"status": "pending", "response_data": data}
@@ -1275,23 +1187,38 @@ class TicketResource(Resource):
         try:
             logger.info(f"Rolling back transaction {transaction.id}")
 
-            # Delete transaction-ticket relationships
-            for trans_ticket in transaction_tickets:
-                db.session.delete(trans_ticket)
+            # First rollback any pending database transaction
+            db.session.rollback()
 
-            # Delete tickets
-            for ticket in tickets:
-                db.session.delete(ticket)
+            # Try to clean up in a new transaction
+            try:
+                # Delete transaction-ticket relationships
+                for trans_ticket in transaction_tickets:
+                    if trans_ticket.id:
+                        db.session.delete(trans_ticket)
 
-            # Delete transaction
-            db.session.delete(transaction)
+                # Delete tickets
+                for ticket in tickets:
+                    if ticket.id:
+                        db.session.delete(ticket)
 
-            db.session.commit()
-            logger.info(f"Transaction {transaction.id} and associated data rolled back successfully")
+                # Delete transaction
+                if transaction.id:
+                    db.session.delete(transaction)
+
+                db.session.commit()
+                logger.info(f"Transaction {transaction.id} and associated data rolled back successfully")
+
+            except Exception as cleanup_error:
+                logger.error(f"Error during cleanup: {cleanup_error}")
+                db.session.rollback()
 
         except Exception as e:
-            logger.error(f"Error during rollback for transaction {transaction.id}: {e}")
-            db.session.rollback()
+            logger.error(f"Error during rollback for transaction {getattr(transaction, 'id', 'unknown')}: {e}")
+            try:
+                db.session.rollback()
+            except:
+                pass
 
 def register_ticket_resources(api):
     """Registers ticket-related resources with Flask-RESTful API."""
