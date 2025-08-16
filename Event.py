@@ -52,7 +52,8 @@ class EventResource(Resource):
 
         # Get query parameters
         page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 7, type=int)
+        # Increased default per_page for better infinite scroll experience and capped for performance
+        per_page = min(request.args.get('per_page', 12, type=int), 50)  # Cap at 50 for performance
         show_all = request.args.get('show_all', 'false').lower() == 'true'
         
         # Determine if this is a dashboard request (admin/organizer) or public view
@@ -197,11 +198,16 @@ class EventResource(Resource):
                     'total': 0,
                     'pages': 0,
                     'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False,
                     'filters_applied': self._get_applied_filters_summary(
                         category_id, category_name, organizer_company, 
                         start_date, end_date, search_query, basic_category, 
                         time_filter, is_dashboard, featured_only, location_filter
-                    )
+                    ),
+                    'available_filters': self._get_available_filters(user, is_dashboard),
+                    'view_type': 'dashboard' if is_dashboard else 'public'
                 }
 
             return {
@@ -232,6 +238,9 @@ class EventResource(Resource):
                 'total': events.total,
                 'pages': events.pages,
                 'current_page': events.page,
+                'per_page': events.per_page,
+                'has_next': events.has_next,
+                'has_prev': events.has_prev,
                 'filters_applied': self._get_applied_filters_summary(
                     category_id, category_name, organizer_company, 
                     start_date, end_date, search_query, basic_category,
