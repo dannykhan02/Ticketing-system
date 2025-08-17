@@ -1,6 +1,7 @@
 from flask import request, jsonify
 from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy import func
 from model import db, Event, TicketType, User, TicketTypeEnum, UserRole, Organizer
 import logging
 
@@ -195,7 +196,80 @@ class PublicTicketTypeResource(Resource):
         ticket_types = TicketType.query.filter_by(event_id=event_id).all()
         return {"ticket_types": [tt.as_dict() for tt in ticket_types]}, 200
 
+class LowestPriceTicketResource(Resource):
+    @jwt_required()
+    def get(self, event_id=None):
+        """Get the lowest price ticket type for events (accessible to all logged-in users)."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user:
+                return {"error": "User not found"}, 404
+
+            if event_id:
+                # Get lowest price ticket for a specific event
+                lowest_ticket = TicketType.query.filter_by(event_id=event_id).order_by(TicketType.price.asc()).first()
+                
+                if not lowest_ticket:
+                    return {"error": "No ticket types found for this event"}, 404
+                
+                result = {
+                    "event_id": event_id,
+                    "lowest_price_ticket": {
+                        "id": lowest_ticket.id,
+                        "type_name": lowest_ticket.type_name,
+                        "price": lowest_ticket.price,
+                        "currency": lowest_ticket.currency,
+                        "currency_symbol": lowest_ticket.currency_symbol,
+                        "remaining_quantity": lowest_ticket.quantity
+                    }
+                }
+                return result, 200
+            
+            else:
+                # Get lowest price ticket for all events (for home page)
+                # Using a subquery to find the minimum price for each event
+                subquery = db.session.query(
+                    TicketType.event_id,
+                    func.min(TicketType.price).label('min_price')
+                ).group_by(TicketType.event_id).subquery()
+                
+                # Join with the original table to get complete ticket information
+                lowest_tickets = db.session.query(TicketType).join(
+                    subquery,
+                    (TicketType.event_id == subquery.c.event_id) & 
+                    (TicketType.price == subquery.c.min_price)
+                ).all()
+                
+                # Group by event_id to handle cases where multiple tickets have the same lowest price
+                events_lowest_tickets = {}
+                for ticket in lowest_tickets:
+                    if ticket.event_id not in events_lowest_tickets:
+                        events_lowest_tickets[ticket.event_id] = ticket
+                
+                result = []
+                for event_id, ticket in events_lowest_tickets.items():
+                    result.append({
+                        "event_id": event_id,
+                        "lowest_price_ticket": {
+                            "id": ticket.id,
+                            "type_name": ticket.type_name,
+                            "price": ticket.price,
+                            "currency": ticket.currency,
+                            "currency_symbol": ticket.currency_symbol,
+                            "remaining_quantity": ticket.quantity
+                        }
+                    })
+                
+                return {"events_lowest_prices": result}, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching lowest price tickets: {e}")
+            return {"error": "An internal error occurred"}, 500
+
 def register_ticket_type_resources(api):
     """Registers ticket type resources with Flask-RESTful API."""
     api.add_resource(TicketTypeResource, "/ticket-types", "/ticket-types/<int:ticket_type_id>")
     api.add_resource(PublicTicketTypeResource, "/events/<int:event_id>/ticket-types")
+    api.add_resource(LowestPriceTicketResource, "/ticket-types/lowest-price", "/ticket-types/lowest-price/<int:event_id>")
