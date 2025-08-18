@@ -220,8 +220,6 @@ class LowestPriceTicketResource(Resource):
                         "id": lowest_ticket.id,
                         "type_name": lowest_ticket.type_name,
                         "price": lowest_ticket.price,
-                        "currency": lowest_ticket.currency,
-                        "currency_symbol": lowest_ticket.currency_symbol,
                         "remaining_quantity": lowest_ticket.quantity
                     }
                 }
@@ -256,8 +254,6 @@ class LowestPriceTicketResource(Resource):
                             "id": ticket.id,
                             "type_name": ticket.type_name,
                             "price": ticket.price,
-                            "currency": ticket.currency,
-                            "currency_symbol": ticket.currency_symbol,
                             "remaining_quantity": ticket.quantity
                         }
                     })
