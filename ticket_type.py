@@ -218,7 +218,7 @@ class LowestPriceTicketResource(Resource):
                     "event_id": event_id,
                     "lowest_price_ticket": {
                         "id": lowest_ticket.id,
-                        "type_name": lowest_ticket.type_name,
+                        "type_name": lowest_ticket.type_name.value if hasattr(lowest_ticket.type_name, 'value') else str(lowest_ticket.type_name),
                         "price": lowest_ticket.price,
                         "remaining_quantity": lowest_ticket.quantity
                     }
@@ -252,7 +252,7 @@ class LowestPriceTicketResource(Resource):
                         "event_id": event_id,
                         "lowest_price_ticket": {
                             "id": ticket.id,
-                            "type_name": ticket.type_name,
+                            "type_name": ticket.type_name.value if hasattr(ticket.type_name, 'value') else str(ticket.type_name),
                             "price": ticket.price,
                             "remaining_quantity": ticket.quantity
                         }
