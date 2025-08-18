@@ -218,8 +218,10 @@ class LowestPriceTicketResource(Resource):
                     "event_id": event_id,
                     "lowest_price_ticket": {
                         "id": lowest_ticket.id,
-                        "type_name": lowest_ticket.type_name.value if hasattr(lowest_ticket.type_name, 'value') else str(lowest_ticket.type_name),
-                        "price": lowest_ticket.price,
+                        "type_name": lowest_ticket.type_name.value,
+                        "price": float(lowest_ticket.price),
+                        "currency": lowest_ticket.currency.code.value if lowest_ticket.currency else "KSH",
+                        "currency_symbol": lowest_ticket.currency.symbol if lowest_ticket.currency else "KSh",
                         "remaining_quantity": lowest_ticket.quantity
                     }
                 }
@@ -252,8 +254,10 @@ class LowestPriceTicketResource(Resource):
                         "event_id": event_id,
                         "lowest_price_ticket": {
                             "id": ticket.id,
-                            "type_name": ticket.type_name.value if hasattr(ticket.type_name, 'value') else str(ticket.type_name),
-                            "price": ticket.price,
+                            "type_name": ticket.type_name.value,
+                            "price": float(ticket.price),
+                            "currency": ticket.currency.code.value if ticket.currency else "KSH",
+                            "currency_symbol": ticket.currency.symbol if ticket.currency else "KSh",
                             "remaining_quantity": ticket.quantity
                         }
                     })
