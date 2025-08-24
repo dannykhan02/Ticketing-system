@@ -7,6 +7,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.uploader
 import logging
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy import func, distinct
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,7 +72,9 @@ class EventResource(Resource):
         basic_category = request.args.get('category', type=str) if not is_dashboard else None  # Public category filter
         time_filter = request.args.get('time_filter', 'upcoming', type=str)  # upcoming, today, past, all
         featured_only = request.args.get('featured', 'false').lower() == 'true'  # Show only featured events
-        location_filter = request.args.get('location', type=str)  # Filter by location
+        location_filter = request.args.get('location', type=str)  # Filter by venue/location
+        city_filter = request.args.get('city', type=str)  # Filter by city
+        amenity_filter = request.args.get('amenity', type=str)  # Filter by specific amenity
         
         # Sorting
         sort_by = request.args.get('sort_by', 'date', type=str)  # date, name, created_at, featured
@@ -140,14 +143,15 @@ class EventResource(Resource):
                 query = query.filter(Event.date < current_date)
             # 'all' shows all events regardless of date
             
-            # General search in event name, description, and location
+            # General search in event name, description, location, and city
             if search_query:
                 search_pattern = f'%{search_query}%'
                 query = query.filter(
                     db.or_(
                         Event.name.ilike(search_pattern),
                         Event.description.ilike(search_pattern),
-                        Event.location.ilike(search_pattern)
+                        Event.location.ilike(search_pattern),
+                        Event.city.ilike(search_pattern)
                     )
                 )
 
@@ -155,9 +159,20 @@ class EventResource(Resource):
             if featured_only:
                 query = query.filter(Event.featured == True)
             
-            # Location filter
+            # Location filter (venue/specific location)
             if location_filter:
                 query = query.filter(Event.location.ilike(f'%{location_filter}%'))
+            
+            # City filter
+            if city_filter:
+                query = query.filter(Event.city.ilike(f'%{city_filter}%'))
+            
+            # Amenity filter
+            if amenity_filter:
+                # Use JSON contains for amenity filtering
+                query = query.filter(
+                    func.json_contains(Event.amenities, f'["{amenity_filter}"]')
+                )
 
             # Sorting
             if sort_by == 'name':
@@ -204,7 +219,8 @@ class EventResource(Resource):
                     'filters_applied': self._get_applied_filters_summary(
                         category_id, category_name, organizer_company, 
                         start_date, end_date, search_query, basic_category, 
-                        time_filter, is_dashboard, featured_only, location_filter
+                        time_filter, is_dashboard, featured_only, location_filter,
+                        city_filter, amenity_filter
                     ),
                     'available_filters': self._get_available_filters(user, is_dashboard),
                     'view_type': 'dashboard' if is_dashboard else 'public'
@@ -218,7 +234,9 @@ class EventResource(Resource):
                     'date': event.date.isoformat(),
                     'start_time': event.start_time.isoformat(),
                     'end_time': event.end_time.isoformat() if event.end_time else None,
+                    'city': event.city,
                     'location': event.location,
+                    'amenities': event.amenities or [],
                     'image': event.image,
                     'category': event.event_category.name if event.event_category else None,
                     'category_id': event.category_id,
@@ -244,7 +262,8 @@ class EventResource(Resource):
                 'filters_applied': self._get_applied_filters_summary(
                     category_id, category_name, organizer_company, 
                     start_date, end_date, search_query, basic_category,
-                    time_filter, is_dashboard, featured_only, location_filter
+                    time_filter, is_dashboard, featured_only, location_filter,
+                    city_filter, amenity_filter
                 ),
                 'available_filters': self._get_available_filters(user, is_dashboard),
                 'view_type': 'dashboard' if is_dashboard else 'public'
@@ -259,7 +278,8 @@ class EventResource(Resource):
 
     def _get_applied_filters_summary(self, category_id, category_name, organizer_company, 
                                    start_date, end_date, search_query, basic_category, 
-                                   time_filter, is_dashboard, featured_only, location_filter):
+                                   time_filter, is_dashboard, featured_only, location_filter,
+                                   city_filter, amenity_filter):
         """Return a summary of applied filters for frontend display."""
         filters = {}
         
@@ -289,6 +309,10 @@ class EventResource(Resource):
             filters['featured'] = featured_only
         if location_filter:
             filters['location'] = location_filter
+        if city_filter:
+            filters['city'] = city_filter
+        if amenity_filter:
+            filters['amenity'] = amenity_filter
             
         return filters
 
@@ -297,6 +321,8 @@ class EventResource(Resource):
         try:
             filters = {
                 'categories': [],
+                'cities': [],
+                'amenities': [],
                 'time_filters': [
                     {'value': 'upcoming', 'label': 'Upcoming Events'},
                     {'value': 'today', 'label': 'Today'},
@@ -314,6 +340,18 @@ class EventResource(Resource):
             # Get available categories
             categories = Category.query.all()
             filters['categories'] = [{'id': cat.id, 'name': cat.name} for cat in categories]
+
+            # Get available cities
+            cities = db.session.query(distinct(Event.city)).filter(Event.city.isnot(None)).all()
+            filters['cities'] = [city[0] for city in cities if city[0]]
+
+            # Get available amenities (from all events)
+            amenities_query = db.session.query(Event.amenities).filter(Event.amenities.isnot(None)).all()
+            all_amenities = set()
+            for amenity_list in amenities_query:
+                if amenity_list[0]:  # Check if amenities is not None
+                    all_amenities.update(amenity_list[0])
+            filters['amenities'] = sorted(list(all_amenities))
 
             if is_dashboard:
                 # Dashboard-specific filters
@@ -351,6 +389,8 @@ class EventResource(Resource):
             logger.error(f"Error getting available filters: {str(e)}")
             return {
                 'categories': [],
+                'cities': [],
+                'amenities': [],
                 'time_filters': [],
                 'organizers': [] if is_dashboard else None,
                 'date_range': {'min_date': None, 'max_date': None} if is_dashboard else None
@@ -374,8 +414,8 @@ class EventResource(Resource):
             data = request.form
             files = request.files
 
-            # Validate required fields
-            required_fields = ["name", "description", "date", "start_time", "location"]
+            # Validate required fields (updated with city)
+            required_fields = ["name", "description", "date", "start_time", "city", "location"]
             for field in required_fields:
                 if field not in data:
                     return {"message": f"Missing field: {field}"}, 400
@@ -407,6 +447,21 @@ class EventResource(Resource):
             if "end_time" in data and data["end_time"]:
                 end_time = datetime.strptime(data["end_time"], "%H:%M").time()
 
+            # Handle amenities
+            amenities = []
+            if "amenities" in data:
+                try:
+                    # Parse amenities from form data (could be JSON string or comma-separated)
+                    amenities_data = data["amenities"]
+                    if amenities_data.startswith('[') and amenities_data.endswith(']'):
+                        # JSON format
+                        amenities = json.loads(amenities_data)
+                    else:
+                        # Comma-separated format
+                        amenities = [amenity.strip() for amenity in amenities_data.split(',') if amenity.strip()]
+                except (json.JSONDecodeError, AttributeError):
+                    return {"message": "Invalid amenities format. Use JSON array or comma-separated values"}, 400
+
             # Get category_id if provided
             category_id = data.get('category_id')
             if category_id:
@@ -421,7 +476,9 @@ class EventResource(Resource):
                 date=event_date,
                 start_time=start_time,
                 end_time=end_time,
+                city=data["city"],
                 location=data["location"],
+                amenities=amenities,
                 image=image_url,
                 organizer_id=organizer.id,
                 category_id=category_id
@@ -503,10 +560,32 @@ class EventResource(Resource):
                 if start_datetime >= end_datetime:
                     return {"error": "Start time must be before end time"}, 400
 
+            # Update basic fields
             event.name = data.get("name", event.name)
             event.description = data.get("description", event.description)
+            event.city = data.get("city", event.city)
             event.location = data.get("location", event.location)
             event.category_id = data.get("category_id", event.category_id)
+
+            # Handle amenities update
+            if "amenities" in data:
+                try:
+                    amenities_data = data["amenities"]
+                    if isinstance(amenities_data, str):
+                        if amenities_data.startswith('[') and amenities_data.endswith(']'):
+                            # JSON format
+                            amenities = json.loads(amenities_data)
+                        else:
+                            # Comma-separated format
+                            amenities = [amenity.strip() for amenity in amenities_data.split(',') if amenity.strip()]
+                    elif isinstance(amenities_data, list):
+                        amenities = amenities_data
+                    else:
+                        amenities = []
+                    
+                    event.amenities = event.validate_amenities(amenities)
+                except (json.JSONDecodeError, ValueError) as e:
+                    return {"error": f"Invalid amenities format: {str(e)}"}, 400
 
             # Handle file if present
             if "file" in request.files:
@@ -553,6 +632,164 @@ class EventResource(Resource):
             db.session.rollback()
             logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True)
             return {"error": "An unexpected error occurred during event deletion."}, 500
+
+class EventsByLocationResource(Resource):
+    """Resource for getting events by city and location with amenities."""
+
+    def get(self, city):
+        """Get events by city with optional location and amenity filters."""
+        try:
+            # Get query parameters
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 20, type=int), 50)
+            location = request.args.get('location', type=str)  # Specific venue/location filter
+            amenity = request.args.get('amenity', type=str)  # Specific amenity filter
+            time_filter = request.args.get('time_filter', 'upcoming', type=str)
+            sort_by = request.args.get('sort_by', 'date', type=str)
+            sort_order = request.args.get('sort_order', 'asc', type=str)
+
+            # Base query filtered by city
+            query = Event.query.filter(Event.city.ilike(f'%{city}%'))
+
+            # Apply time filter
+            current_date = datetime.now().date()
+            if time_filter == 'upcoming':
+                query = query.filter(Event.date >= current_date)
+            elif time_filter == 'today':
+                query = query.filter(Event.date == current_date)
+            elif time_filter == 'past':
+                query = query.filter(Event.date < current_date)
+
+            # Apply location filter if provided
+            if location:
+                query = query.filter(Event.location.ilike(f'%{location}%'))
+
+            # Apply amenity filter if provided
+            if amenity:
+                query = query.filter(
+                    func.json_contains(Event.amenities, f'["{amenity}"]')
+                )
+
+            # Apply sorting
+            if sort_by == 'name':
+                if sort_order.lower() == 'desc':
+                    query = query.order_by(Event.name.desc())
+                else:
+                    query = query.order_by(Event.name.asc())
+            else:  # Default to date
+                if sort_order.lower() == 'desc':
+                    query = query.order_by(Event.date.desc())
+                else:
+                    query = query.order_by(Event.date.asc())
+
+            # Paginate results
+            events = query.paginate(page=page, per_page=per_page, error_out=False)
+
+            # Get unique locations and amenities for this city
+            city_events = Event.query.filter(Event.city.ilike(f'%{city}%')).all()
+            locations = list(set([event.location for event in city_events if event.location]))
+            all_amenities = set()
+            for event in city_events:
+                if event.amenities:
+                    all_amenities.update(event.amenities)
+
+            return {
+                'city': city,
+                'events': [{
+                    'id': event.id,
+                    'name': event.name,
+                    'description': event.description,
+                    'date': event.date.isoformat(),
+                    'start_time': event.start_time.isoformat(),
+                    'end_time': event.end_time.isoformat() if event.end_time else None,
+                    'city': event.city,
+                    'location': event.location,
+                    'amenities': event.amenities or [],
+                    'image': event.image,
+                    'category': event.event_category.name if event.event_category else None,
+                    'featured': event.featured,
+                    'organizer': {
+                        'id': event.organizer.id,
+                        'company_name': event.organizer.company_name,
+                        'company_logo': event.organizer.company_logo if hasattr(event.organizer, 'company_logo') else None,
+                        'company_description': event.organizer.company_description
+                    },
+                    'likes_count': event.likes.count(),
+                } for event in events.items],
+                'pagination': {
+                    'total': events.total,
+                    'pages': events.pages,
+                    'current_page': events.page,
+                    'per_page': events.per_page,
+                    'has_next': events.has_next,
+                    'has_prev': events.has_prev
+                },
+                'available_filters': {
+                    'locations': sorted(locations),
+                    'amenities': sorted(list(all_amenities)),
+                    'time_filters': ['upcoming', 'today', 'past', 'all']
+                },
+                'filters_applied': {
+                    'city': city,
+                    'location': location,
+                    'amenity': amenity,
+                    'time_filter': time_filter
+                }
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching events for city {city}: {str(e)}")
+            return {"message": "Error fetching events by location"}, 500
+
+class CitiesResource(Resource):
+    """Resource for getting available cities and their event counts."""
+
+    def get(self):
+        """Get all cities with event counts."""
+        try:
+            # Get cities with event counts
+            cities_query = db.session.query(
+                Event.city,
+                func.count(Event.id).label('event_count')
+            ).filter(
+                Event.city.isnot(None),
+                Event.date >= datetime.now().date()  # Only upcoming events
+            ).group_by(Event.city).all()
+
+            cities = []
+            for city, count in cities_query:
+                if city:  # Ensure city is not None or empty
+                    # Get sample amenities for this city (top 5 most common)
+                    city_amenities_query = db.session.query(Event.amenities).filter(
+                        Event.city.ilike(f'%{city}%'),
+                        Event.amenities.isnot(None)
+                    ).all()
+                    
+                    amenities_count = {}
+                    for amenity_list in city_amenities_query:
+                        if amenity_list[0]:
+                            for amenity in amenity_list[0]:
+                                amenities_count[amenity] = amenities_count.get(amenity, 0) + 1
+                    
+                    top_amenities = sorted(amenities_count.items(), key=lambda x: x[1], reverse=True)[:5]
+                    
+                    cities.append({
+                        'city': city,
+                        'event_count': count,
+                        'top_amenities': [amenity for amenity, _ in top_amenities]
+                    })
+
+            # Sort by event count descending
+            cities.sort(key=lambda x: x['event_count'], reverse=True)
+
+            return {
+                'cities': cities,
+                'total_cities': len(cities)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching cities: {str(e)}")
+            return {"message": "Error fetching cities"}, 500
 
 class EventLikeResource(Resource):
     """Resource for handling event likes."""
@@ -646,6 +883,8 @@ class CategoryResource(Resource):
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
+    api.add_resource(EventsByLocationResource, "/events/city/<string:city>")
+    api.add_resource(CitiesResource, "/cities")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
     api.add_resource(CategoryResource, "/categories")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")

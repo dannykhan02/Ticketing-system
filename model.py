@@ -227,6 +227,7 @@ class Category(db.Model):
         }
 
 # Event model
+# Event model with amenities
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.Text, nullable=False)
@@ -234,7 +235,9 @@ class Event(db.Model):
     date = db.Column(db.Date, nullable=False, index=True)  # Index for faster search
     start_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=True)  # Made nullable if optional
-    location = db.Column(db.Text, nullable=False)
+    city = db.Column(db.String(100), nullable=False, index=True)  # New city field
+    location = db.Column(db.Text, nullable=False)  # Venue/specific location within city
+    amenities = db.Column(db.JSON, nullable=True)  # JSON array for amenities (max 5)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
     featured = db.Column(db.Boolean, default=False, nullable=False)  # New featured column
@@ -247,17 +250,38 @@ class Event(db.Model):
     tickets = db.relationship('Ticket', backref='event', lazy=True, cascade="all, delete")
     reports = db.relationship('Report', backref='event', lazy=True, cascade="all, delete")
 
-    def __init__(self, name, description, date, start_time, end_time, location, image, organizer_id, category_id):
+    def __init__(self, name, description, date, start_time, end_time, city, location, amenities, image, organizer_id, category_id):
         self.name = name
         self.description = description
         self.date = date
         self.start_time = start_time
         self.end_time = end_time
+        self.city = city
         self.location = location
+        self.amenities = self.validate_amenities(amenities)
         self.image = image
         self.organizer_id = organizer_id
         self.category_id = category_id
         self.validate_datetime()
+
+    def validate_amenities(self, amenities):
+        """Validates that amenities list contains maximum 5 items."""
+        if amenities is None:
+            return []
+        
+        if not isinstance(amenities, list):
+            raise ValueError("Amenities must be a list.")
+        
+        if len(amenities) > 5:
+            raise ValueError("Maximum of 5 amenities allowed per event.")
+        
+        # Remove empty strings and duplicates while preserving order
+        validated_amenities = []
+        for amenity in amenities:
+            if isinstance(amenity, str) and amenity.strip() and amenity.strip() not in validated_amenities:
+                validated_amenities.append(amenity.strip())
+        
+        return validated_amenities
 
     def validate_datetime(self):
         """Ensures start_time is before end_time and date is not in the past."""
@@ -288,7 +312,9 @@ class Event(db.Model):
             "date": self.date.strftime("%Y-%m-%d") if self.date else None,
             "start_time": self.start_time.strftime("%H:%M:%S") if self.start_time else None,
             "end_time": self.end_time.strftime("%H:%M:%S") if self.end_time else None,
+            "city": self.city,
             "location": self.location,
+            "amenities": self.amenities or [],
             "image": self.image,
             "organizer_id": self.organizer_id,
             "organizer": {
