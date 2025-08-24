@@ -235,7 +235,7 @@ class Event(db.Model):
     date = db.Column(db.Date, nullable=False, index=True)  # Index for faster search
     start_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=True)  # Made nullable if optional
-    city = db.Column(db.String(100), nullable=False, index=True)  # New city field
+    city = db.Column(db.String(100), nullable=False, index=True, server_default="Unknown")  # New city field
     location = db.Column(db.Text, nullable=False)  # Venue/specific location within city
     amenities = db.Column(db.JSON, nullable=True)  # JSON array for amenities (max 5)
     image = db.Column(db.String(255), nullable=True)  # Made nullable if optional
