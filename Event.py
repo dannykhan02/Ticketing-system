@@ -791,6 +791,55 @@ class CitiesResource(Resource):
             logger.error(f"Error fetching cities: {str(e)}")
             return {"message": "Error fetching cities"}, 500
 
+class StatsResource(Resource):
+    """Resource for getting platform statistics."""
+
+    def get(self):
+        """Get platform statistics including venues, events, cities, and featured venues."""
+        try:
+            current_date = datetime.now().date()
+            
+            # Count unique venues (locations) - treating each unique location as a venue
+            total_venues_query = db.session.query(
+                func.count(distinct(Event.location))
+            ).filter(Event.location.isnot(None)).scalar()
+
+            # Count total events (all events regardless of date)
+            total_events = Event.query.count()
+
+            # Count active cities (cities with upcoming events)
+            active_cities_query = db.session.query(
+                func.count(distinct(Event.city))
+            ).filter(
+                Event.city.isnot(None),
+                Event.date >= current_date
+            ).scalar()
+
+            # Count featured venues (unique locations that have featured events)
+            featured_venues_query = db.session.query(
+                func.count(distinct(Event.location))
+            ).filter(
+                Event.featured == True,
+                Event.location.isnot(None)
+            ).scalar()
+
+            stats = {
+                "total_venues": total_venues_query or 0,
+                "total_events": total_events or 0,
+                "active_cities": active_cities_query or 0,
+                "featured_venues": featured_venues_query or 0
+            }
+
+            logger.info(f"Platform stats retrieved: {stats}")
+            return stats, 200
+
+        except (OperationalError, SQLAlchemyError) as e:
+            logger.error(f"Database error while fetching stats: {str(e)}")
+            return {"message": "Database connection error"}, 500
+        except Exception as e:
+            logger.error(f"Error fetching platform stats: {str(e)}")
+            return {"message": "Error fetching platform statistics"}, 500
+
 class EventLikeResource(Resource):
     """Resource for handling event likes."""
 
@@ -885,6 +934,7 @@ def register_event_resources(api):
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(EventsByLocationResource, "/events/city/<string:city>")
     api.add_resource(CitiesResource, "/cities")
+    api.add_resource(StatsResource, "/api/stats")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
     api.add_resource(CategoryResource, "/categories")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
