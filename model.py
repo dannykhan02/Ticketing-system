@@ -42,7 +42,7 @@ class PaymentMethod(enum.Enum):
     MPESA = 'Mpesa'
     PAYSTACK = 'Paystack'
 
-# New Currency-related Enums
+# Currency-related Enums
 class CurrencyCode(enum.Enum):
     USD = "USD"  # US Dollar
     EUR = "EUR"  # Euro
@@ -57,15 +57,25 @@ class CurrencyCode(enum.Enum):
     CAD = "CAD"  # Canadian Dollar
     AUD = "AUD"  # Australian Dollar
 
+# NEW: Collaboration Types
+class CollaborationType(enum.Enum):
+    PARTNER = "Partner"
+    OFFICIAL_PARTNER = "Official Partner"
+    COLLABORATOR = "Collaborator" 
+    SUPPORTER = "Supporter"
+    MEDIA_PARTNER = "Media Partner"
 
-# Add a new association table for likes
+    def __str__(self):
+        return self.value
+
+# Association table for event likes
 event_likes = db.Table(
     'event_likes',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('event_id', db.Integer, db.ForeignKey('event.id'), primary_key=True)
 )
 
-# New Currency Model
+# Currency Model
 class Currency(db.Model):
     __tablename__ = 'currencies'
     
@@ -96,7 +106,7 @@ class Currency(db.Model):
             "updated_at": self.updated_at.isoformat()
         }
 
-# New Exchange Rate Model
+# Exchange Rate Model
 class ExchangeRate(db.Model):
     __tablename__ = 'exchange_rates'
     
@@ -189,6 +199,7 @@ class Organizer(db.Model):
     user = db.relationship('User', backref=db.backref('organizer_profile', uselist=False))
     events = db.relationship('Event', backref='organizer', lazy=True)
     tickets = db.relationship('Ticket', backref='organizer', lazy=True)
+    partners = db.relationship('Partner', backref='organizer', lazy=True)  # NEW: Partners relationship
 
     def as_dict(self):
         return {
@@ -204,10 +215,11 @@ class Organizer(db.Model):
             "address": self.address,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
-            "events_count": len(self.events)
+            "events_count": len(self.events),
+            "partners_count": len([p for p in self.partners if p.is_active])  # NEW: Active partners count
         }
 
-# Add Category model before Event model
+# Category model
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
@@ -226,8 +238,92 @@ class Category(db.Model):
             "updated_at": self.updated_at.isoformat()
         }
 
-# Event model
-# Event model with amenities
+# NEW: Partner/Collaborator Company Model
+class Partner(db.Model):
+    __tablename__ = 'partners'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
+    
+    # Basic company info
+    company_name = db.Column(db.String(255), nullable=False)
+    company_description = db.Column(db.Text, nullable=True)
+    logo_url = db.Column(db.String(500), nullable=True)
+    website_url = db.Column(db.String(500), nullable=True)
+    
+    # Contact info (optional)
+    contact_email = db.Column(db.String(255), nullable=True)
+    contact_person = db.Column(db.String(255), nullable=True)
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    collaborations = db.relationship('EventCollaboration', back_populates='partner', lazy=True)
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "organizer_id": self.organizer_id,
+            "company_name": self.company_name,
+            "company_description": self.company_description,
+            "logo_url": self.logo_url,
+            "website_url": self.website_url,
+            "contact_email": self.contact_email,
+            "contact_person": self.contact_person,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "total_collaborations": len([c for c in self.collaborations if c.is_active])
+        }
+
+# NEW: Junction table for Event-Partner collaborations
+class EventCollaboration(db.Model):
+    __tablename__ = 'event_collaborations'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
+    partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=False)
+    
+    # Simple collaboration details
+    collaboration_type = db.Column(db.Enum(CollaborationType), default=CollaborationType.PARTNER, nullable=False)
+    description = db.Column(db.Text, nullable=True)  # Optional: "Official beverage partner" etc.
+    
+    # Display settings
+    show_on_event_page = db.Column(db.Boolean, default=True, nullable=False)
+    display_order = db.Column(db.Integer, default=0, nullable=False)  # For ordering partners on display
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    event = db.relationship('Event', backref='collaborations')
+    partner = db.relationship('Partner', back_populates='collaborations')
+    
+    # Unique constraint - one partner can only have one active collaboration per event
+    __table_args__ = (
+        db.UniqueConstraint('event_id', 'partner_id', 'is_active', name='uix_active_event_collaboration'),
+    )
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "event_id": self.event_id,
+            "partner_id": self.partner_id,
+            "collaboration_type": self.collaboration_type.value,
+            "description": self.description,
+            "show_on_event_page": self.show_on_event_page,
+            "display_order": self.display_order,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat(),
+            "partner": self.partner.as_dict() if self.partner else None,
+            "event_name": self.event.name if self.event else None
+        }
+
+# Event model (UPDATED with collaboration methods - FIXED imports)
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.Text, nullable=False)
@@ -304,6 +400,56 @@ class Event(db.Model):
 
         self.end_datetime = end_datetime  # Store for later use
 
+    # FIXED: Direct collaboration methods without imports
+    def add_collaborator(self, partner_id, collaboration_type="Partner", description=None, display_order=0):
+        """Add a collaborator to this event using CollaborationManager methods directly"""
+        # Check if collaboration already exists
+        existing = EventCollaboration.query.filter_by(
+            event_id=self.id,
+            partner_id=partner_id,
+            is_active=True
+        ).first()
+        
+        if existing:
+            return {"error": "Collaboration already exists", "collaboration": existing}
+        
+        # Create collaboration
+        collaboration = EventCollaboration(
+            event_id=self.id,
+            partner_id=partner_id,
+            collaboration_type=CollaborationType(collaboration_type) if isinstance(collaboration_type, str) else collaboration_type,
+            description=description,
+            display_order=display_order
+        )
+        
+        db.session.add(collaboration)
+        db.session.commit()
+        return {"success": True, "collaboration": collaboration}
+
+    def get_collaborators(self, active_only=True):
+        """Get all collaborators for this event"""
+        query = EventCollaboration.query.filter_by(event_id=self.id)
+        
+        if active_only:
+            query = query.filter_by(is_active=True, show_on_event_page=True)
+            
+        return query.order_by(EventCollaboration.display_order.asc()).all()
+
+    def remove_collaborator(self, partner_id):
+        """Remove a collaborator from this event"""
+        collaboration = EventCollaboration.query.filter_by(
+            event_id=self.id,
+            partner_id=partner_id,
+            is_active=True
+        ).first()
+        
+        if collaboration:
+            collaboration.is_active = False
+            db.session.commit()
+            return {"success": True, "message": "Collaboration removed"}
+        
+        return {"error": "Collaboration not found"}
+
     def as_dict(self):
         return {
             "id": self.id,
@@ -335,6 +481,28 @@ class Event(db.Model):
             "likes_count": self.likes.count(),  # Include the number of likes
             "category": self.event_category.name if self.event_category else None
         }
+
+    def as_dict_with_collaborators(self):
+        """Enhanced as_dict that includes collaboration info"""
+        base_dict = self.as_dict()  # Your existing as_dict method
+        
+        # Add collaborator information
+        collaborators = self.get_collaborators(active_only=True)
+        base_dict["collaborators"] = [
+            {
+                "id": collab.partner.id,
+                "company_name": collab.partner.company_name,
+                "logo_url": collab.partner.logo_url,
+                "website_url": collab.partner.website_url,
+                "collaboration_type": collab.collaboration_type.value,
+                "description": collab.description,
+                "display_order": collab.display_order
+            } for collab in collaborators
+        ]
+        
+        base_dict["collaborators_count"] = len(collaborators)
+        
+        return base_dict
 
 # TicketType model - Updated with currency support
 class TicketType(db.Model):
@@ -475,7 +643,6 @@ class Report(db.Model):
             data["ticket_type_name"] = self.ticket_type.type_name.value if self.ticket_type and self.ticket_type.type_name else "N/A"
         
         return data
-
 
 class Ticket(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -633,6 +800,90 @@ class Scan(db.Model):
             "scanned_at": self.scanned_at.isoformat(),
             "scanned_by": self.scanned_by
         }
+
+# NEW: Helper class for managing collaborations
+class CollaborationManager:
+    
+    @staticmethod
+    def create_partner(organizer_id, company_name, logo_url=None, website_url=None, 
+                      company_description=None, contact_email=None, contact_person=None):
+        """Create a new partner company"""
+        partner = Partner(
+            organizer_id=organizer_id,
+            company_name=company_name,
+            logo_url=logo_url,
+            website_url=website_url,
+            company_description=company_description,
+            contact_email=contact_email,
+            contact_person=contact_person
+        )
+        db.session.add(partner)
+        db.session.commit()
+        return partner
+    
+    @staticmethod
+    def add_event_collaboration(event_id, partner_id, collaboration_type="Partner", 
+                               description=None, display_order=0):
+        """Add a partner as collaborator to an event"""
+        
+        # Check if collaboration already exists
+        existing = EventCollaboration.query.filter_by(
+            event_id=event_id,
+            partner_id=partner_id,
+            is_active=True
+        ).first()
+        
+        if existing:
+            return {"error": "Collaboration already exists", "collaboration": existing}
+        
+        # Create collaboration
+        collaboration = EventCollaboration(
+            event_id=event_id,
+            partner_id=partner_id,
+            collaboration_type=CollaborationType(collaboration_type) if isinstance(collaboration_type, str) else collaboration_type,
+            description=description,
+            display_order=display_order
+        )
+        
+        db.session.add(collaboration)
+        db.session.commit()
+        return {"success": True, "collaboration": collaboration}
+    
+    @staticmethod
+    def get_event_collaborators(event_id, active_only=True):
+        """Get all collaborators for an event"""
+        query = EventCollaboration.query.filter_by(event_id=event_id)
+        
+        if active_only:
+            query = query.filter_by(is_active=True, show_on_event_page=True)
+            
+        return query.order_by(EventCollaboration.display_order.asc()).all()
+    
+    @staticmethod
+    def get_partner_events(partner_id, active_only=True):
+        """Get all events a partner collaborates with"""
+        query = EventCollaboration.query.filter_by(partner_id=partner_id)
+        
+        if active_only:
+            query = query.filter_by(is_active=True)
+            
+        return query.order_by(EventCollaboration.created_at.desc()).all()
+    
+    @staticmethod
+    def remove_collaboration(event_id, partner_id):
+        """Remove/deactivate a collaboration"""
+        collaboration = EventCollaboration.query.filter_by(
+            event_id=event_id,
+            partner_id=partner_id,
+            is_active=True
+        ).first()
+        
+        if collaboration:
+            collaboration.is_active = False
+            db.session.commit()
+            return {"success": True, "message": "Collaboration removed"}
+        
+        return {"error": "Collaboration not found"}
 
 # Utility functions for currency operations
 class CurrencyConverter:
