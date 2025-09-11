@@ -2,7 +2,8 @@ import json
 from flask import request, jsonify
 from flask_restful import Resource
 from datetime import datetime, timedelta
-from model import db, Event, User, UserRole, Organizer, Category
+from model import (db, Event, User, UserRole, Organizer, Category, Partner, 
+                   EventCollaboration, CollaborationType, CollaborationManager)
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.uploader
 import logging
@@ -34,6 +35,9 @@ class EventResource(Resource):
             # No authentication or invalid token - continue as public user
             pass
 
+        # Check if collaborators should be included in response
+        include_collaborators = request.args.get('include_collaborators', 'false').lower() == 'true'
+
         if event_id:
             try:
                 event = Event.query.get(event_id)
@@ -46,7 +50,11 @@ class EventResource(Resource):
                     if organizer and event.organizer_id != organizer.id:
                         return {"error": "Access denied. You can only view your own events"}, 403
                 
-                return event.as_dict(), 200
+                # Return event with or without collaborators based on request
+                if include_collaborators:
+                    return event.as_dict_with_collaborators(), 200
+                else:
+                    return event.as_dict(), 200
             except (OperationalError, SQLAlchemyError) as e:
                 logger.error(f"Database error: {str(e)}")
                 return {"message": "Database connection error"}, 500
@@ -226,33 +234,42 @@ class EventResource(Resource):
                     'view_type': 'dashboard' if is_dashboard else 'public'
                 }
 
+            # Format events data - include collaborators if requested
+            events_data = []
+            for event in events.items:
+                if include_collaborators:
+                    event_dict = event.as_dict_with_collaborators()
+                else:
+                    event_dict = {
+                        'id': event.id,
+                        'name': event.name,
+                        'description': event.description,
+                        'date': event.date.isoformat(),
+                        'start_time': event.start_time.isoformat(),
+                        'end_time': event.end_time.isoformat() if event.end_time else None,
+                        'city': event.city,
+                        'location': event.location,
+                        'amenities': event.amenities or [],
+                        'image': event.image,
+                        'category': event.event_category.name if event.event_category else None,
+                        'category_id': event.category_id,
+                        'featured': event.featured,
+                        'organizer': {
+                            'id': event.organizer.id,
+                            'company_name': event.organizer.company_name,
+                            'company_logo': event.organizer.company_logo,
+                            'media': event.organizer.social_media_links,
+                            'address': event.organizer.address,
+                            'website': event.organizer.website,
+                            'company_description': event.organizer.company_description
+                        },
+                        'likes_count': event.likes.count(),
+                        'created_at': event.created_at.isoformat() if hasattr(event, 'created_at') else None
+                    }
+                events_data.append(event_dict)
+
             return {
-                'events': [{
-                    'id': event.id,
-                    'name': event.name,
-                    'description': event.description,
-                    'date': event.date.isoformat(),
-                    'start_time': event.start_time.isoformat(),
-                    'end_time': event.end_time.isoformat() if event.end_time else None,
-                    'city': event.city,
-                    'location': event.location,
-                    'amenities': event.amenities or [],
-                    'image': event.image,
-                    'category': event.event_category.name if event.event_category else None,
-                    'category_id': event.category_id,
-                    'featured': event.featured,
-                    'organizer': {
-                        'id': event.organizer.id,
-                        'company_name': event.organizer.company_name,
-                        'company_logo': event.organizer.company_logo,
-                        'media': event.organizer.social_media_links,
-                        'address': event.organizer.address,
-                        'website': event.organizer.website,
-                        'company_description': event.organizer.company_description
-                    },
-                    'likes_count': event.likes.count(),
-                    'created_at': event.created_at.isoformat() if hasattr(event, 'created_at') else None
-                } for event in events.items],
+                'events': events_data,
                 'total': events.total,
                 'pages': events.pages,
                 'current_page': events.page,
@@ -633,6 +650,359 @@ class EventResource(Resource):
             logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True)
             return {"error": "An unexpected error occurred during event deletion."}, 500
 
+# NEW: Partner Resource for managing partners/collaborators
+class PartnerResource(Resource):
+    """Resource for managing partners/collaborator companies."""
+
+    @jwt_required()
+    def get(self, partner_id=None):
+        """Get partners for the current organizer."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can access partners"}, 403
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            if partner_id:
+                # Get specific partner
+                partner = Partner.query.filter_by(id=partner_id, organizer_id=organizer.id).first()
+                if not partner:
+                    return {"message": "Partner not found"}, 404
+                
+                return partner.as_dict(), 200
+            else:
+                # Get all partners for this organizer
+                partners = Partner.query.filter_by(organizer_id=organizer.id, is_active=True).all()
+                return {
+                    'partners': [partner.as_dict() for partner in partners],
+                    'total': len(partners)
+                }, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching partners: {str(e)}")
+            return {"message": "Error fetching partners"}, 500
+
+    @jwt_required()
+    def post(self):
+        """Create a new partner company."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can create partners"}, 403
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            data = request.get_json()
+            if not data or 'company_name' not in data:
+                return {"message": "Company name is required"}, 400
+
+            # Create new partner using CollaborationManager
+            partner = CollaborationManager.create_partner(
+                organizer_id=organizer.id,
+                company_name=data['company_name'],
+                logo_url=data.get('logo_url'),
+                website_url=data.get('website_url'),
+                company_description=data.get('company_description'),
+                contact_email=data.get('contact_email'),
+                contact_person=data.get('contact_person')
+            )
+
+            return {
+                "message": "Partner created successfully",
+                "partner": partner.as_dict()
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error creating partner: {str(e)}")
+            return {"message": "Error creating partner"}, 500
+
+    @jwt_required()
+    def put(self, partner_id):
+        """Update an existing partner."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can update partners"}, 403
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            partner = Partner.query.filter_by(id=partner_id, organizer_id=organizer.id).first()
+            if not partner:
+                return {"message": "Partner not found"}, 404
+
+            data = request.get_json()
+            if not data:
+                return {"message": "No data provided"}, 400
+
+            # Update partner fields
+            if 'company_name' in data:
+                partner.company_name = data['company_name']
+            if 'logo_url' in data:
+                partner.logo_url = data['logo_url']
+            if 'website_url' in data:
+                partner.website_url = data['website_url']
+            if 'company_description' in data:
+                partner.company_description = data['company_description']
+            if 'contact_email' in data:
+                partner.contact_email = data['contact_email']
+            if 'contact_person' in data:
+                partner.contact_person = data['contact_person']
+
+            db.session.commit()
+            return {
+                "message": "Partner updated successfully",
+                "partner": partner.as_dict()
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error updating partner: {str(e)}")
+            return {"message": "Error updating partner"}, 500
+
+    @jwt_required()
+    def delete(self, partner_id):
+        """Delete/deactivate a partner."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can delete partners"}, 403
+
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            partner = Partner.query.filter_by(id=partner_id, organizer_id=organizer.id).first()
+            if not partner:
+                return {"message": "Partner not found"}, 404
+
+            # Deactivate instead of delete to preserve collaboration history
+            partner.is_active = False
+            db.session.commit()
+
+            return {"message": "Partner deleted successfully"}, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error deleting partner: {str(e)}")
+            return {"message": "Error deleting partner"}, 500
+
+# NEW: Event Collaboration Resource
+class EventCollaborationResource(Resource):
+    """Resource for managing event collaborations."""
+
+    @jwt_required()
+    def get(self, event_id, collaboration_id=None):
+        """Get collaborations for a specific event."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can access collaborations"}, 403
+
+            # Verify event ownership
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+            if not event:
+                return {"message": "Event not found or access denied"}, 404
+
+            if collaboration_id:
+                # Get specific collaboration
+                collaboration = EventCollaboration.query.filter_by(
+                    id=collaboration_id, 
+                    event_id=event_id
+                ).first()
+                if not collaboration:
+                    return {"message": "Collaboration not found"}, 404
+                
+                return collaboration.as_dict(), 200
+            else:
+                # Get all collaborations for this event
+                collaborations = CollaborationManager.get_event_collaborators(event_id, active_only=False)
+                return {
+                    'collaborations': [collab.as_dict() for collab in collaborations],
+                    'event_id': event_id,
+                    'total': len(collaborations)
+                }, 200
+
+        except Exception as e:
+            logger.error(f"Error fetching collaborations: {str(e)}")
+            return {"message": "Error fetching collaborations"}, 500
+
+    @jwt_required()
+    def post(self, event_id):
+        """Add a collaboration to an event."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can add collaborations"}, 403
+
+            # Verify event ownership
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+            if not event:
+                return {"message": "Event not found or access denied"}, 404
+
+            data = request.get_json()
+            if not data or 'partner_id' not in data:
+                return {"message": "Partner ID is required"}, 400
+
+            # Verify partner ownership
+            partner = Partner.query.filter_by(
+                id=data['partner_id'], 
+                organizer_id=organizer.id,
+                is_active=True
+            ).first()
+            if not partner:
+                return {"message": "Partner not found or inactive"}, 404
+
+            # Validate collaboration type
+            collaboration_type = data.get('collaboration_type', 'Partner')
+            try:
+                collaboration_type_enum = CollaborationType(collaboration_type)
+            except ValueError:
+                valid_types = [ct.value for ct in CollaborationType]
+                return {"message": f"Invalid collaboration type. Valid options: {valid_types}"}, 400
+
+            # Add collaboration using CollaborationManager
+            result = CollaborationManager.add_event_collaboration(
+                event_id=event_id,
+                partner_id=data['partner_id'],
+                collaboration_type=collaboration_type,
+                description=data.get('description'),
+                display_order=data.get('display_order', 0)
+            )
+
+            if 'error' in result:
+                return {"message": result['error']}, 400
+
+            return {
+                "message": "Collaboration added successfully",
+                "collaboration": result['collaboration'].as_dict()
+            }, 201
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error adding collaboration: {str(e)}")
+            return {"message": "Error adding collaboration"}, 500
+
+    @jwt_required()
+    def put(self, event_id, collaboration_id):
+        """Update an existing collaboration."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can update collaborations"}, 403
+
+            # Verify event ownership
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+            if not event:
+                return {"message": "Event not found or access denied"}, 404
+
+            collaboration = EventCollaboration.query.filter_by(
+                id=collaboration_id, 
+                event_id=event_id
+            ).first()
+            if not collaboration:
+                return {"message": "Collaboration not found"}, 404
+
+            data = request.get_json()
+            if not data:
+                return {"message": "No data provided"}, 400
+
+            # Update collaboration fields
+            if 'collaboration_type' in data:
+                try:
+                    collaboration.collaboration_type = CollaborationType(data['collaboration_type'])
+                except ValueError:
+                    valid_types = [ct.value for ct in CollaborationType]
+                    return {"message": f"Invalid collaboration type. Valid options: {valid_types}"}, 400
+
+            if 'description' in data:
+                collaboration.description = data['description']
+            if 'display_order' in data:
+                collaboration.display_order = data['display_order']
+            if 'show_on_event_page' in data:
+                collaboration.show_on_event_page = data['show_on_event_page']
+
+            db.session.commit()
+            return {
+                "message": "Collaboration updated successfully",
+                "collaboration": collaboration.as_dict()
+            }, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error updating collaboration: {str(e)}")
+            return {"message": "Error updating collaboration"}, 500
+
+    @jwt_required()
+    def delete(self, event_id, collaboration_id):
+        """Remove a collaboration from an event."""
+        try:
+            identity = get_jwt_identity()
+            user = User.query.get(identity)
+
+            if not user or user.role != UserRole.ORGANIZER:
+                return {"message": "Only organizers can remove collaborations"}, 403
+
+            # Verify event ownership
+            organizer = Organizer.query.filter_by(user_id=user.id).first()
+            if not organizer:
+                return {"message": "Organizer profile not found"}, 404
+
+            event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+            if not event:
+                return {"message": "Event not found or access denied"}, 404
+
+            collaboration = EventCollaboration.query.filter_by(
+                id=collaboration_id, 
+                event_id=event_id
+            ).first()
+            if not collaboration:
+                return {"message": "Collaboration not found"}, 404
+
+            # Deactivate collaboration
+            collaboration.is_active = False
+            db.session.commit()
+
+            return {"message": "Collaboration removed successfully"}, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error removing collaboration: {str(e)}")
+            return {"message": "Error removing collaboration"}, 500
+
 class EventsByLocationResource(Resource):
     """Resource for getting events by city and location with amenities."""
 
@@ -647,6 +1017,7 @@ class EventsByLocationResource(Resource):
             time_filter = request.args.get('time_filter', 'upcoming', type=str)
             sort_by = request.args.get('sort_by', 'date', type=str)
             sort_order = request.args.get('sort_order', 'asc', type=str)
+            include_collaborators = request.args.get('include_collaborators', 'false').lower() == 'true'
 
             # Base query filtered by city
             query = Event.query.filter(Event.city.ilike(f'%{city}%'))
@@ -693,29 +1064,38 @@ class EventsByLocationResource(Resource):
                 if event.amenities:
                     all_amenities.update(event.amenities)
 
+            # Format events data
+            events_data = []
+            for event in events.items:
+                if include_collaborators:
+                    event_dict = event.as_dict_with_collaborators()
+                else:
+                    event_dict = {
+                        'id': event.id,
+                        'name': event.name,
+                        'description': event.description,
+                        'date': event.date.isoformat(),
+                        'start_time': event.start_time.isoformat(),
+                        'end_time': event.end_time.isoformat() if event.end_time else None,
+                        'city': event.city,
+                        'location': event.location,
+                        'amenities': event.amenities or [],
+                        'image': event.image,
+                        'category': event.event_category.name if event.event_category else None,
+                        'featured': event.featured,
+                        'organizer': {
+                            'id': event.organizer.id,
+                            'company_name': event.organizer.company_name,
+                            'company_logo': event.organizer.company_logo if hasattr(event.organizer, 'company_logo') else None,
+                            'company_description': event.organizer.company_description
+                        },
+                        'likes_count': event.likes.count(),
+                    }
+                events_data.append(event_dict)
+
             return {
                 'city': city,
-                'events': [{
-                    'id': event.id,
-                    'name': event.name,
-                    'description': event.description,
-                    'date': event.date.isoformat(),
-                    'start_time': event.start_time.isoformat(),
-                    'end_time': event.end_time.isoformat() if event.end_time else None,
-                    'city': event.city,
-                    'location': event.location,
-                    'amenities': event.amenities or [],
-                    'image': event.image,
-                    'category': event.event_category.name if event.event_category else None,
-                    'featured': event.featured,
-                    'organizer': {
-                        'id': event.organizer.id,
-                        'company_name': event.organizer.company_name,
-                        'company_logo': event.organizer.company_logo if hasattr(event.organizer, 'company_logo') else None,
-                        'company_description': event.organizer.company_description
-                    },
-                    'likes_count': event.likes.count(),
-                } for event in events.items],
+                'events': events_data,
                 'pagination': {
                     'total': events.total,
                     'pages': events.pages,
@@ -883,6 +1263,7 @@ class OrganizerEventsResource(Resource):
         """Retrieve events created by the logged-in organizer."""
         current_user_id = get_jwt_identity()
         user = User.query.get(current_user_id)
+        include_collaborators = request.args.get('include_collaborators', 'false').lower() == 'true'
 
         if not user or user.role.value != UserRole.ORGANIZER.value:
             return {"message": "Only organizers can access their events"}, 403
@@ -892,7 +1273,12 @@ class OrganizerEventsResource(Resource):
         if organizer:
             events = Event.query.filter_by(organizer_id=organizer.id).all()
             logger.info(f"Fetched events for organizer_id {organizer.id}: {len(events)} events")
-            event_list = [event.as_dict() for event in events]
+            
+            if include_collaborators:
+                event_list = [event.as_dict_with_collaborators() for event in events]
+            else:
+                event_list = [event.as_dict() for event in events]
+            
             return event_list, 200
         else:
             logger.warning(f"User {current_user_id} has ORGANIZER role but no Organizer profile found.")
@@ -939,3 +1325,9 @@ def register_event_resources(api):
     api.add_resource(CategoryResource, "/categories")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
+    
+    # NEW: Partner and Collaboration endpoints
+    api.add_resource(PartnerResource, "/partners", "/partners/<int:partner_id>")
+    api.add_resource(EventCollaborationResource, 
+                    "/events/<int:event_id>/collaborations", 
+                    "/events/<int:event_id>/collaborations/<int:collaboration_id>")
