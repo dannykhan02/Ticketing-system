@@ -813,31 +813,36 @@ class EventCollaborationResource(Resource):
             identity = get_jwt_identity()
             user = User.query.get(identity)
 
-            if not user or user.role != UserRole.ORGANIZER:
-                return {"message": "Only organizers can access collaborations"}, 403
-
-            # Verify event ownership
-            organizer = Organizer.query.filter_by(user_id=user.id).first()
-            if not organizer:
-                return {"message": "Organizer profile not found"}, 404
-
-            event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+            # Check if the event exists
+            event = Event.query.get(event_id)
             if not event:
-                return {"message": "Event not found or access denied"}, 404
+                return {"message": "Event not found"}, 404
+
+            # Check if the user is the organizer of the event
+            is_organizer = user and user.role == UserRole.ORGANIZER and event.organizer_id == user.organizer.id if user.organizer else False
 
             if collaboration_id:
-                # Get specific collaboration
                 collaboration = EventCollaboration.query.filter_by(
-                    id=collaboration_id, 
+                    id=collaboration_id,
                     event_id=event_id
                 ).first()
+
                 if not collaboration:
+                    return {"message": "Collaboration not found"}, 404
+
+                # Allow access to inactive collaborations only if the user is the organizer
+                if not is_organizer and not collaboration.is_active:
                     return {"message": "Collaboration not found"}, 404
                 
                 return collaboration.as_dict(), 200
             else:
-                # Get all collaborations for this event
-                collaborations = CollaborationManager.get_event_collaborators(event_id, active_only=False)
+                # If the user is the organizer, show all collaborations (active and inactive)
+                if is_organizer:
+                    collaborations = CollaborationManager.get_event_collaborators(event_id, active_only=False)
+                # Otherwise, show only active collaborations to all other logged-in users
+                else:
+                    collaborations = CollaborationManager.get_event_collaborators(event_id, active_only=True)
+
                 return {
                     'collaborations': [collab.as_dict() for collab in collaborations],
                     'event_id': event_id,
@@ -1002,7 +1007,6 @@ class EventCollaborationResource(Resource):
             db.session.rollback()
             logger.error(f"Error removing collaboration: {str(e)}")
             return {"message": "Error removing collaboration"}, 500
-
 class EventsByLocationResource(Resource):
     """Resource for getting events by city and location with amenities."""
 
