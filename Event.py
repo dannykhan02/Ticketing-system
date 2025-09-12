@@ -1420,8 +1420,8 @@ class PublicEventCollaborationsResource(Resource):
                 if event_id not in events_data:
                     events_data[event_id] = {
                         'event_id': event_id,
-                        'event_title': collab.event.title,
-                        'organizer_name': collab.event.organizer.business_name if collab.event.organizer else None,
+                        'event_name': collab.event.name,   # ✅ FIXED
+                        'organizer_name': collab.event.organizer.company_name if collab.event.organizer else None,
                         'collaborations': []
                     }
 
@@ -1440,7 +1440,6 @@ class PublicEventCollaborationsResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching public collaborations: {str(e)}")
             return {"message": "Error fetching collaborations"}, 500
-
 
 
 
