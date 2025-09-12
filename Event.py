@@ -1251,13 +1251,30 @@ class AdminPartnerOverviewResource(Resource):
 
     # ───── NEW METHODS ───── #
 
+    def _get_partners_overview(self):
+        """Get overview of all partners with summary details."""
+        partners = Partner.query.all()
+
+        return {
+            "partners": [
+                {
+                    **partner.as_dict(),
+                    "collaborations_count": EventCollaboration.query.filter_by(partner_id=partner.id).count(),
+                    "active": partner.is_active
+                } for partner in partners
+            ],
+            "total_partners": len(partners)
+        }, 200
+
     def _get_partner_detail(self, partner_id):
         """Get full detail for one partner, including all collaborations."""
         partner = Partner.query.get(partner_id)
         if not partner:
             return {"message": "Partner not found"}, 404
 
-        collaborations = EventCollaboration.query.filter_by(partner_id=partner.id).join(Event).all()
+        collaborations = (
+            EventCollaboration.query.filter_by(partner_id=partner.id).join(Event).all()
+        )
 
         return {
             "partner": partner.as_dict(),
@@ -1270,6 +1287,22 @@ class AdminPartnerOverviewResource(Resource):
                 } for collab in collaborations
             ],
             "collaborations_count": len(collaborations)
+        }, 200
+
+    def _get_collaborations_overview(self):
+        """Get overview of all collaborations across all partners and events."""
+        collaborations = EventCollaboration.query.join(Event).join(Partner).all()
+
+        return {
+            "collaborations": [
+                {
+                    **collab.as_dict(),
+                    "event_title": collab.event.name,
+                    "partner_name": collab.partner.company_name if collab.partner else None,
+                    "event_date": collab.event.date.isoformat() if collab.event.date else None
+                } for collab in collaborations
+            ],
+            "total_collaborations": len(collaborations)
         }, 200
 
     def _get_event_collaborations(self, event_id):
@@ -1293,7 +1326,11 @@ class AdminPartnerOverviewResource(Resource):
 
     def _get_recent_collaborations(self, limit=10):
         """Get most recent collaborations (for quick admin review)."""
-        collaborations = EventCollaboration.query.order_by(EventCollaboration.created_at.desc()).limit(limit).all()
+        collaborations = (
+            EventCollaboration.query.order_by(EventCollaboration.created_at.desc())
+            .limit(limit)
+            .all()
+        )
         return {
             "recent_collaborations": [
                 {
@@ -1317,6 +1354,26 @@ class AdminPartnerOverviewResource(Resource):
                 "inactive_collaborations": len(inactive_collabs)
             }
         }, 200
+
+    def _get_partnership_analytics(self):
+        """Generate basic analytics about partners and collaborations."""
+        total_partners = Partner.query.count()
+        total_collaborations = EventCollaboration.query.count()
+        active_partners = Partner.query.filter_by(is_active=True).count()
+        inactive_partners = Partner.query.filter_by(is_active=False).count()
+
+        return {
+            "analytics": {
+                "total_partners": total_partners,
+                "active_partners": active_partners,
+                "inactive_partners": inactive_partners,
+                "total_collaborations": total_collaborations,
+                "avg_collaborations_per_partner": (
+                    total_collaborations / total_partners if total_partners else 0
+                )
+            }
+        }, 200
+
 
 
 class PublicEventCollaborationsResource(Resource):
