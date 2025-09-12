@@ -1201,16 +1201,19 @@ class PartnerManagementResource(Resource):
         return {"message": "Collaboration removed successfully"}, 200
 
 
-# Admin Overview Resource (separate for administrative functions)
 class AdminPartnerOverviewResource(Resource):
     """Admin-only resource for comprehensive partner and collaboration oversight."""
 
     @jwt_required()
-    def get(self, overview_type='partners'):
+    def get(self, overview_type='partners', entity_id=None):
         """
         Get comprehensive admin overview:
         - GET /admin/partners -> All partners overview
+        - GET /admin/partners/<partner_id> -> Single partner detail
         - GET /admin/partners/collaborations -> All collaborations overview  
+        - GET /admin/partners/collaborations/event/<event_id> -> All collabs for specific event
+        - GET /admin/partners/recent -> Recent collaborations
+        - GET /admin/partners/inactive -> Inactive partners + collaborations
         - GET /admin/partners/analytics -> Partnership analytics
         """
         try:
@@ -1221,11 +1224,24 @@ class AdminPartnerOverviewResource(Resource):
                 return {"message": "Admin access required"}, 403
 
             if overview_type == 'partners':
+                if entity_id:  # /admin/partners/<partner_id>
+                    return self._get_partner_detail(entity_id)
                 return self._get_partners_overview()
+
             elif overview_type == 'collaborations':
+                if entity_id:  # /admin/partners/collaborations/event/<event_id>
+                    return self._get_event_collaborations(entity_id)
                 return self._get_collaborations_overview()
+
+            elif overview_type == 'recent':
+                return self._get_recent_collaborations()
+
+            elif overview_type == 'inactive':
+                return self._get_inactive_overview()
+
             elif overview_type == 'analytics':
                 return self._get_partnership_analytics()
+
             else:
                 return {"message": "Invalid overview type"}, 400
 
@@ -1233,141 +1249,74 @@ class AdminPartnerOverviewResource(Resource):
             logger.error(f"Error in AdminPartnerOverviewResource: {str(e)}")
             return {"message": "Error fetching admin overview"}, 500
 
-    def _get_partners_overview(self):
-        """Get overview of all partners."""
-        partners = Partner.query.all()
-        
-        partner_data = []
-        for partner in partners:
-            collaborations = EventCollaboration.query.filter_by(partner_id=partner.id).all()
-            
-            partner_info = {
-                **partner.as_dict(),
-                'organizer_name': partner.organizer.company_name if partner.organizer else None,
-                'collaboration_summary': {
-                    'total': len(collaborations),
-                    'active': len([c for c in collaborations if c.is_active]),
-                    'by_type': {}
-                },
-                'recent_activity': collaborations[-3:] if collaborations else []
-            }
-            
-            # Count by collaboration type
-            for collab in collaborations:
-                collab_type = collab.collaboration_type.value
-                if collab_type not in partner_info['collaboration_summary']['by_type']:
-                    partner_info['collaboration_summary']['by_type'][collab_type] = 0
-                partner_info['collaboration_summary']['by_type'][collab_type] += 1
-            
-            partner_data.append(partner_info)
+    # ───── NEW METHODS ───── #
+
+    def _get_partner_detail(self, partner_id):
+        """Get full detail for one partner, including all collaborations."""
+        partner = Partner.query.get(partner_id)
+        if not partner:
+            return {"message": "Partner not found"}, 404
+
+        collaborations = EventCollaboration.query.filter_by(partner_id=partner.id).join(Event).all()
 
         return {
-            'partners': partner_data,
-            'totals': {
-                'total_partners': len(partner_data),
-                'active_partners': len([p for p in partners if p.is_active]),
-                'inactive_partners': len([p for p in partners if not p.is_active])
-            }
+            "partner": partner.as_dict(),
+            "collaborations": [
+                {
+                    **collab.as_dict(),
+                    "event_title": collab.event.name,
+                    "event_date": collab.event.date.isoformat() if collab.event.date else None,
+                    "organizer_name": collab.event.organizer.company_name if collab.event.organizer else None,
+                } for collab in collaborations
+            ],
+            "collaborations_count": len(collaborations)
         }, 200
 
-    def _get_collaborations_overview(self):
-        """Get overview of all collaborations."""
-        collaborations = EventCollaboration.query.join(Event).join(Partner).all()
-        
-        collaboration_data = []
-        for collab in collaborations:
-            collab_info = {
-                **collab.as_dict(),
-                'event_title': collab.event.name,
-                'event_date': collab.event.date.isoformat() if collab.event.date else None,
-                'organizer_name': collab.event.organizer.company_name if collab.event.organizer else None,
-                'partner_name': collab.partner.company_name if collab.partner else None
-            }
-            collaboration_data.append(collab_info)
+    def _get_event_collaborations(self, event_id):
+        """Get all collaborations for a given event (with partner details)."""
+        event = Event.query.get(event_id)
+        if not event:
+            return {"message": "Event not found"}, 404
 
-        # Analytics
-        active_collabs = [c for c in collaborations if c.is_active]
-        collab_types = {}
-        for collab in collaborations:
-            collab_type = collab.collaboration_type.value
-            if collab_type not in collab_types:
-                collab_types[collab_type] = {'total': 0, 'active': 0}
-            collab_types[collab_type]['total'] += 1
-            if collab.is_active:
-                collab_types[collab_type]['active'] += 1
+        collaborations = EventCollaboration.query.filter_by(event_id=event.id).join(Partner).all()
 
         return {
-            'collaborations': collaboration_data,
-            'analytics': {
-                'total_collaborations': len(collaborations),
-                'active_collaborations': len(active_collabs),
-                'by_type': collab_types
-            }
+            "event": event.as_dict(),
+            "collaborations": [
+                {
+                    **collab.as_dict(),
+                    "partner": collab.partner.as_dict() if collab.partner else None
+                } for collab in collaborations
+            ],
+            "total": len(collaborations)
         }, 200
 
-    def _get_partnership_analytics(self):
-        """Get partnership analytics and insights."""
-        # Get basic counts
-        total_partners = Partner.query.count()
-        active_partners = Partner.query.filter_by(is_active=True).count()
-        total_collaborations = EventCollaboration.query.count()
-        active_collaborations = EventCollaboration.query.filter_by(is_active=True).count()
-
-        # Top partners by collaboration count
-        top_partners = db.session.query(
-            Partner.company_name,
-            Partner.id,
-            db.func.count(EventCollaboration.id).label('collaboration_count')
-        ).join(EventCollaboration).group_by(Partner.id).order_by(
-            db.func.count(EventCollaboration.id).desc()
-        ).limit(10).all()
-
-        # Top organizers by partner count
-        top_organizers = db.session.query(
-            Organizer.company_name,
-            Organizer.id,
-            db.func.count(Partner.id).label('partner_count')
-        ).join(Partner).group_by(Organizer.id).order_by(
-            db.func.count(Partner.id).desc()
-        ).limit(10).all()
-
-        # Collaboration types distribution
-        collab_type_stats = db.session.query(
-            EventCollaboration.collaboration_type,
-            db.func.count(EventCollaboration.id).label('count')
-        ).group_by(EventCollaboration.collaboration_type).all()
-
+    def _get_recent_collaborations(self, limit=10):
+        """Get most recent collaborations (for quick admin review)."""
+        collaborations = EventCollaboration.query.order_by(EventCollaboration.created_at.desc()).limit(limit).all()
         return {
-            'overview': {
-                'total_partners': total_partners,
-                'active_partners': active_partners,
-                'total_collaborations': total_collaborations,
-                'active_collaborations': active_collaborations,
-                'partnership_rate': f"{(active_collaborations/total_collaborations*100):.1f}%" if total_collaborations > 0 else "0%"
-            },
-            'top_partners': [
+            "recent_collaborations": [
                 {
-                    'partner_name': partner.company_name,
-                    'partner_id': partner.id,
-                    'collaboration_count': partner.collaboration_count
-                } for partner in top_partners
-            ],
-            'top_organizers': [
-                {
-                    'organizer_name': org.company_name,
-                    'organizer_id': org.id,
-                    'partner_count': org.partner_count
-                } for org in top_organizers
-            ],
-            'collaboration_types': [
-                {
-                    'type': stat.collaboration_type.value,
-                    'count': stat.count
-                } for stat in collab_type_stats
+                    **collab.as_dict(),
+                    "event_title": collab.event.name,
+                    "partner_name": collab.partner.company_name if collab.partner else None
+                } for collab in collaborations
             ]
         }, 200
 
+    def _get_inactive_overview(self):
+        """List inactive partners + inactive collaborations."""
+        inactive_partners = Partner.query.filter_by(is_active=False).all()
+        inactive_collabs = EventCollaboration.query.filter_by(is_active=False).all()
 
+        return {
+            "inactive_partners": [p.as_dict() for p in inactive_partners],
+            "inactive_collaborations": [c.as_dict() for c in inactive_collabs],
+            "totals": {
+                "inactive_partners": len(inactive_partners),
+                "inactive_collaborations": len(inactive_collabs)
+            }
+        }, 200
 
 
 class PublicEventCollaborationsResource(Resource):
@@ -1387,7 +1336,7 @@ class PublicEventCollaborationsResource(Resource):
             event_ids = request.args.get('event_ids')
             organizer_id = request.args.get('organizer_id')
             
-            query = EventCollaboration.query.filter_by(is_active=True).join(Event)
+            query = EventCollaboration.query.filter_by(is_active=True).join(Event).join(Partner)
 
             # Filter by specific events
             if event_ids:
@@ -1418,7 +1367,12 @@ class PublicEventCollaborationsResource(Resource):
                         'organizer_name': collab.event.organizer.business_name if collab.event.organizer else None,
                         'collaborations': []
                     }
-                events_data[event_id]['collaborations'].append(collab.as_dict())
+
+                # Include partner details along with collaboration
+                collab_data = collab.as_dict()
+                collab_data["partner"] = collab.partner.as_dict() if collab.partner else None
+
+                events_data[event_id]['collaborations'].append(collab_data)
 
             return {
                 'events': list(events_data.values()),
@@ -1429,6 +1383,10 @@ class PublicEventCollaborationsResource(Resource):
         except Exception as e:
             logger.error(f"Error fetching public collaborations: {str(e)}")
             return {"message": "Error fetching collaborations"}, 500
+
+
+
+
 class EventsByLocationResource(Resource):
     """Resource for getting events by city and location with amenities."""
 
@@ -1743,6 +1701,8 @@ class CategoryResource(Resource):
 
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
+    
+    # --- Event Routes ---
     api.add_resource(EventResource, "/events", "/events/<int:event_id>")
     api.add_resource(EventsByLocationResource, "/events/city/<string:city>")
     api.add_resource(CitiesResource, "/cities")
@@ -1751,20 +1711,30 @@ def register_event_resources(api):
     api.add_resource(CategoryResource, "/categories")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
-    
-    api.add_resource(PartnerManagementResource, 
-    # Partner CRUD operations
-    '/api/partners',                                    # GET (list), POST (create)
-    '/api/partners/<int:partner_id>',                  # GET (details), PUT (update), DELETE (deactivate)
-    
-    # Event collaboration management  
-    '/api/partners/events/<int:event_id>',             # GET (event collaborations), POST (add collaboration)
-    '/api/partners/events/<int:event_id>/collaborations/<int:collaboration_id>',  # PUT (update), DELETE (remove)
-)
 
-# Admin overview routes
-    api.add_resource(AdminPartnerOverviewResource,
-    '/api/admin/partners',                             # GET partners overview
-    '/api/admin/partners/collaborations',              # GET collaborations overview  
-    '/api/admin/partners/analytics',                   # GET partnership analytics
-)
+    # --- Partner Management Routes ---
+    api.add_resource(
+        PartnerManagementResource, 
+        '/api/partners',                                    # GET (list), POST (create)
+        '/api/partners/<int:partner_id>',                  # GET (details), PUT (update), DELETE (deactivate)
+        '/api/partners/events/<int:event_id>',             # GET (event collaborations), POST (add collaboration)
+        '/api/partners/events/<int:event_id>/collaborations/<int:collaboration_id>',  # PUT (update), DELETE (remove)
+    )
+
+    # --- Admin Partner Overview Routes ---
+    api.add_resource(
+        AdminPartnerOverviewResource,
+        '/api/admin/partners',                               # GET partners overview
+        '/api/admin/partners/<int:entity_id>',               # GET single partner profile
+        '/api/admin/partners/collaborations',                # GET all collaborations overview
+        '/api/admin/partners/collaborations/event/<int:entity_id>',  # GET collaborations for specific event
+        '/api/admin/partners/recent',                        # GET recent collaborations
+        '/api/admin/partners/inactive',                      # GET inactive partners + collaborations
+        '/api/admin/partners/analytics'                      # GET partnership analytics
+    )
+
+    # --- Public Collaborations Routes ---
+    api.add_resource(
+        PublicEventCollaborationsResource,
+        '/api/public/collaborations'   # GET active collaborations across events
+    )
