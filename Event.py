@@ -659,9 +659,9 @@ class PartnerManagementResource(Resource):
     def get(self, partner_id=None, event_id=None):
         """
         Organizer-only endpoints:
-        - GET /partners -> Get all partners for current organizer
-        - GET /partners/<id> -> Get specific partner with collaborations
-        - GET /partners/events/<event_id> -> Get collaborations for specific event
+        - GET /partners -> Get all partners for current organizer (paginated, filter, sort)
+        - GET /partners/<id> -> Get specific partner with collaborations (paginated)
+        - GET /partners/events/<event_id> -> Get collaborations for specific event (paginated)
         """
         try:
             identity = get_jwt_identity()
@@ -674,39 +674,57 @@ class PartnerManagementResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
+            # ✅ Pagination & sorting params
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 10, type=int), 50)
+            sort_by = request.args.get('sort_by', 'company_name')  # company_name, created_at, total_collaborations, active_status
+            sort_order = request.args.get('sort_order', 'asc').lower()  # asc, desc
+            search = request.args.get('search')  # search by company name
+
             if event_id:
-                return self._get_event_collaborations(organizer, event_id)
+                return self._get_event_collaborations(organizer, event_id, page, per_page)
             elif partner_id:
-                return self._get_partner_details(organizer, partner_id)
+                return self._get_partner_details(organizer, partner_id, page, per_page)
             else:
-                return self._get_organizer_partners(organizer)
+                return self._get_organizer_partners(organizer, page, per_page, sort_by, sort_order, search)
 
         except Exception as e:
             logger.error(f"Error in PartnerManagementResource GET: {str(e)}")
             return {"message": "Error processing request"}, 500
 
-    def _get_event_collaborations(self, organizer, event_id):
-        """Get collaborations for a specific event (Organizer only)."""
+    def _get_event_collaborations(self, organizer, event_id, page, per_page):
+        """Get collaborations for a specific event (Organizer only, paginated)."""
         event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
         if not event:
             return {"message": "Event not found or access denied"}, 404
 
-        collaborations = EventCollaboration.query.filter_by(event_id=event.id).all()
+        collaborations = EventCollaboration.query.filter_by(event_id=event.id).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
 
         return {
             'event_id': event.id,
             'event_name': event.name,
-            'collaborations': [c.as_dict() for c in collaborations],
-            'total': len(collaborations)
+            'collaborations': [c.as_dict() for c in collaborations.items],
+            'pagination': {
+                'total': collaborations.total,
+                'pages': collaborations.pages,
+                'current_page': collaborations.page,
+                'per_page': collaborations.per_page,
+                'has_next': collaborations.has_next,
+                'has_prev': collaborations.has_prev
+            }
         }, 200
 
-    def _get_partner_details(self, organizer, partner_id):
-        """Get specific partner with their collaboration history (Organizer only)."""
+    def _get_partner_details(self, organizer, partner_id, page, per_page):
+        """Get specific partner with their collaboration history (Organizer only, paginated)."""
         partner = Partner.query.filter_by(id=partner_id, organizer_id=organizer.id).first()
         if not partner:
             return {"message": "Partner not found"}, 404
 
-        collaborations = EventCollaboration.query.filter_by(partner_id=partner.id).all()
+        collaborations = EventCollaboration.query.filter_by(partner_id=partner.id).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
 
         partner_data = partner.as_dict()
         partner_data['collaborations'] = [
@@ -715,29 +733,41 @@ class PartnerManagementResource(Resource):
                 'event_name': c.event.name if c.event else None,
                 'event_date': c.event.date.isoformat() if c.event and c.event.date else None
             }
-            for c in collaborations
+            for c in collaborations.items
         ]
         partner_data['collaboration_stats'] = {
-            'total_collaborations': len(collaborations),
-            'active_collaborations': len([c for c in collaborations if c.is_active]),
-            'collaboration_types': list(set([c.collaboration_type.value for c in collaborations]))
+            'total_collaborations': collaborations.total,
+            'active_collaborations': len([c for c in collaborations.items if c.is_active]),
+            'collaboration_types': list(set([c.collaboration_type.value for c in collaborations.items]))
         }
 
-        return partner_data, 200
+        return {
+            'partner': partner_data,
+            'pagination': {
+                'total': collaborations.total,
+                'pages': collaborations.pages,
+                'current_page': collaborations.page,
+                'per_page': collaborations.per_page,
+                'has_next': collaborations.has_next,
+                'has_prev': collaborations.has_prev
+            }
+        }, 200
 
-    def _get_organizer_partners(self, organizer):
-        """Get all partners for the current organizer."""
+    def _get_organizer_partners(self, organizer, page, per_page, sort_by, sort_order, search):
+        """Get all partners for the current organizer (paginated, filter + sort)."""
         include_inactive = request.args.get('include_inactive', 'false').lower() == 'true'
-        sort_by = request.args.get('sort_by', 'company_name')  # company_name, created_at, total_collaborations
 
         query = Partner.query.filter_by(organizer_id=organizer.id)
         if not include_inactive:
             query = query.filter_by(is_active=True)
 
-        partners = query.all()
+        if search:
+            query = query.filter(Partner.company_name.ilike(f"%{search}%"))
+
+        partners = query.paginate(page=page, per_page=per_page, error_out=False)
 
         partners_data = []
-        for partner in partners:
+        for partner in partners.items:
             partner_dict = partner.as_dict()
 
             recent_collaborations = EventCollaboration.query.filter_by(
@@ -755,25 +785,43 @@ class PartnerManagementResource(Resource):
                 for c in recent_collaborations
             ]
 
+            # Add count of collaborations for sorting
+            partner_dict['total_collaborations'] = EventCollaboration.query.filter_by(
+                partner_id=partner.id
+            ).count()
+
             partners_data.append(partner_dict)
 
-        # Sorting
+        # Sorting (applies within this page only)
+        reverse = sort_order == 'desc'
         if sort_by == 'created_at':
-            partners_data.sort(key=lambda x: x['created_at'], reverse=True)
+            partners_data.sort(key=lambda x: x['created_at'], reverse=reverse)
         elif sort_by == 'total_collaborations':
-            partners_data.sort(key=lambda x: x['total_collaborations'], reverse=True)
+            partners_data.sort(key=lambda x: x.get('total_collaborations', 0), reverse=reverse)
+        elif sort_by == 'active_status':
+            partners_data.sort(key=lambda x: x['is_active'], reverse=reverse)
         else:  # default company_name
-            partners_data.sort(key=lambda x: x['company_name'].lower())
+            partners_data.sort(key=lambda x: x['company_name'].lower(), reverse=reverse)
 
         return {
             'partners': partners_data,
-            'total': len(partners_data),
+            'pagination': {
+                'total': partners.total,
+                'pages': partners.pages,
+                'current_page': partners.page,
+                'per_page': partners.per_page,
+                'has_next': partners.has_next,
+                'has_prev': partners.has_prev
+            },
             'organizer_id': organizer.id,
             'filters': {
                 'include_inactive': include_inactive,
-                'sort_by': sort_by
+                'sort_by': sort_by,
+                'sort_order': sort_order,
+                'search': search
             }
         }, 200
+
 
     @jwt_required()
     def post(self, event_id=None):
@@ -1060,9 +1108,9 @@ class AdminPartnerOverviewResource(Resource):
     def get(self, overview_type='partners', entity_id=None):
         """
         Get comprehensive admin overview:
-        - GET /admin/partners -> All partners overview
+        - GET /admin/partners -> All partners overview (paginated + sorting)
         - GET /admin/partners/<partner_id> -> Single partner detail
-        - GET /admin/partners/collaborations -> All collaborations overview  
+        - GET /admin/partners/collaborations -> All collaborations overview (paginated + sorting)
         - GET /admin/partners/collaborations/event/<event_id> -> All collabs for specific event
         - GET /admin/partners/recent -> Recent collaborations
         - GET /admin/partners/inactive -> Inactive partners + collaborations
@@ -1076,12 +1124,12 @@ class AdminPartnerOverviewResource(Resource):
                 return {"message": "Admin access required"}, 403
 
             if overview_type == 'partners':
-                if entity_id:  # /admin/partners/<partner_id>
+                if entity_id:
                     return self._get_partner_detail(entity_id)
                 return self._get_partners_overview()
 
             elif overview_type == 'collaborations':
-                if entity_id:  # /admin/partners/collaborations/event/<event_id>
+                if entity_id:
                     return self._get_event_collaborations(entity_id)
                 return self._get_collaborations_overview()
 
@@ -1101,11 +1149,27 @@ class AdminPartnerOverviewResource(Resource):
             logger.error(f"Error in AdminPartnerOverviewResource: {str(e)}")
             return {"message": "Error fetching admin overview"}, 500
 
-    # ───── NEW METHODS ───── #
+    # ───── PARTNERS OVERVIEW WITH PAGINATION + SORTING ───── #
 
     def _get_partners_overview(self):
-        """Get overview of all partners with summary details."""
-        partners = Partner.query.all()
+        """Get overview of all partners with pagination + sorting."""
+
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 12, type=int), 50)
+        sort_by = request.args.get('sort_by', 'id')  # default sort
+        order = request.args.get('order', 'asc')
+
+        query = Partner.query
+
+        # Apply sorting
+        if sort_by == 'name':
+            query = query.order_by(Partner.company_name.asc() if order == 'asc' else Partner.company_name.desc())
+        elif sort_by == 'active':
+            query = query.order_by(Partner.is_active.asc() if order == 'asc' else Partner.is_active.desc())
+        else:
+            query = query.order_by(Partner.id.asc() if order == 'asc' else Partner.id.desc())
+
+        partners = query.paginate(page=page, per_page=per_page, error_out=False)
 
         return {
             "partners": [
@@ -1113,10 +1177,19 @@ class AdminPartnerOverviewResource(Resource):
                     **partner.as_dict(),
                     "collaborations_count": EventCollaboration.query.filter_by(partner_id=partner.id).count(),
                     "active": partner.is_active
-                } for partner in partners
+                } for partner in partners.items
             ],
-            "total_partners": len(partners)
+            "total": partners.total,
+            "pages": partners.pages,
+            "current_page": partners.page,
+            "per_page": partners.per_page,
+            "has_next": partners.has_next,
+            "has_prev": partners.has_prev,
+            "sort_by": sort_by,
+            "order": order
         }, 200
+
+    # ───── SINGLE PARTNER DETAIL ───── #
 
     def _get_partner_detail(self, partner_id):
         """Get full detail for one partner, including all collaborations."""
@@ -1141,9 +1214,29 @@ class AdminPartnerOverviewResource(Resource):
             "collaborations_count": len(collaborations)
         }, 200
 
+    # ───── COLLABORATIONS OVERVIEW WITH PAGINATION + SORTING ───── #
+
     def _get_collaborations_overview(self):
-        """Get overview of all collaborations across all partners and events."""
-        collaborations = EventCollaboration.query.join(Event).join(Partner).all()
+        """Get overview of all collaborations with pagination + sorting."""
+
+        page = request.args.get('page', 1, type=int)
+        per_page = min(request.args.get('per_page', 12, type=int), 50)
+        sort_by = request.args.get('sort_by', 'id')
+        order = request.args.get('order', 'asc')
+
+        query = EventCollaboration.query.join(Event).join(Partner)
+
+        # Apply sorting
+        if sort_by == 'event_date':
+            query = query.order_by(Event.date.asc() if order == 'asc' else Event.date.desc())
+        elif sort_by == 'partner_name':
+            query = query.order_by(Partner.company_name.asc() if order == 'asc' else Partner.company_name.desc())
+        elif sort_by == 'created_at':
+            query = query.order_by(EventCollaboration.created_at.asc() if order == 'asc' else EventCollaboration.created_at.desc())
+        else:
+            query = query.order_by(EventCollaboration.id.asc() if order == 'asc' else EventCollaboration.id.desc())
+
+        collaborations = query.paginate(page=page, per_page=per_page, error_out=False)
 
         return {
             "collaborations": [
@@ -1152,10 +1245,19 @@ class AdminPartnerOverviewResource(Resource):
                     "event_title": collab.event.name,
                     "partner_name": collab.partner.company_name if collab.partner else None,
                     "event_date": collab.event.date.isoformat() if collab.event.date else None
-                } for collab in collaborations
+                } for collab in collaborations.items
             ],
-            "total_collaborations": len(collaborations)
+            "total": collaborations.total,
+            "pages": collaborations.pages,
+            "current_page": collaborations.page,
+            "per_page": collaborations.per_page,
+            "has_next": collaborations.has_next,
+            "has_prev": collaborations.has_prev,
+            "sort_by": sort_by,
+            "order": order
         }, 200
+
+    # ───── EVENT COLLABS, RECENT, INACTIVE, ANALYTICS ───── #
 
     def _get_event_collaborations(self, event_id):
         """Get all collaborations for a given event (with partner details)."""
@@ -1177,7 +1279,7 @@ class AdminPartnerOverviewResource(Resource):
         }, 200
 
     def _get_recent_collaborations(self, limit=10):
-        """Get most recent collaborations (for quick admin review)."""
+        """Get most recent collaborations (not paginated)."""
         collaborations = (
             EventCollaboration.query.order_by(EventCollaboration.created_at.desc())
             .limit(limit)
@@ -1233,7 +1335,7 @@ class PublicEventCollaborationsResource(Resource):
 
     @jwt_required()
     def get(self):
-        """Get active collaborations for multiple events (all logged-in users)."""
+        """Get active collaborations for multiple events (all logged-in users) with pagination."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -1244,7 +1346,11 @@ class PublicEventCollaborationsResource(Resource):
             # Get query parameters
             event_ids = request.args.get('event_ids')
             organizer_id = request.args.get('organizer_id')
-            
+
+            # Pagination params
+            page = request.args.get('page', 1, type=int)
+            per_page = min(request.args.get('per_page', 12, type=int), 50)  # Cap at 50 for performance
+
             query = EventCollaboration.query.filter_by(is_active=True).join(Event).join(Partner)
 
             # Filter by specific events
@@ -1263,16 +1369,28 @@ class PublicEventCollaborationsResource(Resource):
                 except ValueError:
                     return {"message": "Invalid organizer ID"}, 400
 
-            collaborations = query.all()
+            # Paginate collaborations
+            collaborations = query.paginate(page=page, per_page=per_page, error_out=False)
 
-            # Group by event
+            if not collaborations.items:
+                return {
+                    'events': [],
+                    'total': 0,
+                    'pages': 0,
+                    'current_page': page,
+                    'per_page': per_page,
+                    'has_next': False,
+                    'has_prev': False
+                }, 200
+
+            # Group collaborations by event
             events_data = {}
-            for collab in collaborations:
+            for collab in collaborations.items:
                 event_id = collab.event_id
                 if event_id not in events_data:
                     events_data[event_id] = {
                         'event_id': event_id,
-                        'event_name': collab.event.name,   # ✅ FIXED
+                        'event_name': collab.event.name,
                         'organizer_name': collab.event.organizer.company_name if collab.event.organizer else None,
                         'collaborations': []
                     }
@@ -1280,18 +1398,23 @@ class PublicEventCollaborationsResource(Resource):
                 # Include partner details along with collaboration
                 collab_data = collab.as_dict()
                 collab_data["partner"] = collab.partner.as_dict() if collab.partner else None
-
                 events_data[event_id]['collaborations'].append(collab_data)
 
             return {
                 'events': list(events_data.values()),
-                'total_events': len(events_data),
-                'total_collaborations': len(collaborations)
+                'total': collaborations.total,
+                'pages': collaborations.pages,
+                'current_page': collaborations.page,
+                'per_page': collaborations.per_page,
+                'has_next': collaborations.has_next,
+                'has_prev': collaborations.has_prev,
+                'total_collaborations': collaborations.total
             }, 200
 
         except Exception as e:
             logger.error(f"Error fetching public collaborations: {str(e)}")
             return {"message": "Error fetching collaborations"}, 500
+
 
 
 
