@@ -964,7 +964,7 @@ class PartnerManagementResource(Resource):
     def put(self, partner_id=None, event_id=None, collaboration_id=None):
         """
         Organizer-only endpoints:
-        - PUT /partners/<id> -> Update partner
+        - PUT /partners/<id> -> Update partner (form-data + file upload)
         - PUT /partners/events/<event_id>/collaborations/<collaboration_id> -> Update collaboration
         """
         try:
@@ -978,14 +978,17 @@ class PartnerManagementResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-            data = request.get_json()
-            if not data:
-                return {"message": "No data provided"}, 400
-
             if collaboration_id:
+                # collaboration updates still use JSON body
+                data = request.get_json()
+                if not data:
+                    return {"message": "No data provided"}, 400
                 return self._update_collaboration(organizer, event_id, collaboration_id, data)
+
             elif partner_id:
-                return self._update_partner(organizer, partner_id, data)
+                # partner updates now use form-data + file (like POST)
+                return self._update_partner(organizer, partner_id, request.form, request.files)
+
             else:
                 return {"message": "Invalid endpoint"}, 400
 
@@ -994,25 +997,45 @@ class PartnerManagementResource(Resource):
             logger.error(f"Error in PartnerManagementResource PUT: {str(e)}")
             return {"message": "Error processing request"}, 500
 
-    def _update_partner(self, organizer, partner_id, data):
+
+    def _update_partner(self, organizer, partner_id, data, files):
         partner = Partner.query.filter_by(id=partner_id, organizer_id=organizer.id).first()
         if not partner:
             return {"message": "Partner not found"}, 404
 
         updatable_fields = [
-            'company_name', 'company_description', 'logo_url',
-            'website_url', 'contact_email', 'contact_person'
+            "company_name", "company_description", "website_url",
+            "contact_email", "contact_person"
         ]
 
-        if 'company_name' in data and data['company_name'] != partner.company_name:
+        # ✅ Handle logo file upload (Cloudinary)
+        if "file" in files:
+            file = files["file"]
+            if file and file.filename != "":
+                if not allowed_file(file.filename):
+                    return {"message": "Invalid file type. Allowed: PNG, JPG, JPEG, GIF, WEBP"}, 400
+                try:
+                    upload_result = cloudinary.uploader.upload(
+                        file,
+                        folder="partner_logos",
+                        resource_type="auto"
+                    )
+                    partner.logo_url = upload_result.get("secure_url")
+                except Exception as e:
+                    logger.error(f"Error uploading partner logo: {str(e)}")
+                    return {"message": "Failed to upload partner logo"}, 500
+
+        # ✅ Prevent duplicate company names
+        if "company_name" in data and data["company_name"] != partner.company_name:
             existing = Partner.query.filter_by(
                 organizer_id=organizer.id,
-                company_name=data['company_name'],
+                company_name=data["company_name"],
                 is_active=True
             ).filter(Partner.id != partner_id).first()
             if existing:
                 return {"message": "Partner with this company name already exists"}, 409
 
+        # ✅ Update text fields
         for field in updatable_fields:
             if field in data:
                 setattr(partner, field, data[field])
@@ -1024,6 +1047,7 @@ class PartnerManagementResource(Resource):
             "message": "Partner updated successfully",
             "partner": partner.as_dict()
         }, 200
+
 
     def _update_collaboration(self, organizer, event_id, collaboration_id, data):
         event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
