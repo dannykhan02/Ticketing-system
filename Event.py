@@ -822,12 +822,11 @@ class PartnerManagementResource(Resource):
             }
         }, 200
 
-
     @jwt_required()
     def post(self, event_id=None):
         """
         Organizer-only endpoints:
-        - POST /partners -> Create new partner
+        - POST /partners -> Create new partner (form-data + file upload)
         - POST /partners/events/<event_id> -> Add collaboration to event
         """
         try:
@@ -841,51 +840,78 @@ class PartnerManagementResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-            data = request.get_json()
-            if not data:
-                return {"message": "No data provided"}, 400
-
+            # ✅ If event_id exists → handle collaboration (JSON body expected)
             if event_id:
+                data = request.get_json()
+                if not data:
+                    return {"message": "No data provided"}, 400
                 return self._add_event_collaboration(organizer, event_id, data)
-            else:
-                return self._create_partner(organizer, data)
+
+            # ✅ Otherwise → handle partner creation (form-data + file)
+            return self._create_partner(organizer, request.form, request.files)
 
         except Exception as e:
             db.session.rollback()
             logger.error(f"Error in PartnerManagementResource POST: {str(e)}")
             return {"message": "Error processing request"}, 500
 
-    def _create_partner(self, organizer, data):
-        """Create a new partner company."""
-        if 'company_name' not in data:
+
+    def _create_partner(self, organizer, data, files):
+        """Create a new partner company (with Cloudinary logo upload)."""
+
+        if "company_name" not in data:
             return {"message": "Company name is required"}, 400
 
         existing = Partner.query.filter_by(
             organizer_id=organizer.id,
-            company_name=data['company_name'],
+            company_name=data["company_name"],
             is_active=True
         ).first()
         if existing:
             return {"message": "Partner with this company name already exists"}, 409
 
+        # ✅ Handle file upload (Cloudinary)
+        logo_url = None
+        if "file" in files:
+            file = files["file"]
+            if file and file.filename != "":
+                if not allowed_file(file.filename):
+                    return {
+                        "message": "Invalid file type. Allowed: PNG, JPG, JPEG, GIF, WEBP"
+                    }, 400
+                try:
+                    upload_result = cloudinary.uploader.upload(
+                        file,
+                        folder="partner_logos",
+                        resource_type="auto"
+                    )
+                    logo_url = upload_result.get("secure_url")
+                except Exception as e:
+                    logger.error(f"Error uploading partner logo: {str(e)}")
+                    return {"message": "Failed to upload partner logo"}, 500
+
+        # ✅ Create partner record
         partner = Partner(
             organizer_id=organizer.id,
-            company_name=data['company_name'],
-            company_description=data.get('company_description'),
-            logo_url=data.get('logo_url'),
-            website_url=data.get('website_url'),
-            contact_email=data.get('contact_email'),
-            contact_person=data.get('contact_person')
+            company_name=data["company_name"],
+            company_description=data.get("company_description"),
+            logo_url=logo_url,
+            website_url=data.get("website_url"),
+            contact_email=data.get("contact_email"),
+            contact_person=data.get("contact_person")
         )
 
-        db.session.add(partner)
-        db.session.commit()
-
-        return {
-            "message": "Partner created successfully",
-            "partner": partner.as_dict()
-        }, 201
-
+        try:
+            db.session.add(partner)
+            db.session.commit()
+            return {
+                "message": "Partner created successfully",
+                "partner": partner.as_dict()
+            }, 201
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            return {"message": f"Database error: {str(e)}"}, 500
+        
     def _add_event_collaboration(self, organizer, event_id, data):
         """Add a collaboration to an event (Organizer only)."""
         event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
