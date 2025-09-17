@@ -239,12 +239,18 @@ def register():
 
 @auth_bp.route('/register-first-admin', methods=['POST'])
 def register_first_admin():
+    # Check if any admin already exists in the database
+    existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
+    if existing_admin:
+        return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
+    
     data = request.get_json()
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
-    full_name = data.get("full_name")  # Extract full_name
+    full_name = data.get("full_name")
 
+    # Validate input data
     if not is_valid_email(email):
         return jsonify({"msg": "Invalid email address"}), 400
 
@@ -254,13 +260,34 @@ def register_first_admin():
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    hashed_password = generate_password_hash(password)
-    new_admin = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role=UserRole.ADMIN)
-    db.session.add(new_admin)
-    db.session.commit()
+    # Check if email already exists (additional safety check)
+    if User.query.filter_by(email=email).first():
+        return jsonify({"msg": "Email already registered"}), 409
 
-    return jsonify({"msg": "First admin registered successfully"}), 201
-
+    try:
+        # Double-check admin doesn't exist before creating (race condition protection)
+        existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
+        if existing_admin:
+            return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
+        
+        hashed_password = generate_password_hash(password)
+        new_admin = User(
+            email=email, 
+            phone_number=phone, 
+            password=hashed_password, 
+            full_name=full_name, 
+            role=UserRole.ADMIN
+        )
+        
+        db.session.add(new_admin)
+        db.session.commit()
+        
+        return jsonify({"msg": "First admin registered successfully"}), 201
+    
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Registration failed. Please try again."}), 500
+    
 @auth_bp.route('/admin/register-admin', methods=['POST'])
 @role_required('ADMIN')
 def register_admin():
