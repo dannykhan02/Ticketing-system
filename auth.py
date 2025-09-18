@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, url_for, session, redirect, render_template
+from flask import Blueprint, jsonify, request, url_for, session, redirect, render_template, current_app
 from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity, get_jwt, jwt_required, create_access_token
 from email_validator import validate_email, EmailNotValidError
 import re
@@ -14,6 +14,7 @@ from config import Config
 import logging
 import cloudinary.uploader
 from itsdangerous import URLSafeTimedSerializer
+from urllib.parse import urlencode
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,89 +35,298 @@ def generate_token(user):
 
 @auth_bp.route('/login/google')
 def google_login():
-    state = str(uuid4())
-    nonce = str(uuid4())  # Generate a random nonce
-    session["oauth_state"] = state
-    session["oauth_nonce"] = nonce  # Store nonce in session
-    session.modified = True
-    redirect_uri = Config.GOOGLE_REDIRECT_URI
-    return oauth.google.authorize_redirect(
-        redirect_uri,
-        state=state,
-        nonce=nonce  # Send nonce to Google
-    )
+    """Initiate Google OAuth login"""
+    try:
+        # Generate state and nonce for security
+        state = str(uuid4())
+        nonce = str(uuid4())
+        
+        # Store in session with debugging
+        session["oauth_state"] = state
+        session["oauth_nonce"] = nonce
+        session.permanent = True  # Make session permanent
+        session.modified = True
+        
+        # Debug logging
+        logger.info(f"Initiating Google OAuth - State: {state}")
+        logger.debug(f"Session storage type: {current_app.config.get('SESSION_TYPE', 'unknown')}")
+        logger.debug(f"Session contents after setting: {dict(session)}")
+        
+        # Verify session was saved
+        if session.get("oauth_state") != state:
+            logger.error("Session state not properly stored")
+            return jsonify({"error": "Session storage error"}), 500
+        
+        redirect_uri = Config.GOOGLE_REDIRECT_URI
+        logger.info(f"Redirecting to Google with URI: {redirect_uri}")
+        
+        # Handle API clients differently (like Postman)
+        user_agent = request.headers.get('User-Agent', '')
+        if 'PostmanRuntime' in user_agent or 'curl' in user_agent:
+            # For API testing, return the authorization URL
+            auth_url = oauth.google.create_authorization_url(
+                redirect_uri,
+                state=state,
+                nonce=nonce
+            )
+            return jsonify({
+                "message": "For API testing: Visit this URL in a browser",
+                "auth_url": auth_url['url'],
+                "state": state,
+                "redirect_uri": redirect_uri
+            })
+        
+        # For browsers, redirect directly
+        return oauth.google.authorize_redirect(
+            redirect_uri,
+            state=state,
+            nonce=nonce
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in google_login: {str(e)}")
+        return jsonify({"error": "Failed to initiate Google login"}), 500
+
 
 @auth_bp.route("/callback/google")
 def google_callback():
+    """Handle Google OAuth callback"""
     try:
-        # Verify state first
+        # Get parameters from the request
         received_state = request.args.get("state")
-        stored_state = session.pop("oauth_state", None)
-        stored_nonce = session.pop("oauth_nonce", None)
-
-        if not stored_state or not received_state or stored_state != received_state:
+        error = request.args.get("error")
+        
+        # Handle OAuth errors from Google
+        if error:
+            logger.error(f"Google OAuth error: {error}")
+            error_description = request.args.get("error_description", "Unknown error")
+            return jsonify({"error": f"Google OAuth failed: {error_description}"}), 400
+        
+        # Debug: Log all received parameters
+        logger.debug(f"Callback parameters: {dict(request.args)}")
+        logger.debug(f"Received state: {received_state}")
+        
+        # Check session contents
+        stored_state = session.get("oauth_state")
+        stored_nonce = session.get("oauth_nonce")
+        
+        logger.debug(f"Stored state: {stored_state}")
+        logger.debug(f"Stored nonce: {stored_nonce}")
+        logger.debug(f"Current session contents: {dict(session)}")
+        
+        # Verify state parameter exists
+        if not received_state:
+            logger.error("No state parameter received from Google")
+            return jsonify({"error": "Missing state parameter"}), 400
+        
+        # Check if we have stored state
+        if not stored_state:
+            logger.error("No stored OAuth state found in session")
+            # Try to provide helpful debugging info
+            session_info = {
+                "session_id": getattr(session, 'sid', 'No SID'),
+                "session_permanent": session.permanent,
+                "session_new": session.new if hasattr(session, 'new') else 'Unknown'
+            }
+            logger.debug(f"Session debug info: {session_info}")
+            return jsonify({
+                "error": "Session expired or invalid. Please try logging in again.",
+                "debug_info": session_info if current_app.debug else None
+            }), 400
+        
+        # Verify state matches (CSRF protection)
+        if stored_state != received_state:
+            logger.error(f"State mismatch - Stored: {stored_state}, Received: {received_state}")
             return jsonify({"error": "Invalid state, possible CSRF attack"}), 400
-
-        # Get token and verify nonce
-        token = oauth.google.authorize_access_token()
-        user_info = oauth.google.parse_id_token(token, nonce=stored_nonce)
-
+        
+        # Clear the OAuth state and nonce from session after successful verification
+        session.pop("oauth_state", None)
+        session.pop("oauth_nonce", None)
+        
+        logger.info("State verification successful, proceeding with token exchange")
+        
+        # Exchange authorization code for tokens
+        try:
+            token = oauth.google.authorize_access_token()
+            logger.debug("Successfully obtained access token from Google")
+        except Exception as token_error:
+            logger.error(f"Failed to get access token: {str(token_error)}")
+            return jsonify({"error": "Failed to exchange authorization code for token"}), 500
+        
+        # Parse ID token and verify nonce
+        try:
+            user_info = oauth.google.parse_id_token(token, nonce=stored_nonce)
+            logger.debug(f"Successfully parsed user info: {user_info.get('email', 'No email')}")
+        except Exception as parse_error:
+            logger.error(f"Failed to parse ID token: {str(parse_error)}")
+            return jsonify({"error": "Failed to parse user information from Google"}), 500
+        
         # Extract user information
-        email = user_info["email"]
-        google_id = user_info["sub"]
+        email = user_info.get("email")
+        google_id = user_info.get("sub")
         name = user_info.get("name", "Google User")
-
+        
+        if not email or not google_id:
+            logger.error("Missing required user information from Google")
+            return jsonify({"error": "Incomplete user information from Google"}), 400
+        
         # Find or create user
         user = User.query.filter(
             (User.google_id == google_id) | (User.email == email)
         ).first()
-
-        if not user:
-            user = User(
-                email=email,
-                google_id=google_id,
-                full_name=name,  # Store name properly
-                phone_number=None,  # Leave phone number empty
-                is_oauth=True,
-                role=UserRole.ATTENDEE
-            )
-            db.session.add(user)
-            db.session.commit()
-
-        access_token = generate_token(user)
-
-        # Create response with user data
-        response = jsonify({
-            "msg": "Login successful",
-            "user": {
-                "id": user.id,
-                "email": user.email,
-                "full_name": user.full_name,
-                "phone_number": user.phone_number,  # Will be None
-                "role": str(user.role.value)
-            }
-        })
-
-        # Set HTTP-only cookie with the access token
-        response.set_cookie(
-            'access_token',
-            access_token,
-            httponly=True,
-            secure=True,
-            samesite='None',
-            path='/',
-            domain=None,  # Let the browser handle the domain
-            max_age=30*24*60*60  # 30 days in seconds
-        )
-
-        # Redirect to the frontend callback URL
+        
+        try:
+            if not user:
+                logger.info(f"Creating new user for email: {email}")
+                user = User(
+                    email=email,
+                    google_id=google_id,
+                    full_name=name,
+                    phone_number=None,
+                    is_oauth=True,
+                    role=UserRole.ATTENDEE
+                )
+                db.session.add(user)
+                db.session.commit()
+                logger.info(f"Successfully created user with ID: {user.id}")
+            else:
+                logger.info(f"Found existing user: {user.id}")
+                # Update Google ID if it was missing
+                if not user.google_id:
+                    user.google_id = google_id
+                    db.session.commit()
+        except Exception as db_error:
+            db.session.rollback()
+            logger.error(f"Database error during user creation/update: {str(db_error)}")
+            return jsonify({"error": "Failed to create or update user"}), 500
+        
+        # Generate access token
+        try:
+            access_token = generate_token(user)
+            logger.info(f"Successfully generated access token for user: {user.id}")
+        except Exception as token_gen_error:
+            logger.error(f"Failed to generate access token: {str(token_gen_error)}")
+            return jsonify({"error": "Failed to generate access token"}), 500
+        
+        # Prepare user data for frontend
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "phone_number": user.phone_number,
+            "role": str(user.role.value)
+        }
+        
+        # For API clients, return JSON response
+        user_agent = request.headers.get('User-Agent', '')
+        if 'PostmanRuntime' in user_agent or 'curl' in user_agent:
+            return jsonify({
+                "msg": "Login successful",
+                "user": user_data,
+                "access_token": access_token,
+                "token_type": "Bearer"
+            })
+        
+        # For browsers, set cookie and redirect
         frontend_callback_url = f"{Config.FRONTEND_URL}/auth/callback/google"
-        return redirect(frontend_callback_url)
-
+        
+        # Add success parameters to the frontend URL
+        params = {
+            "success": "true",
+            "user_id": user.id,
+            "email": user.email
+        }
+        frontend_url_with_params = f"{frontend_callback_url}?{urlencode(params)}"
+        
+        response = redirect(frontend_url_with_params)
+        
+        # Set HTTP-only cookie with the access token
+        cookie_settings = {
+            'httponly': True,
+            'secure': not current_app.debug,  # Use config-based security
+            'samesite': 'None' if not current_app.debug else 'Lax',
+            'path': '/',
+            'max_age': 30*24*60*60  # 30 days
+        }
+        
+        response.set_cookie('access_token', access_token, **cookie_settings)
+        
+        logger.info(f"Successful Google OAuth login for user: {user.id}, redirecting to: {frontend_url_with_params}")
+        return response
+        
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Error in Google callback: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Unexpected error in Google callback: {str(e)}")
+        
+        # For API clients, return JSON error
+        user_agent = request.headers.get('User-Agent', '')
+        if 'PostmanRuntime' in user_agent or 'curl' in user_agent:
+            return jsonify({
+                "error": "Internal server error",
+                "details": str(e) if current_app.debug else "Please try again"
+            }), 500
+        
+        # For browsers, redirect to frontend with error
+        error_url = f"{Config.FRONTEND_URL}/auth/login?error=oauth_failed"
+        return redirect(error_url)
+
+
+# Optional: Add a debug endpoint to check session configuration (remove in production)
+@auth_bp.route('/debug/session-info')
+def debug_session_info():
+    """Debug endpoint to check session configuration"""
+    if not current_app.debug:
+        return jsonify({"error": "Debug endpoint only available in debug mode"}), 404
+    
+    from config import Config
+    session_info = Config.get_session_config_info()
+    
+    return jsonify({
+        "session_config": session_info,
+        "current_session": {
+            "permanent": session.permanent,
+            "new": getattr(session, 'new', 'unknown'),
+            "sid": getattr(session, 'sid', 'no_sid'),
+            "keys": list(session.keys())
+        }
+    })
+
+
+# Optional: Health check endpoint for OAuth flow
+@auth_bp.route('/auth/health')
+def auth_health_check():
+    """Health check for authentication system"""
+    try:
+        # Check if we can create a session
+        from datetime import datetime
+        test_key = f"health_check_{datetime.now().timestamp()}"
+        session[test_key] = "test"
+        session.modified = True
+        
+        # Check if session persisted
+        if session.get(test_key) != "test":
+            return jsonify({
+                "status": "unhealthy", 
+                "error": "Session storage not working"
+            }), 500
+        
+        # Clean up
+        session.pop(test_key, None)
+        
+        return jsonify({
+            "status": "healthy",
+            "session_type": current_app.config.get('SESSION_TYPE', 'unknown'),
+            "google_oauth_configured": bool(
+                current_app.config.get('GOOGLE_CLIENT_ID') and 
+                current_app.config.get('GOOGLE_CLIENT_SECRET')
+            )
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
 
 def role_required(required_role):
     def decorator(fn):

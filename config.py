@@ -1,4 +1,6 @@
 import os
+import tempfile
+import redis
 from datetime import timedelta
 
 # Do NOT call load_dotenv here. It should be in app.py
@@ -77,21 +79,50 @@ class Config:
     MPESA_TIMEOUT = int(os.getenv("MPESA_TIMEOUT", "30"))
     MPESA_RETRY_ATTEMPTS = int(os.getenv("MPESA_RETRY_ATTEMPTS", "3"))
 
-    # Session Configuration
+    # Redis Configuration (moved up for session config)
+    REDIS_URL = os.getenv("REDIS_URL")
+    REDIS_TIMEOUT = int(os.getenv("REDIS_TIMEOUT", "5"))
+
+    # Session Configuration - Improved with Redis fallback
     SESSION_COOKIE_SECURE = not DEBUG  # Secure cookies in production
     SESSION_COOKIE_HTTPONLY = True
-    SESSION_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"  # Match JWT settings for consistency
+    SESSION_COOKIE_DOMAIN = None  # Let browser handle domain
     PERMANENT_SESSION_LIFETIME = timedelta(
         hours=int(os.getenv("SESSION_LIFETIME_HOURS", "24"))
     )
     
-    # Session storage configuration
-    SESSION_TYPE = os.getenv("SESSION_TYPE", "filesystem")
-    SESSION_FILE_DIR = os.getenv("SESSION_DIR", "/tmp/flask_sessions")
-    SESSION_FILE_THRESHOLD = int(os.getenv("SESSION_FILE_THRESHOLD", "500"))
+    # Smart session storage - prefer Redis in production, filesystem in development
+    _has_redis = bool(REDIS_URL)
+    SESSION_TYPE = "redis" if _has_redis else "filesystem"
+    
+    # Redis session config (used if Redis is available)
+    if _has_redis:
+        try:
+            SESSION_REDIS = redis.from_url(REDIS_URL, 
+                                         socket_timeout=REDIS_TIMEOUT,
+                                         socket_connect_timeout=REDIS_TIMEOUT,
+                                         decode_responses=True)
+            SESSION_USE_SIGNER = True
+            SESSION_KEY_PREFIX = "ticketing_oauth:"
+        except Exception:
+            # Fallback to filesystem if Redis connection fails
+            SESSION_TYPE = "filesystem"
+    
+    # Filesystem session config (fallback or development)
+    if SESSION_TYPE == "filesystem":
+        SESSION_FILE_DIR = os.path.join(tempfile.gettempdir(), "flask_sessions")
+        SESSION_FILE_THRESHOLD = int(os.getenv("SESSION_FILE_THRESHOLD", "500"))
+        SESSION_USE_SIGNER = True
+        SESSION_KEY_PREFIX = "ticketing_session:"
+        
+        # Ensure session directory exists
+        try:
+            os.makedirs(SESSION_FILE_DIR, exist_ok=True)
+        except Exception:
+            pass  # Will fall back to default temp directory
+    
     SESSION_PERMANENT = True
-    SESSION_USE_SIGNER = True
-    SESSION_KEY_PREFIX = "ticketing_session:"
 
     # Frontend Configuration
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://pulse-ticket-verse.netlify.app')
@@ -110,10 +141,6 @@ class Config:
     CURRENCY_API_BASE_URL = os.getenv("CURRENCY_API_BASE_URL", "https://api.currencyapi.com/v3")
     CURRENCY_UPDATE_INTERVAL = int(os.getenv("CURRENCY_UPDATE_INTERVAL", "3600"))  # 1 hour
 
-    # Redis Configuration (if used for caching/sessions)
-    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    REDIS_TIMEOUT = int(os.getenv("REDIS_TIMEOUT", "5"))
-
     # File Upload Configuration
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", "16777216"))  # 16MB
     UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp/uploads")
@@ -126,7 +153,7 @@ class Config:
     CLOUDINARY_TIMEOUT = int(os.getenv("CLOUDINARY_TIMEOUT", "30"))
 
     # API Rate Limiting
-    RATELIMIT_STORAGE_URL = REDIS_URL
+    RATELIMIT_STORAGE_URL = REDIS_URL or "memory://"
     RATELIMIT_STRATEGY = "fixed-window"
     RATELIMIT_DEFAULT = os.getenv("RATELIMIT_DEFAULT", "1000 per hour")
 
@@ -200,6 +227,18 @@ class Config:
         """Check if running in development environment"""
         return cls.ENVIRONMENT.lower() in ('development', 'dev')
 
+    @classmethod
+    def get_session_config_info(cls):
+        """Get information about current session configuration"""
+        return {
+            "session_type": cls.SESSION_TYPE,
+            "has_redis": cls._has_redis,
+            "session_dir": getattr(cls, 'SESSION_FILE_DIR', None),
+            "cookie_secure": cls.SESSION_COOKIE_SECURE,
+            "cookie_samesite": cls.SESSION_COOKIE_SAMESITE,
+            "permanent_session": cls.SESSION_PERMANENT
+        }
+
 
 class DevelopmentConfig(Config):
     """Development-specific configuration"""
@@ -209,6 +248,11 @@ class DevelopmentConfig(Config):
     # Use less strict settings for development
     JWT_COOKIE_SECURE = False
     SESSION_COOKIE_SECURE = False
+    SESSION_COOKIE_SAMESITE = "Lax"
+    
+    # Force filesystem sessions in development for easier debugging
+    SESSION_TYPE = "filesystem"
+    SESSION_FILE_DIR = os.path.join(tempfile.gettempdir(), "flask_sessions_dev")
     
     # More verbose logging in development
     SQLALCHEMY_ECHO = True
@@ -223,6 +267,11 @@ class ProductionConfig(Config):
     # Enforce security in production
     JWT_COOKIE_SECURE = True
     SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_SAMESITE = "None"  # Required for cross-origin
+    
+    # Prefer Redis sessions in production
+    if Config.REDIS_URL:
+        SESSION_TYPE = "redis"
     
     # Minimal logging in production
     SQLALCHEMY_ECHO = False
@@ -236,6 +285,9 @@ class TestingConfig(Config):
     
     # Use in-memory database for testing
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    
+    # Use in-memory sessions for testing
+    SESSION_TYPE = "null"  # No session persistence needed for tests
     
     # Disable external services in testing
     MAIL_SUPPRESS_SEND = True
