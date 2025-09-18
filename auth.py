@@ -237,26 +237,45 @@ def register():
 
     return jsonify({"msg": "User registered successfully"}), 201
 
+@auth_bp.route('/check-admin', methods=['GET'])
+def check_admin():
+    """Check if an admin user exists in the system"""
+    try:
+        admin_exists = User.query.filter_by(role=UserRole.ADMIN).first() is not None
+        return jsonify({"admin_exists": admin_exists}), 200
+    except Exception as e:
+        return jsonify({"msg": "Error checking admin status"}), 500
+
+
 @auth_bp.route('/register-first-admin', methods=['POST'])
 def register_first_admin():
+    """Register the first admin user - only available when no admin exists"""
     # Check if any admin already exists in the database
     existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
     if existing_admin:
         return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
     
     data = request.get_json()
+    
+    # Extract and validate input data
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
     full_name = data.get("full_name")
 
-    # Validate input data
+    # Validate required fields
+    if not all([email, phone, password, full_name]):
+        return jsonify({"msg": "All fields are required"}), 400
+
+    # Validate email format
     if not is_valid_email(email):
         return jsonify({"msg": "Invalid email address"}), 400
 
-    if not phone or not is_valid_safaricom_phone(phone):
+    # Validate phone number
+    if not is_valid_safaricom_phone(phone):
         return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
 
+    # Validate password strength
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
@@ -270,6 +289,7 @@ def register_first_admin():
         if existing_admin:
             return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
         
+        # Create new admin user
         hashed_password = generate_password_hash(password)
         new_admin = User(
             email=email, 
@@ -282,7 +302,11 @@ def register_first_admin():
         db.session.add(new_admin)
         db.session.commit()
         
-        return jsonify({"msg": "First admin registered successfully"}), 201
+        return jsonify({
+            "msg": "First admin registered successfully",
+            "admin_id": new_admin.id,
+            "email": new_admin.email
+        }), 201
     
     except Exception as e:
         db.session.rollback()
