@@ -67,11 +67,22 @@ def google_login():
             auth_url = oauth.google.create_authorization_url(
                 redirect_uri,
                 state=state,
-                nonce=nonce
+                nonce=nonce,
+                scope='openid email profile'  # Explicitly specify scopes
             )
             
             # Store session ID or identifier that can be used later
             session_id = getattr(session, 'sid', None) or str(uuid4())
+            
+            # Log the actual URL being generated for debugging
+            logger.info(f"Generated OAuth URL: {auth_url['url']}")
+            
+            # Parse the URL to verify state parameter is included
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(auth_url['url'])
+            query_params = parse_qs(parsed_url.query)
+            
+            logger.debug(f"OAuth URL parameters: {query_params}")
             
             return jsonify({
                 "message": "For API testing: Copy this URL and visit it in a browser. The callback will handle the rest.",
@@ -79,20 +90,44 @@ def google_login():
                 "state": state,
                 "session_id": session_id,
                 "redirect_uri": redirect_uri,
+                "url_contains_state": 'state' in query_params,
+                "oauth_params": {
+                    "client_id": query_params.get('client_id', ['not_found'])[0] if 'client_id' in query_params else 'missing',
+                    "redirect_uri": query_params.get('redirect_uri', ['not_found'])[0] if 'redirect_uri' in query_params else 'missing',
+                    "state": query_params.get('state', ['not_found'])[0] if 'state' in query_params else 'missing',
+                    "scope": query_params.get('scope', ['not_found'])[0] if 'scope' in query_params else 'missing'
+                },
                 "instructions": [
-                    "1. Copy the auth_url above",
-                    "2. Open it in a web browser",
-                    "3. Complete Google authentication",
-                    "4. The callback will return JSON with your token"
+                    "1. Verify that 'url_contains_state' is true above",
+                    "2. Copy the auth_url above",
+                    "3. Open it in a web browser (must be a real browser, not Postman)",
+                    "4. Complete Google authentication",
+                    "5. The callback will return JSON with your token",
+                    "6. If still getting state parameter errors, check the redirect_uri configuration"
                 ]
             })
         
         # For browsers, redirect directly
-        return oauth.google.authorize_redirect(
-            redirect_uri,
-            state=state,
-            nonce=nonce
-        )
+        try:
+            # Ensure proper scope is included
+            return oauth.google.authorize_redirect(
+                redirect_uri,
+                state=state,
+                nonce=nonce,
+                scope='openid email profile'
+            )
+        except Exception as redirect_error:
+            logger.error(f"Failed to create OAuth redirect: {str(redirect_error)}")
+            return jsonify({
+                "error": "Failed to create OAuth redirect",
+                "details": str(redirect_error),
+                "redirect_uri": redirect_uri,
+                "google_config": {
+                    "client_id_set": bool(current_app.config.get('GOOGLE_CLIENT_ID')),
+                    "client_secret_set": bool(current_app.config.get('GOOGLE_CLIENT_SECRET')),
+                    "discovery_url": current_app.config.get('GOOGLE_DISCOVERY_URL')
+                }
+            }), 500
         
     except Exception as e:
         logger.error(f"Error in google_login: {str(e)}")
@@ -135,10 +170,40 @@ def google_callback():
         # Verify state parameter exists
         if not received_state:
             logger.error("No state parameter received from Google")
-            return jsonify({
+            
+            # Get the full callback URL for debugging
+            full_url = request.url
+            logger.error(f"Full callback URL: {full_url}")
+            logger.error(f"All query parameters: {dict(request.args)}")
+            
+            # Check if this looks like a Google OAuth callback at all
+            has_code = request.args.get("code")
+            has_error = request.args.get("error")
+            
+            error_details = {
                 "error": "Missing state parameter",
-                "details": "The OAuth callback didn't receive the required state parameter"
-            }), 400
+                "details": "The OAuth callback didn't receive the required state parameter",
+                "full_callback_url": full_url,
+                "received_params": dict(request.args),
+                "has_auth_code": bool(has_code),
+                "has_error": bool(has_error),
+                "troubleshooting": {
+                    "possible_causes": [
+                        "The OAuth URL was not generated properly",
+                        "The redirect_uri configuration is incorrect",
+                        "Google is not including the state parameter in the callback",
+                        "The OAuth app configuration in Google Console is wrong"
+                    ],
+                    "next_steps": [
+                        "1. Check that the redirect_uri in Google Console matches exactly: " + Config.GOOGLE_REDIRECT_URI,
+                        "2. Verify the OAuth URL includes the state parameter before visiting it",
+                        "3. Make sure you're using the exact URL returned by /auth/login/google",
+                        "4. Check Google Console OAuth app settings"
+                    ]
+                }
+            }
+            
+            return jsonify(error_details), 400
         
         # Check if we have stored state
         if not stored_state:
@@ -384,14 +449,169 @@ def debug_session_info():
             "sid": getattr(session, 'sid', 'no_sid'),
             "keys": list(session.keys()),
             "oauth_state": session.get("oauth_state", "not_set"),
-            "oauth_nonce": session.get("oauth_nonce", "not_set")
+            "oauth_nonce": session.get("oauth_nonce", "not_set"),
+            "debug_oauth_state": session.get("debug_oauth_state", "not_set"),
+            "debug_oauth_nonce": session.get("debug_oauth_nonce", "not_set")
         },
         "request_info": {
             "user_agent": request.headers.get('User-Agent'),
             "accept": request.headers.get('Accept'),
-            "cookies": list(request.cookies.keys())
+            "cookies": list(request.cookies.keys()),
+            "full_url": request.url,
+            "query_params": dict(request.args)
         }
     })
+    """Debug OAuth configuration and test URL generation"""
+    if not current_app.debug:
+        return jsonify({"error": "Debug endpoint only available in debug mode"}), 404
+    
+    try:
+        from config import Config
+        import json
+        
+        # Test OAuth URL generation
+        test_state = "test_state_123"
+        test_nonce = "test_nonce_123"
+        
+        try:
+            test_auth_url = oauth.google.create_authorization_url(
+                Config.GOOGLE_REDIRECT_URI,
+                state=test_state,
+                nonce=test_nonce,
+                scope='openid email profile'
+            )
+            url_generation_success = True
+            test_url = test_auth_url['url']
+        except Exception as url_error:
+            url_generation_success = False
+            test_url = None
+            url_error_msg = str(url_error)
+        
+        # Parse the test URL to check parameters
+        url_params = {}
+        if test_url:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(test_url)
+            url_params = parse_qs(parsed.query)
+        
+        debug_info = {
+            "oauth_config": {
+                "google_client_id": current_app.config.get('GOOGLE_CLIENT_ID', 'NOT_SET')[:20] + "..." if current_app.config.get('GOOGLE_CLIENT_ID') else 'NOT_SET',
+                "google_client_secret_set": bool(current_app.config.get('GOOGLE_CLIENT_SECRET')),
+                "google_discovery_url": current_app.config.get('GOOGLE_DISCOVERY_URL'),
+                "base_url": Config.BASE_URL,
+                "redirect_uri": Config.GOOGLE_REDIRECT_URI,
+                "frontend_url": Config.FRONTEND_URL
+            },
+            "url_generation": {
+                "success": url_generation_success,
+                "test_url": test_url if url_generation_success else None,
+                "error": url_error_msg if not url_generation_success else None,
+                "url_contains_state": 'state' in url_params and url_params['state'][0] == test_state if url_params else False,
+                "parsed_params": {k: v[0] if v else None for k, v in url_params.items()} if url_params else {}
+            },
+            "session_info": {
+                "session_type": current_app.config.get('SESSION_TYPE'),
+                "session_permanent": getattr(session, 'permanent', 'unknown'),
+                "session_keys": list(session.keys())
+            },
+            "environment": {
+                "flask_env": os.getenv('FLASK_ENV', 'not_set'),
+                "debug_mode": current_app.debug,
+                "base_url": Config.BASE_URL
+            }
+        }
+        
+        return jsonify(debug_info)
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to generate debug info",
+            "details": str(e)
+        }), 500
+
+
+# Add a manual OAuth URL generator for testing
+@auth_bp.route('/debug/generate-oauth-url')
+def generate_oauth_url_debug():
+    """Manually generate OAuth URL for debugging"""
+    if not current_app.debug:
+        return jsonify({"error": "Debug endpoint only available in debug mode"}), 404
+    
+    try:
+        from config import Config
+        
+        # Generate fresh state and nonce
+        state = f"debug_{str(uuid4())}"
+        nonce = f"debug_{str(uuid4())}"
+        
+        # Store in session
+        session["debug_oauth_state"] = state
+        session["debug_oauth_nonce"] = nonce
+        session.permanent = True
+        session.modified = True
+        
+        # Generate URL
+        redirect_uri = Config.GOOGLE_REDIRECT_URI
+        
+        # Try the OAuth library method
+        try:
+            auth_url_data = oauth.google.create_authorization_url(
+                redirect_uri,
+                state=state,
+                nonce=nonce,
+                scope='openid email profile'
+            )
+            oauth_lib_success = True
+            oauth_lib_url = auth_url_data['url']
+            oauth_lib_error = None
+        except Exception as e:
+            oauth_lib_success = False
+            oauth_lib_url = None
+            oauth_lib_error = str(e)
+        
+        # Also try manual URL construction as backup
+        import urllib.parse
+        
+        manual_params = {
+            'client_id': current_app.config.get('GOOGLE_CLIENT_ID'),
+            'redirect_uri': redirect_uri,
+            'scope': 'openid email profile',
+            'response_type': 'code',
+            'state': state,
+            'nonce': nonce,
+            'access_type': 'offline'
+        }
+        
+        manual_url = 'https://accounts.google.com/o/oauth2/v2/auth?' + urllib.parse.urlencode(manual_params)
+        
+        return jsonify({
+            "oauth_library": {
+                "success": oauth_lib_success,
+                "url": oauth_lib_url,
+                "error": oauth_lib_error
+            },
+            "manual_construction": {
+                "url": manual_url,
+                "parameters": manual_params
+            },
+            "session_storage": {
+                "state_stored": session.get("debug_oauth_state") == state,
+                "nonce_stored": session.get("debug_oauth_nonce") == nonce
+            },
+            "instructions": [
+                "1. Try the oauth_library.url first (if success is true)",
+                "2. If that fails, try the manual_construction.url",
+                "3. Complete OAuth flow and check callback for state parameter",
+                "4. Use /debug/session-info to verify session persistence"
+            ]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to generate OAuth URL",
+            "details": str(e)
+        }), 500
 
 
 # Health check endpoint for OAuth flow
