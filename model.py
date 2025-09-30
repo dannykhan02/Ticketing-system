@@ -815,9 +815,9 @@ class AIAnalyticsCache(db.Model):
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=True, index=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True, index=True)
 
-    # Cached data
+   # Cached data
     result_data = db.Column(JSONB, nullable=False)
-    metadata = db.Column(JSONB, nullable=True)
+    meta_data = db.Column("metadata", JSONB, nullable=True)  # 👈 fixed
     data_size_kb = db.Column(db.Integer, nullable=True)
     is_compressed = db.Column(db.Boolean, default=False)
 
