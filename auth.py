@@ -28,7 +28,8 @@ def generate_token(user):
         identity=str(user.id),
         additional_claims={
             "email": user.email,
-            "role": str(user.role.value)
+            "role": str(user.role.value),
+            "ai_enabled": user.ai_enabled
         },
         expires_delta=timedelta(days=30)
     )
@@ -740,7 +741,7 @@ def register():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
-    full_name = data.get("full_name")  # Extract full_name
+    full_name = data.get("full_name")
     role = "ATTENDEE"
 
     # Validate Email
@@ -766,8 +767,17 @@ def register():
     # Hash Password
     hashed_password = generate_password_hash(password)
 
-    # Create and Save New User
-    new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role=role)
+    # Create and Save New User with AI enabled by default
+    new_user = User(
+        email=email, 
+        phone_number=phone, 
+        password=hashed_password, 
+        full_name=full_name, 
+        role=role,
+        ai_enabled=True,  # Enable AI by default for new users
+        ai_language_preference='en',
+        ai_notification_preference=True
+    )
     db.session.add(new_user)
     db.session.commit()
 
@@ -825,14 +835,17 @@ def register_first_admin():
         if existing_admin:
             return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
         
-        # Create new admin user
+        # Create new admin user with AI enabled
         hashed_password = generate_password_hash(password)
         new_admin = User(
             email=email, 
             phone_number=phone, 
             password=hashed_password, 
             full_name=full_name, 
-            role=UserRole.ADMIN
+            role=UserRole.ADMIN,
+            ai_enabled=True,
+            ai_language_preference='en',
+            ai_notification_preference=True
         )
         
         db.session.add(new_admin)
@@ -855,7 +868,7 @@ def register_admin():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
-    full_name = data.get("full_name")  # Extract full_name
+    full_name = data.get("full_name")
 
     # Validate Email
     if not is_valid_email(email):
@@ -877,9 +890,18 @@ def register_admin():
     if User.query.filter_by(phone_number=phone).first():
         return jsonify({"msg": "Phone number already registered"}), 400
 
-    # Hash password and create new admin user
+    # Hash password and create new admin user with AI enabled
     hashed_password = generate_password_hash(password)
-    new_admin = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="ADMIN")
+    new_admin = User(
+        email=email, 
+        phone_number=phone, 
+        password=hashed_password, 
+        full_name=full_name, 
+        role="ADMIN",
+        ai_enabled=True,
+        ai_language_preference='en',
+        ai_notification_preference=True
+    )
     db.session.add(new_admin)
     db.session.commit()
 
@@ -887,7 +909,7 @@ def register_admin():
 
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    """Handles user authentication and token generation"""
+    """Handles user authentication and token generation with AI model integration"""
     data = request.get_json()
 
     email = data.get("email")
@@ -900,16 +922,21 @@ def login():
     if not user or not check_password_hash(user.password, password):
         return jsonify({"error": "Invalid email or password"}), 401
 
-    # Generate JWT token
+    # Generate JWT token with AI settings
     access_token = generate_token(user)
 
-    # Create response with user data
+    # Create response with user data including AI preferences
     response = jsonify({
         "message": "Login successful",
         "user": {
             "id": user.id,
             "email": user.email,
-            "role": str(user.role)
+            "role": str(user.role),
+            "full_name": user.full_name,
+            "phone_number": user.phone_number,
+            "ai_enabled": user.ai_enabled,
+            "ai_language_preference": user.ai_language_preference,
+            "ai_notification_preference": user.ai_notification_preference
         }
     })
 
@@ -924,6 +951,7 @@ def login():
         max_age=30*24*60*60  # 30 days in seconds
     )
 
+    logger.info(f"User logged in successfully: {user.email}, AI enabled: {user.ai_enabled}")
     return response, 200
 
 @auth_bp.route('/logout', methods=['POST'])
@@ -1033,7 +1061,7 @@ def register_security():
     email = data.get("email")
     phone = data.get("phone_number")
     password = data.get("password")
-    full_name = data.get("full_name")  # Extract full_name
+    full_name = data.get("full_name")
 
     # Validate required fields
     if not email or not phone or not password or not full_name:
@@ -1063,8 +1091,17 @@ def register_security():
         # Hash password before storing
         hashed_password = generate_password_hash(password)
 
-        # Create a new security user
-        new_user = User(email=email, phone_number=phone, password=hashed_password, full_name=full_name, role="SECURITY")
+        # Create a new security user with AI enabled
+        new_user = User(
+            email=email, 
+            phone_number=phone, 
+            password=hashed_password, 
+            full_name=full_name, 
+            role="SECURITY",
+            ai_enabled=True,
+            ai_language_preference='en',
+            ai_notification_preference=True
+        )
         db.session.add(new_user)
         db.session.commit()
 
@@ -1074,8 +1111,6 @@ def register_security():
         db.session.rollback()
         return jsonify({"msg": "Internal Server Error", "error": str(e)}), 500
 
-# 📌 Endpoint: Forgot Password (Sends Reset Link)
-# 📌 Endpoint: Forgot Password (Sends Reset Link)
 @auth_bp.route('/forgot-password', methods=['POST'])
 def forgot_password():
     from app import mail  # Import mail instance from app.py
@@ -1094,10 +1129,7 @@ def forgot_password():
     # Generate password reset token
     token = serializer.dumps(email, salt="reset-password-salt")
 
-    # ⭐ THIS IS THE CORRECTED LINE ⭐
-    # It now uses the FRONTEND_URL from your Config class (which is dynamically loaded from environment variables)
     reset_link = f"{Config.FRONTEND_URL}/reset-password/{token}"
-
 
     # Send email
     msg = Message("Password Reset Request", recipients=[email])
@@ -1106,7 +1138,6 @@ def forgot_password():
 
     return jsonify({"msg": "Reset link sent to your email"}), 200
 
-#  Endpoint: Reset Password (Verifies Token & Updates Password)
 @auth_bp.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
     # Initialize serializer inside function
@@ -1123,9 +1154,8 @@ def reset_password(token):
     if request.method == 'GET':
         # Return a simple message or render a form
         return jsonify({"msg": "Token is valid. You can now reset your password.", "email": email}), 200
-        # OR: return render_template('reset_password_form.html', token=token)
 
-    # POST method (same logic you already have)
+    # POST method
     data = request.get_json()
     new_password = data.get("password")
 
@@ -1150,7 +1180,7 @@ def reset_password(token):
 @auth_bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    """Get user profile information"""
+    """Get user profile information including AI preferences"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
 
@@ -1168,7 +1198,7 @@ def get_profile():
 @auth_bp.route('/profile', methods=['PUT'])
 @jwt_required()
 def update_profile():
-    """Update user profile information"""
+    """Update user profile information including AI preferences"""
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
 
@@ -1184,6 +1214,14 @@ def update_profile():
         if not is_valid_safaricom_phone(data['phone_number']):
             return jsonify({"msg": "Invalid phone number. Must be a valid Safaricom number."}), 400
         user.phone_number = data['phone_number']
+
+    # Update AI preferences
+    if 'ai_enabled' in data:
+        user.ai_enabled = bool(data['ai_enabled'])
+    if 'ai_language_preference' in data:
+        user.ai_language_preference = data['ai_language_preference']
+    if 'ai_notification_preference' in data:
+        user.ai_notification_preference = bool(data['ai_notification_preference'])
 
     # If user is an organizer, update organizer profile
     if user.role == UserRole.ORGANIZER:
@@ -1210,10 +1248,59 @@ def update_profile():
 
     try:
         db.session.commit()
+        logger.info(f"Profile updated for user: {user.email}, AI enabled: {user.ai_enabled}")
         return jsonify({"msg": "Profile updated successfully"}), 200
     except Exception as e:
         db.session.rollback()
         return jsonify({"msg": "Failed to update profile", "error": str(e)}), 500
+
+@auth_bp.route('/ai-preferences', methods=['GET'])
+@jwt_required()
+def get_ai_preferences():
+    """Get user's AI preferences"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    return jsonify({
+        "ai_enabled": user.ai_enabled,
+        "ai_language_preference": user.ai_language_preference,
+        "ai_notification_preference": user.ai_notification_preference
+    }), 200
+
+@auth_bp.route('/ai-preferences', methods=['PUT'])
+@jwt_required()
+def update_ai_preferences():
+    """Update user's AI preferences"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+
+    data = request.get_json()
+
+    if 'ai_enabled' in data:
+        user.ai_enabled = bool(data['ai_enabled'])
+    if 'ai_language_preference' in data:
+        user.ai_language_preference = data['ai_language_preference']
+    if 'ai_notification_preference' in data:
+        user.ai_notification_preference = bool(data['ai_notification_preference'])
+
+    try:
+        db.session.commit()
+        logger.info(f"AI preferences updated for user: {user.email}")
+        return jsonify({
+            "msg": "AI preferences updated successfully",
+            "ai_enabled": user.ai_enabled,
+            "ai_language_preference": user.ai_language_preference,
+            "ai_notification_preference": user.ai_notification_preference
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"msg": "Failed to update AI preferences", "error": str(e)}), 500
 
 @auth_bp.route('/organizers', methods=['GET'])
 @jwt_required()
