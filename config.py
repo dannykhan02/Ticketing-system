@@ -28,6 +28,15 @@ class Config:
     # Security Configuration
     SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
     
+    # AI Configuration
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
+    AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
+    AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
+    AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
+    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))
+    
     # Enhanced Email Configuration
     MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com")
     MAIL_PORT = int(os.getenv("MAIL_PORT", "587").strip() or 587)
@@ -173,6 +182,7 @@ class Config:
     ENABLE_SWAGGER = os.getenv("ENABLE_SWAGGER", "False").lower() in ("true", "1")
     ENABLE_METRICS = os.getenv("ENABLE_METRICS", "True").lower() in ("true", "1")
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
+    ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "True").lower() in ("true", "1")
 
     @classmethod
     def validate_config(cls):
@@ -197,6 +207,10 @@ class Config:
         # Validate payment configurations
         if cls.PAYSTACK_SECRET_KEY and not cls.PAYSTACK_PUBLIC_KEY:
             raise ValueError("PAYSTACK_PUBLIC_KEY is required when PAYSTACK_SECRET_KEY is set")
+        
+        # Validate AI configuration if AI features are enabled
+        if cls.ENABLE_AI_FEATURES and not cls.OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is required when AI features are enabled")
         
         return True
 
@@ -238,6 +252,18 @@ class Config:
             "cookie_samesite": cls.SESSION_COOKIE_SAMESITE,
             "permanent_session": cls.SESSION_PERMANENT
         }
+    
+    @classmethod
+    def get_ai_config_info(cls):
+        """Get information about current AI configuration"""
+        return {
+            "provider": cls.AI_PROVIDER,
+            "model": cls.AI_MODEL,
+            "temperature": cls.AI_TEMPERATURE,
+            "max_tokens": cls.AI_MAX_TOKENS,
+            "timeout": cls.AI_TIMEOUT,
+            "enabled": cls.ENABLE_AI_FEATURES and bool(cls.OPENAI_API_KEY)
+        }
 
 
 class DevelopmentConfig(Config):
@@ -257,6 +283,9 @@ class DevelopmentConfig(Config):
     # More verbose logging in development
     SQLALCHEMY_ECHO = True
     LOG_LEVEL = "DEBUG"
+    
+    # AI settings for development (can use higher token limits for testing)
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "1000"))
 
 
 class ProductionConfig(Config):
@@ -276,6 +305,10 @@ class ProductionConfig(Config):
     # Minimal logging in production
     SQLALCHEMY_ECHO = False
     LOG_LEVEL = "WARNING"
+    
+    # Conservative AI settings for production (cost control)
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
+    AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "20"))
 
 
 class TestingConfig(Config):
@@ -292,6 +325,10 @@ class TestingConfig(Config):
     # Disable external services in testing
     MAIL_SUPPRESS_SEND = True
     WTF_CSRF_ENABLED = False
+    
+    # Disable AI features in testing (unless explicitly testing AI)
+    ENABLE_AI_FEATURES = False
+    OPENAI_API_KEY = "test-key-for-mocking"
 
 
 # Configuration dictionary for easy switching
