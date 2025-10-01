@@ -7,8 +7,10 @@ from ai.action_executor import ActionExecutor
 from ai.context_manager import ContextManager
 from ai.response_formatter import ResponseFormatter
 from datetime import datetime, timedelta
+from config import Config
 import os
 import logging
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +22,22 @@ class AIAssistant:
         self.action_executor = ActionExecutor()
         self.context_manager = ContextManager()
         self.response_formatter = ResponseFormatter()
-        self.llm_enabled = bool(os.getenv('OPENAI_API_KEY') or os.getenv('ANTHROPIC_API_KEY'))
+        
+        # Initialize OpenAI with config
+        self.openai_api_key = Config.OPENAI_API_KEY
+        self.ai_provider = Config.AI_PROVIDER
+        self.ai_model = Config.AI_MODEL
+        self.ai_temperature = Config.AI_TEMPERATURE
+        self.ai_max_tokens = Config.AI_MAX_TOKENS
+        self.ai_timeout = Config.AI_TIMEOUT
+        self.llm_enabled = Config.ENABLE_AI_FEATURES and bool(self.openai_api_key)
+        
+        # Configure OpenAI client if available
+        if self.llm_enabled:
+            openai.api_key = self.openai_api_key
+            logger.info(f"AI Assistant initialized with provider: {self.ai_provider}, model: {self.ai_model}")
+        else:
+            logger.warning("AI Assistant initialized without LLM support - OpenAI API key not configured")
     
     def process_query(self, user_id: int, query: str, session_id: str = None):
         """Main entry point for processing user queries"""
@@ -332,7 +349,7 @@ class AIAssistant:
         """Handle general queries"""
         # If LLM is available, use it
         if self.llm_enabled:
-            return self._llm_response(query, context)
+            return self._llm_response(query, context, user_id)
         
         # Otherwise, provide helpful fallback
         return {
@@ -345,13 +362,69 @@ class AIAssistant:
                       "What would you like to do?"
         }
     
-    def _llm_response(self, query, context):
-        """Generate response using LLM (OpenAI/Anthropic)"""
-        # Placeholder for LLM integration
-        # You can add OpenAI or Anthropic API calls here
-        return {
-            "message": "I understand your question. For full AI capabilities, please configure your LLM API keys."
-        }
+    def _llm_response(self, query: str, context: list, user_id: int) -> dict:
+        """Generate response using OpenAI LLM"""
+        try:
+            # Build messages for OpenAI
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an AI assistant for a ticketing system. "
+                        "Help users manage events, analyze sales, check inventory, and optimize pricing. "
+                        "Be concise, helpful, and professional."
+                    )
+                }
+            ]
+            
+            # Add conversation context
+            for msg in context[-5:]:  # Last 5 messages for context
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+            
+            # Add current query
+            messages.append({
+                "role": "user",
+                "content": query
+            })
+            
+            # Call OpenAI API
+            response = openai.ChatCompletion.create(
+                model=self.ai_model,
+                messages=messages,
+                temperature=self.ai_temperature,
+                max_tokens=self.ai_max_tokens,
+                timeout=self.ai_timeout
+            )
+            
+            ai_message = response.choices[0].message.content
+            
+            return {
+                "message": ai_message,
+                "llm_used": True,
+                "model": self.ai_model
+            }
+            
+        except openai.error.Timeout:
+            logger.error("OpenAI API timeout")
+            return {
+                "message": "I'm taking longer than usual to respond. Please try again.",
+                "llm_used": False
+            }
+        except openai.error.APIError as e:
+            logger.error(f"OpenAI API error: {e}")
+            return {
+                "message": "I'm having trouble connecting to my AI services. Please try again shortly.",
+                "llm_used": False
+            }
+        except Exception as e:
+            logger.error(f"Error in LLM response: {e}")
+            return {
+                "message": "I understand your question, but I'm having technical difficulties. Please try rephrasing or contact support.",
+                "llm_used": False
+            }
     
     def execute_confirmed_action(self, action):
         """Execute an action that was confirmed by the user"""
