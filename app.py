@@ -33,6 +33,7 @@ from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
 from organizer_report.organizer_report import ReportResourceRegistry
+from ai.ai_routes import register_ai_resources
 
 # ✅ Updated stats import - using unified stats system
 from stats import register_unified_stats_resources
@@ -344,6 +345,7 @@ register_ticket_type_resources(api)
 register_admin_report_resources(api)
 register_admin_resources(api)
 register_currency_resources(api)
+register_ai_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
 # ✅ Updated stats registration - using unified stats system
