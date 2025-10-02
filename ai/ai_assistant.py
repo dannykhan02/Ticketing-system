@@ -9,7 +9,7 @@ from ai.response_formatter import ResponseFormatter
 from datetime import datetime, timedelta
 import os
 import logging
-import openai
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +34,12 @@ class AIAssistant:
         self.ai_timeout = Config.AI_TIMEOUT
         self.llm_enabled = Config.ENABLE_AI_FEATURES and bool(self.openai_api_key)
         
-        # Configure OpenAI client if available
+        # Configure OpenAI client (v1.0.0+)
         if self.llm_enabled:
-            openai.api_key = self.openai_api_key
+            self.client = OpenAI(api_key=self.openai_api_key, timeout=self.ai_timeout)
             logger.info(f"AI Assistant initialized with provider: {self.ai_provider}, model: {self.ai_model}")
         else:
+            self.client = None
             logger.warning("AI Assistant initialized without LLM support - OpenAI API key not configured")
     
     def process_query(self, user_id: int, query: str, session_id: str = None):
@@ -93,7 +94,7 @@ class AIAssistant:
             }
             
         except Exception as e:
-            logger.error(f"Error processing query: {e}")
+            logger.error(f"Error processing query: {e}", exc_info=True)
             AIManager.log_error(user_id, "query_processing", str(e), {"query": query})
             return {
                 "success": False,
@@ -350,7 +351,7 @@ class AIAssistant:
     def _handle_general_query(self, query, params, context, user_id, conversation_id):
         """Handle general queries"""
         # If LLM is available, use it
-        if self.llm_enabled:
+        if self.llm_enabled and self.client:
             return self._llm_response(query, context, user_id)
         
         # Otherwise, provide helpful fallback
@@ -392,13 +393,12 @@ class AIAssistant:
                 "content": query
             })
             
-            # Call OpenAI API
-            response = openai.ChatCompletion.create(
+            # Call OpenAI API with new client
+            response = self.client.chat.completions.create(
                 model=self.ai_model,
                 messages=messages,
                 temperature=self.ai_temperature,
-                max_tokens=self.ai_max_tokens,
-                timeout=self.ai_timeout
+                max_tokens=self.ai_max_tokens
             )
             
             ai_message = response.choices[0].message.content
@@ -409,20 +409,38 @@ class AIAssistant:
                 "model": self.ai_model
             }
             
-        except openai.error.Timeout:
+        except APITimeoutError:
             logger.error("OpenAI API timeout")
             return {
                 "message": "I'm taking longer than usual to respond. Please try again.",
                 "llm_used": False
             }
-        except openai.error.APIError as e:
+        except RateLimitError:
+            logger.error("OpenAI rate limit exceeded")
+            return {
+                "message": "I'm experiencing high demand right now. Please try again in a moment.",
+                "llm_used": False
+            }
+        except AuthenticationError:
+            logger.error("OpenAI authentication failed")
+            return {
+                "message": "There's an authentication issue with the AI service. Please contact support.",
+                "llm_used": False
+            }
+        except APIConnectionError as e:
+            logger.error(f"OpenAI connection error: {e}")
+            return {
+                "message": "I'm having trouble connecting to my AI services. Please check your internet connection.",
+                "llm_used": False
+            }
+        except APIError as e:
             logger.error(f"OpenAI API error: {e}")
             return {
                 "message": "I'm having trouble connecting to my AI services. Please try again shortly.",
                 "llm_used": False
             }
         except Exception as e:
-            logger.error(f"Error in LLM response: {e}")
+            logger.error(f"Error in LLM response: {e}", exc_info=True)
             return {
                 "message": "I understand your question, but I'm having technical difficulties. Please try rephrasing or contact support.",
                 "llm_used": False
