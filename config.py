@@ -1,240 +1,303 @@
-from flask import request, jsonify
-from flask_restful import Resource
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from ai.ai_assistant import AIAssistant
-from model import db, User, AIConversation, AIActionLog, AIActionStatus, AIManager
-import logging
+import os
+import tempfile
+import redis
+from datetime import timedelta
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Do NOT call load_dotenv here. It should be in app.py
 
-class AIChatResource(Resource):
-    """Main AI chat interface"""
+class Config:
+    # Environment Detection
+    ENVIRONMENT = os.getenv("FLASK_ENV", "production")
+    DEBUG = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1")
     
-    def __init__(self):
-        self.assistant = AIAssistant()
+    # Paystack Configuration
+    PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
+    PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+    PAYSTACK_CALLBACK_URL = os.getenv("PAYSTACK_CALLBACK_URL")
+    PAYSTACK_WEBHOOK_URL = os.getenv("PAYSTACK_WEBHOOK_URL")
+
+    # Google OAuth Configuration
+    GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "default-client-id")
+    GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "default-client-secret")
     
-    @jwt_required()
-    def post(self):
-        """Process a user query through the AI assistant"""
+    # Dynamic redirect URI based on environment
+    BASE_URL = os.getenv("BASE_URL", "https://ticketing-system-994g.onrender.com")
+    GOOGLE_REDIRECT_URI = f"{BASE_URL}/auth/callback/google"
+    GOOGLE_DISCOVERY_URL = "https://accounts.google.com/.well-known/openid-configuration"
+
+    # Security Configuration
+    SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key")
+    
+    # Enhanced Email Configuration
+    MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+    MAIL_PORT = int(os.getenv("MAIL_PORT", "587").strip() or 587)
+    MAIL_USE_TLS = os.getenv("MAIL_USE_TLS", "True").lower() in ("true", "1", "yes")
+    MAIL_USE_SSL = os.getenv("MAIL_USE_SSL", "False").lower() in ("true", "1", "yes")
+    MAIL_USERNAME = os.getenv("MAIL_USERNAME")
+    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
+    MAIL_DEFAULT_SENDER = os.getenv("MAIL_DEFAULT_SENDER") or os.getenv("MAIL_USERNAME") or "no-reply@ticketing-system.com"
+    
+    # Email timeout and retry configuration
+    MAIL_TIMEOUT = int(os.getenv("MAIL_TIMEOUT", "30"))
+    MAIL_MAX_EMAILS = int(os.getenv("MAIL_MAX_EMAILS", "50"))
+
+    # Database Configuration
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_RECORD_QUERIES = DEBUG  # Only record queries in debug mode
+    SQLALCHEMY_ECHO = DEBUG and os.getenv("SQL_ECHO", "False").lower() in ("true", "1")
+    
+    # Database connection pool settings (will be merged with app.py settings)
+    DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
+    DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+    DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+    DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+
+    # JWT Configuration
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-jwt-secret")
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=int(os.getenv("JWT_ACCESS_TOKEN_HOURS", "24")))
+    JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=int(os.getenv("JWT_REFRESH_TOKEN_DAYS", "30")))
+    
+    # JWT Cookie settings for production
+    JWT_COOKIE_SECURE = not DEBUG  # Secure cookies in production
+    JWT_COOKIE_HTTPONLY = True
+    JWT_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"  # None for cross-origin in production
+    JWT_COOKIE_CSRF_PROTECT = False  # Simplified for API usage
+    JWT_TOKEN_LOCATION = ["cookies", "headers"]  # Support both methods
+    JWT_ACCESS_COOKIE_NAME = "access_token"
+    JWT_REFRESH_COOKIE_NAME = "refresh_token"
+    JWT_HEADER_NAME = "Authorization"
+    JWT_HEADER_TYPE = "Bearer"
+
+    # M-Pesa Configuration
+    CONSUMER_KEY = os.getenv("CONSUMER_KEY")
+    CONSUMER_SECRET = os.getenv("CONSUMER_SECRET")
+    BUSINESS_SHORTCODE = os.getenv("BUSINESS_SHORTCODE")
+    PASSKEY = os.getenv("PASSKEY")
+    CALLBACK_URL = os.getenv("CALLBACK_URL")
+    
+    # M-Pesa timeout settings
+    MPESA_TIMEOUT = int(os.getenv("MPESA_TIMEOUT", "30"))
+    MPESA_RETRY_ATTEMPTS = int(os.getenv("MPESA_RETRY_ATTEMPTS", "3"))
+
+    # Redis Configuration (moved up for session config)
+    REDIS_URL = os.getenv("REDIS_URL")
+    REDIS_TIMEOUT = int(os.getenv("REDIS_TIMEOUT", "5"))
+
+    # Session Configuration - Improved with Redis fallback
+    SESSION_COOKIE_SECURE = not DEBUG  # Secure cookies in production
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"  # Match JWT settings for consistency
+    SESSION_COOKIE_DOMAIN = None  # Let browser handle domain
+    PERMANENT_SESSION_LIFETIME = timedelta(
+        hours=int(os.getenv("SESSION_LIFETIME_HOURS", "24"))
+    )
+    
+    # Smart session storage - prefer Redis in production, filesystem in development
+    _has_redis = bool(REDIS_URL)
+    SESSION_TYPE = "redis" if _has_redis else "filesystem"
+    
+    # Redis session config (used if Redis is available)
+    if _has_redis:
         try:
-            user_id = get_jwt_identity()
-            user = User.query.get(user_id)
-            
-            if not user:
-                return {"error": "User not found"}, 404
-            
-            if not user.ai_enabled:
-                return {"error": "AI features are disabled for your account"}, 403
-            
-            data = request.get_json()
-            query = data.get('query')
-            session_id = data.get('session_id')
-            
-            if not query:
-                return {"error": "Query is required"}, 400
-            
-            # Process the query
-            result = self.assistant.process_query(
-                user_id=user_id,
-                query=query,
-                session_id=session_id
-            )
-            
-            return result, 200 if result.get('success') else 400
-            
-        except Exception as e:
-            logger.error(f"Error in AI chat: {e}")
-            return {"error": "An internal error occurred processing your request"}, 500
-
-
-class AIConversationListResource(Resource):
-    """Get user's conversation history"""
+            SESSION_REDIS = redis.from_url(REDIS_URL, 
+                                         socket_timeout=REDIS_TIMEOUT,
+                                         socket_connect_timeout=REDIS_TIMEOUT,
+                                         decode_responses=True)
+            SESSION_USE_SIGNER = True
+            SESSION_KEY_PREFIX = "ticketing_oauth:"
+        except Exception:
+            # Fallback to filesystem if Redis connection fails
+            SESSION_TYPE = "filesystem"
     
-    @jwt_required()
-    def get(self):
-        """Retrieve all conversations for the logged-in user"""
+    # Filesystem session config (fallback or development)
+    if SESSION_TYPE == "filesystem":
+        SESSION_FILE_DIR = os.path.join(tempfile.gettempdir(), "flask_sessions")
+        SESSION_FILE_THRESHOLD = int(os.getenv("SESSION_FILE_THRESHOLD", "500"))
+        SESSION_USE_SIGNER = True
+        SESSION_KEY_PREFIX = "ticketing_session:"
+        
+        # Ensure session directory exists
         try:
-            user_id = get_jwt_identity()
-            page = request.args.get('page', 1, type=int)
-            per_page = request.args.get('per_page', 20, type=int)
-            
-            conversations = AIManager.get_user_conversations(
-                user_id=user_id,
-                page=page,
-                per_page=per_page
-            )
-            
-            return {
-                "conversations": [conv.as_dict() for conv in conversations.items],
-                "total": conversations.total,
-                "page": conversations.page,
-                "pages": conversations.pages
-            }, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching conversations: {e}")
-            return {"error": "An internal error occurred"}, 500
-
-
-class AIConversationDetailResource(Resource):
-    """Get details of a specific conversation"""
+            os.makedirs(SESSION_FILE_DIR, exist_ok=True)
+        except Exception:
+            pass  # Will fall back to default temp directory
     
-    @jwt_required()
-    def get(self, conversation_id):
-        """Get messages from a specific conversation"""
-        try:
-            user_id = get_jwt_identity()
-            
-            conversation = AIConversation.query.filter_by(
-                id=conversation_id,
-                user_id=user_id
-            ).first()
-            
-            if not conversation:
-                return {"error": "Conversation not found"}, 404
-            
-            messages = [msg.as_dict() for msg in conversation.messages]
-            
-            return {
-                "conversation": conversation.as_dict(),
-                "messages": messages
-            }, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching conversation details: {e}")
-            return {"error": "An internal error occurred"}, 500
+    SESSION_PERMANENT = True
+
+    # Frontend Configuration
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://pulse-ticket-verse.netlify.app')
     
-    @jwt_required()
-    def delete(self, conversation_id):
-        """Delete/deactivate a conversation"""
-        try:
-            user_id = get_jwt_identity()
-            
-            conversation = AIConversation.query.filter_by(
-                id=conversation_id,
-                user_id=user_id
-            ).first()
-            
-            if not conversation:
-                return {"error": "Conversation not found"}, 404
-            
-            conversation.is_active = False
-            db.session.commit()
-            
-            return {"message": "Conversation deleted successfully"}, 200
-            
-        except Exception as e:
-            logger.error(f"Error deleting conversation: {e}")
-            db.session.rollback()
-            return {"error": "An internal error occurred"}, 500
+    # Additional allowed origins for CORS
+    CORS_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:5173", 
+        "http://localhost:8080",
+        "https://pulse-ticket-verse.netlify.app",
+        BASE_URL
+    ]
 
+    # Currency API Configuration
+    CURRENCY_API_KEY = os.getenv("CURRENCY_API_KEY")
+    CURRENCY_API_BASE_URL = os.getenv("CURRENCY_API_BASE_URL", "https://api.currencyapi.com/v3")
+    CURRENCY_UPDATE_INTERVAL = int(os.getenv("CURRENCY_UPDATE_INTERVAL", "3600"))  # 1 hour
 
-class AIActionConfirmResource(Resource):
-    """Confirm or reject AI-suggested actions"""
+    # File Upload Configuration
+    MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", "16777216"))  # 16MB
+    UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp/uploads")
+    ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf'}
+
+    # Cloudinary Configuration (for file uploads)
+    CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
+    CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
+    CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+    CLOUDINARY_TIMEOUT = int(os.getenv("CLOUDINARY_TIMEOUT", "30"))
+
+    # API Rate Limiting
+    RATELIMIT_STORAGE_URL = REDIS_URL or "memory://"
+    RATELIMIT_STRATEGY = "fixed-window"
+    RATELIMIT_DEFAULT = os.getenv("RATELIMIT_DEFAULT", "1000 per hour")
+
+    # Logging Configuration
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FORMAT = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     
-    @jwt_required()
-    def post(self, action_id):
-        """Confirm an action that requires user approval"""
-        try:
-            user_id = get_jwt_identity()
-            data = request.get_json()
-            confirmed = data.get('confirmed', False)
-            
-            action = AIActionLog.query.filter_by(
-                id=action_id,
-                user_id=user_id,
-                requires_confirmation=True
-            ).first()
-            
-            if not action:
-                return {"error": "Action not found or doesn't require confirmation"}, 404
-            
-            if action.action_status != AIActionStatus.PENDING:
-                return {"error": "Action has already been processed"}, 400
-            
-            if confirmed:
-                # Execute the action
-                assistant = AIAssistant()
-                result = assistant.execute_confirmed_action(action)
-                return result, 200 if result.get('success') else 400
-            else:
-                # Reject the action
-                action.action_status = AIActionStatus.CANCELLED
-                action.result_message = "User declined the action"
-                db.session.commit()
-                
-                return {"message": "Action cancelled successfully"}, 200
-            
-        except Exception as e:
-            logger.error(f"Error confirming action: {e}")
-            db.session.rollback()
-            return {"error": "An internal error occurred"}, 500
-
-
-class AIPendingActionsResource(Resource):
-    """Get all pending actions requiring confirmation"""
+    # Application Performance
+    TESTING = os.getenv("TESTING", "False").lower() in ("true", "1")
+    PREFERRED_URL_SCHEME = "https" if not DEBUG else "http"
     
-    @jwt_required()
-    def get(self):
-        """Retrieve pending actions for the logged-in user"""
-        try:
-            user_id = get_jwt_identity()
-            
-            pending_actions = AIActionLog.query.filter_by(
-                user_id=user_id,
-                action_status=AIActionStatus.PENDING,
-                requires_confirmation=True
-            ).order_by(AIActionLog.created_at.desc()).limit(10).all()
-            
-            return {
-                "pending_actions": [action.as_dict() for action in pending_actions]
-            }, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching pending actions: {e}")
-            return {"error": "An internal error occurred"}, 500
-
-
-class AIInsightsResource(Resource):
-    """Get AI-generated insights for organizers"""
+    # Health Check Configuration
+    HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_CHECK_TIMEOUT", "30"))
+    DATABASE_PING_TIMEOUT = int(os.getenv("DATABASE_PING_TIMEOUT", "10"))
     
-    @jwt_required()
-    def get(self):
-        """Retrieve AI insights for the logged-in organizer"""
-        try:
-            user_id = get_jwt_identity()
-            user = User.query.get(user_id)
-            
-            if not user or user.role.value != 'ORGANIZER':
-                return {"error": "Only organizers can view AI insights"}, 403
-            
-            from model import Organizer, AIInsight
-            organizer = Organizer.query.filter_by(user_id=user_id).first()
-            
-            if not organizer:
-                return {"error": "Organizer profile not found"}, 404
-            
-            # Get active insights
-            insights = AIInsight.query.filter_by(
-                organizer_id=organizer.id,
-                is_active=True
-            ).order_by(AIInsight.generated_at.desc()).limit(20).all()
-            
-            return {
-                "insights": [insight.as_dict() for insight in insights]
-            }, 200
-            
-        except Exception as e:
-            logger.error(f"Error fetching insights: {e}")
-            return {"error": "An internal error occurred"}, 500
+    # Feature Flags
+    ENABLE_SWAGGER = os.getenv("ENABLE_SWAGGER", "False").lower() in ("true", "1")
+    ENABLE_METRICS = os.getenv("ENABLE_METRICS", "True").lower() in ("true", "1")
+    ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
+
+    @classmethod
+    def validate_config(cls):
+        """Validate critical configuration values"""
+        required_vars = [
+            'SECRET_KEY',
+            'JWT_SECRET_KEY',
+        ]
+        
+        missing_vars = []
+        for var in required_vars:
+            if not getattr(cls, var) or getattr(cls, var).startswith('fallback-'):
+                missing_vars.append(var)
+        
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
+        # Validate email configuration if email features are used
+        if cls.MAIL_USERNAME and not cls.MAIL_PASSWORD:
+            raise ValueError("MAIL_PASSWORD is required when MAIL_USERNAME is set")
+        
+        # Validate payment configurations
+        if cls.PAYSTACK_SECRET_KEY and not cls.PAYSTACK_PUBLIC_KEY:
+            raise ValueError("PAYSTACK_PUBLIC_KEY is required when PAYSTACK_SECRET_KEY is set")
+        
+        return True
+
+    @classmethod
+    def get_database_engine_options(cls):
+        """Get database engine options based on configuration"""
+        return {
+            'pool_size': cls.DB_POOL_SIZE,
+            'max_overflow': cls.DB_MAX_OVERFLOW,
+            'pool_timeout': cls.DB_POOL_TIMEOUT,
+            'pool_recycle': cls.DB_POOL_RECYCLE,
+            'pool_pre_ping': True,
+            'connect_args': {
+                'sslmode': 'prefer',
+                'connect_timeout': cls.DATABASE_PING_TIMEOUT,
+                'application_name': 'ticketing_system'
+            },
+            'echo': cls.SQLALCHEMY_ECHO
+        }
+
+    @classmethod
+    def is_production(cls):
+        """Check if running in production environment"""
+        return cls.ENVIRONMENT.lower() == 'production'
+    
+    @classmethod
+    def is_development(cls):
+        """Check if running in development environment"""
+        return cls.ENVIRONMENT.lower() in ('development', 'dev')
+
+    @classmethod
+    def get_session_config_info(cls):
+        """Get information about current session configuration"""
+        return {
+            "session_type": cls.SESSION_TYPE,
+            "has_redis": cls._has_redis,
+            "session_dir": getattr(cls, 'SESSION_FILE_DIR', None),
+            "cookie_secure": cls.SESSION_COOKIE_SECURE,
+            "cookie_samesite": cls.SESSION_COOKIE_SAMESITE,
+            "permanent_session": cls.SESSION_PERMANENT
+        }
 
 
-def register_ai_resources(api):
-    """Register all AI routes with Flask-RESTful API"""
-    api.add_resource(AIChatResource, '/ai/chat')
-    api.add_resource(AIConversationListResource, '/ai/conversations')
-    api.add_resource(AIConversationDetailResource, '/ai/conversations/<int:conversation_id>')
-    api.add_resource(AIActionConfirmResource, '/ai/actions/<int:action_id>/confirm')
-    api.add_resource(AIPendingActionsResource, '/ai/actions/pending')
-    api.add_resource(AIInsightsResource, '/ai/insights')
+class DevelopmentConfig(Config):
+    """Development-specific configuration"""
+    DEBUG = True
+    TESTING = False
+    
+    # Use less strict settings for development
+    JWT_COOKIE_SECURE = False
+    SESSION_COOKIE_SECURE = False
+    SESSION_COOKIE_SAMESITE = "Lax"
+    
+    # Force filesystem sessions in development for easier debugging
+    SESSION_TYPE = "filesystem"
+    SESSION_FILE_DIR = os.path.join(tempfile.gettempdir(), "flask_sessions_dev")
+    
+    # More verbose logging in development
+    SQLALCHEMY_ECHO = True
+    LOG_LEVEL = "DEBUG"
+
+
+class ProductionConfig(Config):
+    """Production-specific configuration"""
+    DEBUG = False
+    TESTING = False
+    
+    # Enforce security in production
+    JWT_COOKIE_SECURE = True
+    SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_SAMESITE = "None"  # Required for cross-origin
+    
+    # Prefer Redis sessions in production
+    if Config.REDIS_URL:
+        SESSION_TYPE = "redis"
+    
+    # Minimal logging in production
+    SQLALCHEMY_ECHO = False
+    LOG_LEVEL = "WARNING"
+
+
+class TestingConfig(Config):
+    """Testing-specific configuration"""
+    TESTING = True
+    DEBUG = True
+    
+    # Use in-memory database for testing
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    
+    # Use in-memory sessions for testing
+    SESSION_TYPE = "null"  # No session persistence needed for tests
+    
+    # Disable external services in testing
+    MAIL_SUPPRESS_SEND = True
+    WTF_CSRF_ENABLED = False
+
+
+# Configuration dictionary for easy switching
+config = {
+    'development': DevelopmentConfig,
+    'production': ProductionConfig,
+    'testing': TestingConfig,
+    'default': Config
+}
