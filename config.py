@@ -173,6 +173,15 @@ class Config:
     ENABLE_SWAGGER = os.getenv("ENABLE_SWAGGER", "False").lower() in ("true", "1")
     ENABLE_METRICS = os.getenv("ENABLE_METRICS", "True").lower() in ("true", "1")
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
+    
+    # AI Assistant Configuration
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
+    AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
+    AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
+    AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
+    AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
+    ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1")
 
     @classmethod
     def validate_config(cls):
