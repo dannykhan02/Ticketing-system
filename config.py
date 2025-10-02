@@ -42,6 +42,23 @@ class Config:
     MAIL_MAX_EMAILS = int(os.getenv("MAIL_MAX_EMAILS", "50"))
 
     # Database Configuration
+    # Priority: DATABASE_URL > EXTERNAL_DATABASE_URL > fallback
+    _database_url = os.getenv("DATABASE_URL") or os.getenv("EXTERNAL_DATABASE_URL")
+    if _database_url:
+        # Render/Heroku often provide postgres:// but SQLAlchemy needs postgresql://
+        if _database_url.startswith("postgres://"):
+            _database_url = _database_url.replace("postgres://", "postgresql://", 1)
+        # Ensure SSL mode is set for PostgreSQL connections
+        if "postgresql://" in _database_url and "sslmode=" not in _database_url:
+            _database_url += "?sslmode=require" if "?" not in _database_url else "&sslmode=require"
+        SQLALCHEMY_DATABASE_URI = _database_url
+    else:
+        # Fallback for local development
+        SQLALCHEMY_DATABASE_URI = os.getenv(
+            "SQLALCHEMY_DATABASE_URI",
+            "sqlite:///ticketing_system.db"
+        )
+    
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_RECORD_QUERIES = DEBUG  # Only record queries in debug mode
     SQLALCHEMY_ECHO = DEBUG and os.getenv("SQL_ECHO", "False").lower() in ("true", "1")
@@ -212,19 +229,24 @@ class Config:
     @classmethod
     def get_database_engine_options(cls):
         """Get database engine options based on configuration"""
-        return {
+        options = {
             'pool_size': cls.DB_POOL_SIZE,
             'max_overflow': cls.DB_MAX_OVERFLOW,
             'pool_timeout': cls.DB_POOL_TIMEOUT,
             'pool_recycle': cls.DB_POOL_RECYCLE,
             'pool_pre_ping': True,
-            'connect_args': {
-                'sslmode': 'prefer',
-                'connect_timeout': cls.DATABASE_PING_TIMEOUT,
-                'application_name': 'ticketing_system'
-            },
             'echo': cls.SQLALCHEMY_ECHO
         }
+        
+        # Only add connect_args for PostgreSQL
+        if cls.SQLALCHEMY_DATABASE_URI and 'postgresql' in cls.SQLALCHEMY_DATABASE_URI:
+            options['connect_args'] = {
+                'sslmode': 'require',  # Changed from 'prefer' to 'require' for Render
+                'connect_timeout': cls.DATABASE_PING_TIMEOUT,
+                'application_name': 'ticketing_system'
+            }
+        
+        return options
 
     @classmethod
     def is_production(cls):
