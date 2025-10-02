@@ -7,7 +7,6 @@ from ai.action_executor import ActionExecutor
 from ai.context_manager import ContextManager
 from ai.response_formatter import ResponseFormatter
 from datetime import datetime, timedelta
-from config import Config
 import os
 import logging
 import openai
@@ -18,6 +17,9 @@ class AIAssistant:
     """Main AI Assistant orchestrator"""
     
     def __init__(self):
+        # Import Config here to avoid circular import
+        from config import Config
+        
         self.intent_classifier = IntentClassifier()
         self.action_executor = ActionExecutor()
         self.context_manager = ContextManager()
