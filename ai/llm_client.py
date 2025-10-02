@@ -3,7 +3,7 @@ Centralized LLM Client for AI Features
 Handles all OpenAI API interactions with proper error handling and retries
 """
 
-import openai
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
 import logging
 import time
 from typing import List, Dict, Optional
@@ -26,11 +26,12 @@ class LLMClient:
         self.max_retries = Config.AI_MAX_RETRIES
         self.enabled = Config.ENABLE_AI_FEATURES and bool(self.api_key)
         
-        # Configure OpenAI
+        # Configure OpenAI client (v1.0.0+)
         if self.enabled:
-            openai.api_key = self.api_key
+            self.client = OpenAI(api_key=self.api_key, timeout=self.timeout)
             logger.info(f"LLM Client initialized - Provider: {self.provider}, Model: {self.model}")
         else:
+            self.client = None
             logger.warning("LLM Client initialized but disabled - API key not configured")
     
     def is_enabled(self) -> bool:
@@ -56,7 +57,7 @@ class LLMClient:
         Returns:
             str: AI response content or None if failed
         """
-        if not self.enabled:
+        if not self.enabled or not self.client:
             logger.warning("LLM chat completion requested but LLM is not enabled")
             return None
         
@@ -65,12 +66,11 @@ class LLMClient:
         
         for attempt in range(self.max_retries):
             try:
-                response = openai.ChatCompletion.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    timeout=self.timeout,
                     **kwargs
                 )
                 
@@ -78,29 +78,36 @@ class LLMClient:
                 logger.info(f"LLM chat completion successful (attempt {attempt + 1})")
                 return content
                 
-            except openai.error.Timeout:
+            except APITimeoutError:
                 logger.warning(f"OpenAI timeout (attempt {attempt + 1}/{self.max_retries})")
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
                 return None
                 
-            except openai.error.RateLimitError:
+            except RateLimitError:
                 logger.warning(f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries})")
                 if attempt < self.max_retries - 1:
                     time.sleep(5 * (attempt + 1))  # Progressive backoff
                     continue
                 return None
                 
-            except openai.error.APIError as e:
+            except APIError as e:
                 logger.error(f"OpenAI API error: {e} (attempt {attempt + 1}/{self.max_retries})")
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)
                     continue
                 return None
                 
-            except openai.error.AuthenticationError:
+            except AuthenticationError:
                 logger.error("OpenAI authentication failed - invalid API key")
+                return None
+            
+            except APIConnectionError as e:
+                logger.error(f"OpenAI connection error: {e} (attempt {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                 return None
                 
             except Exception as e:
@@ -120,17 +127,16 @@ class LLMClient:
         Returns:
             List[float]: Embedding vector or None if failed
         """
-        if not self.enabled:
+        if not self.enabled or not self.client:
             logger.warning("Embedding generation requested but LLM is not enabled")
             return None
         
         try:
-            response = openai.Embedding.create(
+            response = self.client.embeddings.create(
                 model=model,
-                input=text,
-                timeout=self.timeout
+                input=text
             )
-            return response['data'][0]['embedding']
+            return response.data[0].embedding
             
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
@@ -155,7 +161,7 @@ class LLMClient:
         Yields:
             str: Chunks of AI response
         """
-        if not self.enabled:
+        if not self.enabled or not self.client:
             logger.warning("LLM streaming requested but LLM is not enabled")
             return
         
@@ -163,18 +169,17 @@ class LLMClient:
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
         
         try:
-            response = openai.ChatCompletion.create(
+            stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
-                timeout=self.timeout,
                 **kwargs
             )
             
-            for chunk in response:
-                if chunk.choices[0].delta.get("content"):
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
                     
         except Exception as e:
