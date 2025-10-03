@@ -1749,36 +1749,6 @@ class OrganizerEventsResource(Resource):
             logger.warning(f"User {current_user_id} has ORGANIZER role but no Organizer profile found.")
             return {"message": "Organizer profile not found for this user."}, 404
 
-class CategoryResource(Resource):
-    def get(self):
-        """Get all categories"""
-        categories = Category.query.all()
-        return {
-            'categories': [category.as_dict() for category in categories]
-        }, 200
-
-    @jwt_required()
-    def post(self):
-        """Create a new category (Admin only)"""
-        current_user = User.query.get(get_jwt_identity())
-        if not current_user or current_user.role != UserRole.ADMIN:
-            return {"message": "Only admins can create categories"}, 403
-
-        data = request.get_json()
-        if not data or 'name' not in data:
-            return {"message": "Category name is required"}, 400
-
-        try:
-            category = Category(
-                name=data['name'],
-                description=data.get('description')
-            )
-            db.session.add(category)
-            db.session.commit()
-            return category.as_dict(), 201
-        except Exception as e:
-            db.session.rollback()
-            return {"message": str(e)}, 400
 
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
@@ -1789,7 +1759,6 @@ def register_event_resources(api):
     api.add_resource(CitiesResource, "/cities")
     api.add_resource(StatsResource, "/api/stats")
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
-    api.add_resource(CategoryResource, "/categories")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
 

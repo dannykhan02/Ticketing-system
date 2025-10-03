@@ -246,19 +246,137 @@ class Organizer(db.Model):
             "partners_count": len([p for p in self.partners if p.is_active])
         }
 
+
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
     description = db.Column(db.Text, nullable=True)
+    
+    # AI-enhanced fields
+    ai_description_enhanced = db.Column(db.Boolean, default=False)
+    ai_suggested_keywords = db.Column(JSONB, nullable=True)  # Keywords for better event matching
+    popularity_score = db.Column(db.Float, default=0.0)  # AI-calculated popularity
+    trending_score = db.Column(db.Float, default=0.0)  # Real-time trending indicator
+    
+    # Metadata
     created_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.TIMESTAMP, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
     events = db.relationship('Event', backref='event_category', lazy=True)
+    
+    # AI relationships
+    ai_insights = db.relationship('AICategoryInsight', backref='category', lazy=True, 
+                                 cascade="all, delete")
+    ai_actions = db.relationship('AIActionLog', backref='category', lazy=True,
+                                foreign_keys='AIActionLog.category_id')
+    ai_suggestions = db.relationship('AIEventSuggestion', 
+                                    foreign_keys='AIEventSuggestion.suggested_category_id',
+                                    backref='suggested_category', lazy=True)
+
+    @validates('popularity_score', 'trending_score')
+    def validate_scores(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError(f"{key} must be between 0 and 1")
+        return value
 
     def as_dict(self):
         return {
             "id": self.id,
             "name": self.name,
-            "description": self.description
+            "description": self.description,
+            "ai_description_enhanced": self.ai_description_enhanced,
+            "ai_suggested_keywords": self.ai_suggested_keywords,
+            "popularity_score": self.popularity_score,
+            "trending_score": self.trending_score,
+            "events_count": len(self.events),
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
+        }
+    
+    def get_trending_events(self, limit=10):
+        """Get trending events in this category"""
+        return Event.query.filter_by(
+            category_id=self.id
+        ).order_by(Event.date.desc()).limit(limit).all()
+    
+    def calculate_popularity(self):
+        """Calculate popularity based on events and engagement"""
+        from sqlalchemy import func
+        
+        # Count active future events
+        active_events = Event.query.filter(
+            Event.category_id == self.id,
+            Event.date >= datetime.utcnow().date()
+        ).count()
+        
+        # Count total tickets sold in category
+        total_tickets = db.session.query(func.sum(Ticket.quantity)).join(
+            Event
+        ).filter(Event.category_id == self.id).scalar() or 0
+        
+        # Simple popularity calculation (can be made more sophisticated)
+        self.popularity_score = min(1.0, (active_events * 0.3 + total_tickets * 0.001))
+        db.session.commit()
+        return self.popularity_score
+
+
+class AICategoryInsight(db.Model):
+    """AI-generated insights specific to categories"""
+    __tablename__ = 'ai_category_insights'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=False, index=True)
+    
+    # Insight details
+    insight_type = db.Column(db.String(50), nullable=False, index=True)
+    # Types: 'trending', 'seasonal_pattern', 'pricing_analysis', 'demand_forecast'
+    
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    
+    # Analysis data
+    insight_data = db.Column(JSONB, nullable=True)
+    # Example: {"avg_ticket_price": 1500, "peak_months": [6,7,12], "growth_rate": 15.3}
+    
+    recommended_actions = db.Column(JSONB, nullable=True)
+    # Example: [{"action": "increase_inventory", "reason": "High demand expected"}]
+    
+    # Metrics
+    confidence_score = db.Column(db.Float, nullable=True)
+    potential_revenue_impact = db.Column(db.Numeric(12, 2), nullable=True)
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, index=True)
+    is_read = db.Column(db.Boolean, default=False)
+    
+    # Timestamps
+    generated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=True, index=True)
+    
+    @validates('confidence_score')
+    def validate_confidence(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError("Confidence score must be between 0 and 1")
+        return value
+    
+    __table_args__ = (
+        db.Index('idx_category_active', 'category_id', 'is_active'),
+    )
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "category_id": self.category_id,
+            "insight_type": self.insight_type,
+            "title": self.title,
+            "description": self.description,
+            "insight_data": self.insight_data,
+            "recommended_actions": self.recommended_actions,
+            "confidence_score": self.confidence_score,
+            "potential_revenue_impact": float(self.potential_revenue_impact) if self.potential_revenue_impact else None,
+            "is_read": self.is_read,
+            "generated_at": self.generated_at.isoformat()
         }
 
 class Partner(db.Model):
@@ -691,6 +809,7 @@ class AIActionLog(db.Model):
     transaction_id = db.Column(db.Integer, db.ForeignKey('transaction.id'), nullable=True, index=True)
     partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=True, index=True)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True, index=True)
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True, index=True)
 
     action_description = db.Column(db.Text, nullable=False)
 

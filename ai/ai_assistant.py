@@ -1,15 +1,13 @@
-from flask import request, jsonify
 from flask_jwt_extended import get_jwt_identity
-from model import (db, User, AIManager, AIIntentType, AIConversation, AIActionStatus,
-                   Event, TicketType, Transaction, PaymentStatus, Organizer, AIMessage)
+from model import (db, User, AIManager, AIIntentType, AIConversation, 
+                   Event, TicketType, Transaction, PaymentStatus, Organizer)
 from ai.intent_classifier import IntentClassifier
 from ai.action_executor import ActionExecutor
 from ai.context_manager import ContextManager
 from ai.response_formatter import ResponseFormatter
+from ai.llm_client import llm_client  # Use centralized client
 from datetime import datetime, timedelta
-import os
 import logging
-from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -17,64 +15,27 @@ class AIAssistant:
     """Main AI Assistant orchestrator"""
     
     def __init__(self):
-        # Import Config here to avoid circular import
-        from config import Config
-        
         self.intent_classifier = IntentClassifier()
         self.action_executor = ActionExecutor()
         self.context_manager = ContextManager()
         self.response_formatter = ResponseFormatter()
+        self.llm = llm_client  # Use singleton instance
         
-        # Initialize OpenAI with config
-        self.openai_api_key = Config.OPENAI_API_KEY
-        self.ai_provider = Config.AI_PROVIDER
-        self.ai_model = Config.AI_MODEL
-        self.ai_temperature = Config.AI_TEMPERATURE
-        self.ai_max_tokens = Config.AI_MAX_TOKENS
-        self.ai_timeout = Config.AI_TIMEOUT
-        self.llm_enabled = Config.ENABLE_AI_FEATURES and bool(self.openai_api_key)
-        
-        # Configure OpenAI client (v1.0.0+)
-        if self.llm_enabled:
-            self.client = OpenAI(api_key=self.openai_api_key, timeout=self.ai_timeout)
-            logger.info(f"AI Assistant initialized with provider: {self.ai_provider}, model: {self.ai_model}")
-        else:
-            self.client = None
-            logger.warning("AI Assistant initialized without LLM support - OpenAI API key not configured")
+        logger.info(f"AI Assistant initialized - LLM enabled: {self.llm.is_enabled()}")
     
     def process_query(self, user_id: int, query: str, session_id: str = None):
         """Main entry point for processing user queries"""
         try:
-            # 1. Get or create conversation
             conversation = self._get_or_create_conversation(user_id, session_id)
             
-            # 2. Add user message
-            AIManager.add_message(
-                conversation_id=conversation.id,
-                role='user',
-                content=query
-            )
+            AIManager.add_message(conversation_id=conversation.id, role='user', content=query)
             
-            # 3. Classify intent
             intent, confidence, params = self.intent_classifier.classify(query)
-            
-            # 4. Get conversation context
             context = self.context_manager.get_context(conversation.id)
             
-            # 5. Handle the intent
-            response = self._handle_intent(
-                intent=intent,
-                query=query,
-                params=params,
-                context=context,
-                user_id=user_id,
-                conversation_id=conversation.id
-            )
-            
-            # 6. Format response
+            response = self._handle_intent(intent, query, params, context, user_id, conversation.id)
             formatted_response = self.response_formatter.format(response, intent)
             
-            # 7. Add assistant message
             AIManager.add_message(
                 conversation_id=conversation.id,
                 role='assistant',
@@ -104,15 +65,12 @@ class AIAssistant:
     def _get_or_create_conversation(self, user_id: int, session_id: str = None):
         """Get existing or create new conversation"""
         if session_id:
-            conversation = AIConversation.query.filter_by(
-                user_id=user_id,
-                session_id=session_id,
-                is_active=True
+            conv = AIConversation.query.filter_by(
+                user_id=user_id, session_id=session_id, is_active=True
             ).first()
-            if conversation:
-                return conversation
+            if conv:
+                return conv
         
-        # Create new conversation
         import uuid
         return AIManager.create_conversation(
             user_id=user_id,
@@ -122,7 +80,6 @@ class AIAssistant:
     def _handle_intent(self, intent: AIIntentType, query: str, params: dict,
                       context: list, user_id: int, conversation_id: int):
         """Route to appropriate handler based on intent"""
-        
         handlers = {
             AIIntentType.SEARCH_EVENTS: self._handle_search_events,
             AIIntentType.CREATE_EVENT: self._handle_create_event,
@@ -139,20 +96,16 @@ class AIAssistant:
     
     def _handle_search_events(self, query, params, context, user_id, conversation_id):
         """Handle event search queries"""
-        from datetime import datetime
-        
-        # Build query filters
-        filters = []
-        filters.append(Event.date >= datetime.utcnow().date())
+        filters = [Event.date >= datetime.utcnow().date()]
         
         if params.get('city'):
             filters.append(Event.city.ilike(f"%{params['city']}%"))
         
         if params.get('category'):
             from model import Category
-            category = Category.query.filter_by(name=params['category']).first()
-            if category:
-                filters.append(Event.category_id == category.id)
+            cat = Category.query.filter_by(name=params['category']).first()
+            if cat:
+                filters.append(Event.category_id == cat.id)
         
         events = Event.query.filter(*filters).order_by(Event.date.asc()).limit(10).all()
         
@@ -179,11 +132,8 @@ class AIAssistant:
         user = User.query.get(user_id)
         
         if user.role.value != 'ORGANIZER':
-            return {
-                "message": "Only organizers can create events. Would you like to upgrade your account to an organizer?"
-            }
+            return {"message": "Only organizers can create events. Would you like to upgrade your account?"}
         
-        # Log action requiring confirmation
         action_log = AIManager.log_action(
             user_id=user_id,
             action_type=AIIntentType.CREATE_EVENT,
@@ -193,13 +143,14 @@ class AIAssistant:
             requires_confirmation=True
         )
         
+        details = "\n".join([
+            f"• {k.title()}: {v}" 
+            for k, v in params.items() 
+            if k in ['name', 'date', 'city', 'location']
+        ])
+        
         return {
-            "message": f"I can create an event with these details:\n" +
-                      f"• Name: {params.get('name', 'Not specified')}\n" +
-                      f"• Date: {params.get('date', 'Not specified')}\n" +
-                      f"• City: {params.get('city', 'Not specified')}\n" +
-                      f"• Location: {params.get('location', 'Not specified')}\n\n" +
-                      f"Should I proceed with creating this event?",
+            "message": f"I can create an event with these details:\n{details}\n\nShould I proceed?",
             "requires_confirmation": True,
             "action_id": action_log.id,
             "params": params
@@ -219,13 +170,8 @@ class AIAssistant:
         if not organizer or event.organizer_id != organizer.id:
             return {"message": "You can only update your own events."}
         
-        # Store previous state for rollback
-        previous_state = {
-            "name": event.name,
-            "description": event.description,
-            "date": str(event.date),
-            "location": event.location
-        }
+        previous_state = {k: getattr(event, k) for k in ['name', 'description', 'date', 'location']}
+        previous_state['date'] = str(previous_state['date'])
         
         action_log = AIManager.log_action(
             user_id=user_id,
@@ -239,15 +185,11 @@ class AIAssistant:
         action_log.event_id = event_id
         db.session.commit()
         
-        update_fields = []
-        for key in ['name', 'description', 'location']:
-            if key in params:
-                update_fields.append(f"• {key.title()}: {params[key]}")
+        updates = "\n".join([f"• {k.title()}: {v}" for k, v in params.items() 
+                            if k in ['name', 'description', 'location']])
         
         return {
-            "message": f"I can update the event '{event.name}' with:\n" +
-                      "\n".join(update_fields) +
-                      "\n\nShould I apply these changes?",
+            "message": f"Update '{event.name}' with:\n{updates}\n\nApply these changes?",
             "requires_confirmation": True,
             "action_id": action_log.id
         }
@@ -258,11 +200,9 @@ class AIAssistant:
         if not organizer:
             return {"message": "You need an organizer account to view sales analytics."}
         
-        # Determine time period
         days = params.get('days', 30)
         start_date = datetime.utcnow() - timedelta(days=days)
         
-        # Get transactions
         transactions = Transaction.query.filter(
             Transaction.organizer_id == organizer.id,
             Transaction.payment_status == PaymentStatus.COMPLETED,
@@ -274,14 +214,14 @@ class AIAssistant:
         
         total_revenue = sum(float(t.amount_paid) for t in transactions)
         total_tickets = len(transactions)
-        avg_transaction = total_revenue / total_tickets if total_tickets > 0 else 0
+        avg = total_revenue / total_tickets if total_tickets > 0 else 0
         
         return {
             "message": f"Sales Summary (Last {days} Days):",
             "data": {
                 "total_revenue": round(total_revenue, 2),
                 "total_tickets": total_tickets,
-                "average_transaction": round(avg_transaction, 2),
+                "average_transaction": round(avg, 2),
                 "period": f"{days} days"
             }
         }
@@ -293,12 +233,7 @@ class AIAssistant:
             return {"message": "Only organizers can generate reports."}
         
         return {
-            "message": "I can generate various reports for you:\n" +
-                      "• Event summary reports\n" +
-                      "• Revenue analysis\n" +
-                      "• Ticket sales breakdown\n" +
-                      "• Attendee demographics\n\n" +
-                      "Which type of report would you like?"
+            "message": "I can generate:\n• Event summaries\n• Revenue analysis\n• Sales breakdown\n• Attendee demographics\n\nWhich type?"
         }
     
     def _handle_inventory_check(self, query, params, context, user_id, conversation_id):
@@ -307,30 +242,27 @@ class AIAssistant:
         if not organizer:
             return {"message": "You need an organizer account to check inventory."}
         
-        # Get all events with low inventory
-        low_inventory_threshold = 10
-        
+        low_threshold = 10
         events = Event.query.filter_by(organizer_id=organizer.id).all()
-        low_inventory_tickets = []
+        low_inventory = []
         
         for event in events:
             if event.date < datetime.utcnow().date():
                 continue
-                
-            for ticket_type in event.ticket_types:
-                if ticket_type.quantity <= low_inventory_threshold:
-                    low_inventory_tickets.append({
+            for tt in event.ticket_types:
+                if tt.quantity <= low_threshold:
+                    low_inventory.append({
                         "event": event.name,
-                        "ticket_type": ticket_type.type_name.value,
-                        "remaining": ticket_type.quantity
+                        "ticket_type": tt.type_name.value,
+                        "remaining": tt.quantity
                     })
         
-        if not low_inventory_tickets:
-            return {"message": "All your ticket inventories look healthy! No low stock alerts."}
+        if not low_inventory:
+            return {"message": "All ticket inventories look healthy!"}
         
         return {
-            "message": f"⚠️ Low inventory alert for {len(low_inventory_tickets)} ticket type(s):",
-            "data": {"low_inventory": low_inventory_tickets}
+            "message": f"⚠️ Low inventory alert for {len(low_inventory)} ticket type(s):",
+            "data": {"low_inventory": low_inventory}
         }
     
     def _handle_pricing_recommendation(self, query, params, context, user_id, conversation_id):
@@ -349,102 +281,31 @@ class AIAssistant:
         }
     
     def _handle_general_query(self, query, params, context, user_id, conversation_id):
-        """Handle general queries"""
-        # If LLM is available, use it
-        if self.llm_enabled and self.client:
-            return self._llm_response(query, context, user_id)
+        """Handle general queries using LLM"""
+        if not self.llm.is_enabled():
+            return {
+                "message": "I can help with:\n• Managing events\n• Analyzing sales\n• Checking inventory\n• Generating reports\n• Pricing recommendations\n\nWhat would you like to do?"
+            }
         
-        # Otherwise, provide helpful fallback
+        # Build context messages
+        messages = [self.llm.build_system_message()]
+        
+        for msg in context[-5:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        messages.append({"role": "user", "content": query})
+        
+        # Use centralized LLM client
+        response = self.llm.chat_completion(messages)
+        
+        if response:
+            return {"message": response, "llm_used": True}
+        
+        # Fallback if LLM fails
         return {
-            "message": "I'm here to help you with:\n" +
-                      "• Managing your events\n" +
-                      "• Analyzing sales data\n" +
-                      "• Checking ticket inventory\n" +
-                      "• Generating reports\n" +
-                      "• Getting pricing recommendations\n\n" +
-                      "What would you like to do?"
+            "message": "I'm having trouble connecting right now. Please try again or rephrase your question.",
+            "llm_used": False
         }
-    
-    def _llm_response(self, query: str, context: list, user_id: int) -> dict:
-        """Generate response using OpenAI LLM"""
-        try:
-            # Build messages for OpenAI
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an AI assistant for a ticketing system. "
-                        "Help users manage events, analyze sales, check inventory, and optimize pricing. "
-                        "Be concise, helpful, and professional."
-                    )
-                }
-            ]
-            
-            # Add conversation context
-            for msg in context[-5:]:  # Last 5 messages for context
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-            
-            # Add current query
-            messages.append({
-                "role": "user",
-                "content": query
-            })
-            
-            # Call OpenAI API with new client
-            response = self.client.chat.completions.create(
-                model=self.ai_model,
-                messages=messages,
-                temperature=self.ai_temperature,
-                max_tokens=self.ai_max_tokens
-            )
-            
-            ai_message = response.choices[0].message.content
-            
-            return {
-                "message": ai_message,
-                "llm_used": True,
-                "model": self.ai_model
-            }
-            
-        except APITimeoutError:
-            logger.error("OpenAI API timeout")
-            return {
-                "message": "I'm taking longer than usual to respond. Please try again.",
-                "llm_used": False
-            }
-        except RateLimitError:
-            logger.error("OpenAI rate limit exceeded")
-            return {
-                "message": "I'm experiencing high demand right now. Please try again in a moment.",
-                "llm_used": False
-            }
-        except AuthenticationError:
-            logger.error("OpenAI authentication failed")
-            return {
-                "message": "There's an authentication issue with the AI service. Please contact support.",
-                "llm_used": False
-            }
-        except APIConnectionError as e:
-            logger.error(f"OpenAI connection error: {e}")
-            return {
-                "message": "I'm having trouble connecting to my AI services. Please check your internet connection.",
-                "llm_used": False
-            }
-        except APIError as e:
-            logger.error(f"OpenAI API error: {e}")
-            return {
-                "message": "I'm having trouble connecting to my AI services. Please try again shortly.",
-                "llm_used": False
-            }
-        except Exception as e:
-            logger.error(f"Error in LLM response: {e}", exc_info=True)
-            return {
-                "message": "I understand your question, but I'm having technical difficulties. Please try rephrasing or contact support.",
-                "llm_used": False
-            }
     
     def execute_confirmed_action(self, action):
         """Execute an action that was confirmed by the user"""
