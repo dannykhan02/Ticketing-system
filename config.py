@@ -195,7 +195,7 @@ class Config:
     # AI Assistant Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
-    AI_MODEL = os.getenv("AI_MODEL", "gpt-4o-mini")
+    AI_MODEL = os.getenv("AI_MODEL", "gpt-3.5-turbo")
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
