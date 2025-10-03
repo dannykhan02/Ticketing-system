@@ -56,6 +56,27 @@ class LLMClient:
         """Check if LLM is enabled and configured"""
         return self.enabled
     
+    def _calculate_retry_delay(self, attempt: int, error_type: str = "default") -> int:
+        """
+        Calculate retry delay with exponential backoff
+        
+        Args:
+            attempt: Current retry attempt (0-indexed)
+            error_type: Type of error for specialized backoff
+        
+        Returns:
+            int: Wait time in seconds
+        """
+        if error_type == "rate_limit":
+            # For rate limits, use longer progressive waits
+            # 60s, 120s, 180s, 240s
+            base_wait = self.rate_limit_wait
+            return base_wait * (attempt + 1)
+        else:
+            # For other errors, use exponential backoff with jitter
+            # 2s, 4s, 8s, 16s
+            return min(2 ** (attempt + 1), 30)  # Cap at 30 seconds
+    
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
@@ -65,7 +86,7 @@ class LLMClient:
         **kwargs
     ) -> Optional[str]:
         """
-        Get chat completion from OpenAI with caching
+        Get chat completion from OpenAI with caching and improved retry logic
         
         Args:
             messages: List of message dicts with 'role' and 'content'
@@ -94,11 +115,12 @@ class LLMClient:
                 **kwargs
             )
             if cached_response:
+                logger.info("Returning cached response")
                 return cached_response
         
         # Make API call with retry logic
-        response_content = None
-        for attempt in range(self.max_retries):
+        last_error = None
+        for attempt in range(self.max_retries + 1):  # +1 because first attempt is not a retry
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
@@ -109,7 +131,7 @@ class LLMClient:
                 )
                 
                 response_content = response.choices[0].message.content
-                logger.info(f"LLM chat completion successful (attempt {attempt + 1})")
+                logger.info(f"LLM chat completion successful on attempt {attempt + 1}")
                 
                 # Cache the response
                 if use_cache and self.cache_enabled and self.cache and response_content:
@@ -125,44 +147,78 @@ class LLMClient:
                 return response_content
                 
             except RateLimitError as e:
-                logger.warning(f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    wait_time = self.rate_limit_wait * (attempt + 1)
-                    logger.info(f"Waiting {wait_time} seconds before retry...")
+                last_error = e
+                if attempt < self.max_retries:
+                    wait_time = self._calculate_retry_delay(attempt, "rate_limit")
+                    logger.warning(
+                        f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"Waiting {wait_time}s before retry..."
+                    )
                     time.sleep(wait_time)
                     continue
-                logger.error("Rate limit exceeded - all retries exhausted")
-                return None
+                else:
+                    logger.error(
+                        f"Rate limit exceeded after {self.max_retries + 1} attempts. "
+                        "Consider upgrading your OpenAI plan or reducing request frequency."
+                    )
+                    return None
                 
-            except APITimeoutError:
-                logger.warning(f"OpenAI timeout (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+            except APITimeoutError as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    wait_time = self._calculate_retry_delay(attempt)
+                    logger.warning(
+                        f"OpenAI timeout (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"Retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
                     continue
-                return None
+                else:
+                    logger.error(f"Request timed out after {self.max_retries + 1} attempts")
+                    return None
+                
+            except APIConnectionError as e:
+                last_error = e
+                if attempt < self.max_retries:
+                    wait_time = self._calculate_retry_delay(attempt)
+                    logger.warning(
+                        f"OpenAI connection error (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"Retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(f"Connection failed after {self.max_retries + 1} attempts: {e}")
+                    return None
                 
             except APIError as e:
-                logger.error(f"OpenAI API error: {e} (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
+                last_error = e
+                # Check if it's a server error (5xx) - these are retryable
+                if hasattr(e, 'status_code') and 500 <= e.status_code < 600:
+                    if attempt < self.max_retries:
+                        wait_time = self._calculate_retry_delay(attempt)
+                        logger.warning(
+                            f"OpenAI server error {e.status_code} "
+                            f"(attempt {attempt + 1}/{self.max_retries + 1}). "
+                            f"Retrying in {wait_time}s..."
+                        )
+                        time.sleep(wait_time)
+                        continue
+                # Client errors (4xx) should not be retried
+                logger.error(f"OpenAI API error: {e}")
                 return None
                 
-            except AuthenticationError:
-                logger.error("OpenAI authentication failed - invalid API key")
+            except AuthenticationError as e:
+                logger.error("OpenAI authentication failed - check your API key")
                 return None
             
-            except APIConnectionError as e:
-                logger.error(f"OpenAI connection error: {e} (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
-                
             except Exception as e:
-                logger.error(f"Unexpected error in LLM chat completion: {e}")
+                logger.error(f"Unexpected error in LLM chat completion: {type(e).__name__}: {e}")
                 return None
         
+        # If we exhausted all retries
+        if last_error:
+            logger.error(f"All retry attempts exhausted. Last error: {last_error}")
         return None
     
     def generate_embedding(self, text: str, model: str = "text-embedding-ada-002") -> Optional[List[float]]:
