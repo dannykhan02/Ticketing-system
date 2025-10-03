@@ -191,6 +191,7 @@ class Config:
     ENABLE_METRICS = os.getenv("ENABLE_METRICS", "True").lower() in ("true", "1")
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
     
+    
     # AI Assistant Configuration
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
@@ -198,8 +199,14 @@ class Config:
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
-    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))  # Add this line
+    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))  # Reduced from 3
+    AI_RATE_LIMIT_WAIT = int(os.getenv("AI_RATE_LIMIT_WAIT", "60"))  # Wait time for rate limits
     ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1")
+
+    # AI Cache Configuration
+    AI_CACHE_ENABLED = os.getenv("AI_CACHE_ENABLED", "true").lower() in ("true", "1")
+    AI_CACHE_TTL = int(os.getenv("AI_CACHE_TTL", "3600"))  # 1 hour default
+    AI_CACHE_MAX_SIZE = int(os.getenv("AI_CACHE_MAX_SIZE", "1000"))  # Max cached items
 
     @classmethod
     def validate_config(cls):

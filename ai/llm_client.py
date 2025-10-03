@@ -1,6 +1,6 @@
 """
 Centralized LLM Client for AI Features
-Handles all OpenAI API interactions with proper error handling and retries
+Handles all OpenAI API interactions with proper error handling, retries, and caching
 """
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
@@ -8,6 +8,7 @@ import logging
 import time
 from typing import List, Dict, Optional
 from config import Config
+from ai.utils.cache_manager import get_cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,28 @@ class LLMClient:
         self.max_tokens = Config.AI_MAX_TOKENS
         self.timeout = Config.AI_TIMEOUT
         self.max_retries = Config.AI_MAX_RETRIES
+        self.rate_limit_wait = Config.AI_RATE_LIMIT_WAIT
         self.enabled = Config.ENABLE_AI_FEATURES and bool(self.api_key)
         
-        # Configure OpenAI client (v1.0.0+)
+        # Initialize cache
+        self.cache_enabled = Config.AI_CACHE_ENABLED
+        if self.cache_enabled:
+            self.cache = get_cache_manager(
+                max_size=Config.AI_CACHE_MAX_SIZE,
+                ttl=Config.AI_CACHE_TTL
+            )
+            logger.info(f"Cache enabled - Max size: {Config.AI_CACHE_MAX_SIZE}, TTL: {Config.AI_CACHE_TTL}s")
+        else:
+            self.cache = None
+            logger.info("Cache disabled")
+        
+        # Configure OpenAI client with retries DISABLED
         if self.enabled:
-            self.client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+            self.client = OpenAI(
+                api_key=self.api_key,
+                timeout=self.timeout,
+                max_retries=0  # CRITICAL: Disable OpenAI's internal retries
+            )
             logger.info(f"LLM Client initialized - Provider: {self.provider}, Model: {self.model}")
         else:
             self.client = None
@@ -43,15 +61,17 @@ class LLMClient:
         messages: List[Dict[str, str]],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        use_cache: bool = True,
         **kwargs
     ) -> Optional[str]:
         """
-        Get chat completion from OpenAI
+        Get chat completion from OpenAI with caching
         
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Override default temperature
             max_tokens: Override default max tokens
+            use_cache: Whether to use cache (default True)
             **kwargs: Additional OpenAI API parameters
         
         Returns:
@@ -64,6 +84,20 @@ class LLMClient:
         temperature = temperature if temperature is not None else self.temperature
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
         
+        # Check cache first
+        if use_cache and self.cache_enabled and self.cache:
+            cached_response = self.cache.get(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                model=self.model,
+                **kwargs
+            )
+            if cached_response:
+                return cached_response
+        
+        # Make API call with retry logic
+        response_content = None
         for attempt in range(self.max_retries):
             try:
                 response = self.client.chat.completions.create(
@@ -74,21 +108,36 @@ class LLMClient:
                     **kwargs
                 )
                 
-                content = response.choices[0].message.content
+                response_content = response.choices[0].message.content
                 logger.info(f"LLM chat completion successful (attempt {attempt + 1})")
-                return content
+                
+                # Cache the response
+                if use_cache and self.cache_enabled and self.cache and response_content:
+                    self.cache.set(
+                        messages,
+                        response_content,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        model=self.model,
+                        **kwargs
+                    )
+                
+                return response_content
+                
+            except RateLimitError as e:
+                logger.warning(f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries})")
+                if attempt < self.max_retries - 1:
+                    wait_time = self.rate_limit_wait * (attempt + 1)
+                    logger.info(f"Waiting {wait_time} seconds before retry...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error("Rate limit exceeded - all retries exhausted")
+                return None
                 
             except APITimeoutError:
                 logger.warning(f"OpenAI timeout (attempt {attempt + 1}/{self.max_retries})")
                 if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                    continue
-                return None
-                
-            except RateLimitError:
-                logger.warning(f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries})")
-                if attempt < self.max_retries - 1:
-                    time.sleep(5 * (attempt + 1))  # Progressive backoff
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
                     continue
                 return None
                 
@@ -151,6 +200,7 @@ class LLMClient:
     ):
         """
         Stream chat completion from OpenAI (for real-time responses)
+        Note: Streaming responses are not cached
         
         Args:
             messages: List of message dicts
@@ -222,17 +272,36 @@ class LLMClient:
         
         return {"role": "system", "content": base_prompt}
     
+    def get_cache_stats(self) -> Optional[Dict[str, any]]:
+        """Get cache statistics"""
+        if self.cache_enabled and self.cache:
+            return self.cache.get_stats()
+        return None
+    
+    def clear_cache(self):
+        """Clear all cached responses"""
+        if self.cache_enabled and self.cache:
+            self.cache.clear()
+            logger.info("Cache cleared")
+    
     def get_config_info(self) -> Dict[str, any]:
         """Get current LLM configuration info"""
-        return {
+        config = {
             "enabled": self.enabled,
             "provider": self.provider,
             "model": self.model,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "timeout": self.timeout,
-            "max_retries": self.max_retries
+            "max_retries": self.max_retries,
+            "rate_limit_wait": self.rate_limit_wait,
+            "cache_enabled": self.cache_enabled
         }
+        
+        if self.cache_enabled:
+            config["cache_stats"] = self.get_cache_stats()
+        
+        return config
 
 
 # Singleton instance
