@@ -1,3 +1,7 @@
+"""
+Modified AI Assistant to handle rate limits without blocking requests
+"""
+
 from flask_jwt_extended import get_jwt_identity
 from model import (db, User, AIManager, AIIntentType, AIConversation, 
                    Event, TicketType, Transaction, PaymentStatus, Organizer)
@@ -5,21 +9,25 @@ from ai.intent_classifier import IntentClassifier
 from ai.action_executor import ActionExecutor
 from ai.context_manager import ContextManager
 from ai.response_formatter import ResponseFormatter
-from ai.llm_client import llm_client  # Use centralized client
+from ai.llm_client import llm_client
 from datetime import datetime, timedelta
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
 class AIAssistant:
-    """Main AI Assistant orchestrator"""
+    """Main AI Assistant orchestrator with non-blocking LLM calls"""
     
     def __init__(self):
         self.intent_classifier = IntentClassifier()
         self.action_executor = ActionExecutor()
         self.context_manager = ContextManager()
         self.response_formatter = ResponseFormatter()
-        self.llm = llm_client  # Use singleton instance
+        self.llm = llm_client
+        
+        # Track pending async requests
+        self.pending_requests = {}
         
         logger.info(f"AI Assistant initialized - LLM enabled: {self.llm.is_enabled()}")
     
@@ -33,7 +41,36 @@ class AIAssistant:
             intent, confidence, params = self.intent_classifier.classify(query)
             context = self.context_manager.get_context(conversation.id)
             
-            response = self._handle_intent(intent, query, params, context, user_id, conversation.id)
+            # Check if this requires LLM (general query)
+            if intent == AIIntentType.GENERAL_QUERY:
+                # Try immediate response first (uses cache if available)
+                response = self._handle_general_query_fast(
+                    query, params, context, user_id, conversation.id
+                )
+                
+                if response.get('fallback'):
+                    # LLM call would block - return helpful message instead
+                    formatted_response = self.response_formatter.format(response, intent)
+                    
+                    AIManager.add_message(
+                        conversation_id=conversation.id,
+                        role='assistant',
+                        content=formatted_response['message'],
+                        detected_intent=intent
+                    )
+                    
+                    return {
+                        "success": True,
+                        "response": formatted_response['message'],
+                        "intent": intent.value,
+                        "confidence": confidence,
+                        "session_id": conversation.session_id,
+                        "rate_limited": True  # Signal to frontend
+                    }
+            else:
+                # Non-LLM queries process normally
+                response = self._handle_intent(intent, query, params, context, user_id, conversation.id)
+            
             formatted_response = self.response_formatter.format(response, intent)
             
             AIManager.add_message(
@@ -88,12 +125,83 @@ class AIAssistant:
             AIIntentType.GENERATE_REPORT: self._handle_generate_report,
             AIIntentType.INVENTORY_CHECK: self._handle_inventory_check,
             AIIntentType.PRICING_RECOMMENDATION: self._handle_pricing_recommendation,
-            AIIntentType.GENERAL_QUERY: self._handle_general_query,
+            AIIntentType.GENERAL_QUERY: self._handle_general_query_fast,
         }
         
-        handler = handlers.get(intent, self._handle_general_query)
+        handler = handlers.get(intent, self._handle_general_query_fast)
         return handler(query, params, context, user_id, conversation_id)
     
+    def _handle_general_query_fast(self, query, params, context, user_id, conversation_id):
+        """
+        Handle general queries with fast response - no blocking retries
+        """
+        if not self.llm.is_enabled():
+            return self._get_fallback_response()
+        
+        # Build context messages
+        messages = [self.llm.build_system_message()]
+        
+        for msg in context[-5:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        
+        messages.append({"role": "user", "content": query})
+        
+        # Try with minimal retries and short timeout
+        # We override the config to prevent long waits
+        try:
+            # First check cache
+            if self.llm.cache_enabled and self.llm.cache:
+                cached = self.llm.cache.get(
+                    messages,
+                    temperature=self.llm.temperature,
+                    max_tokens=self.llm.max_tokens,
+                    model=self.llm.model
+                )
+                if cached:
+                    return {"message": cached, "llm_used": True, "from_cache": True}
+            
+            # Make ONE attempt with short timeout (no retries)
+            response = self.llm.client.chat.completions.create(
+                model=self.llm.model,
+                messages=messages,
+                temperature=self.llm.temperature,
+                max_tokens=self.llm.max_tokens,
+                timeout=10  # Short timeout
+            )
+            
+            response_content = response.choices[0].message.content
+            
+            # Cache for next time
+            if self.llm.cache_enabled and self.llm.cache and response_content:
+                self.llm.cache.set(
+                    messages, response_content,
+                    temperature=self.llm.temperature,
+                    max_tokens=self.llm.max_tokens,
+                    model=self.llm.model
+                )
+            
+            return {"message": response_content, "llm_used": True}
+            
+        except Exception as e:
+            logger.warning(f"Fast LLM call failed: {e}")
+            # Return fallback immediately - don't block
+            return self._get_fallback_response()
+    
+    def _get_fallback_response(self):
+        """Return helpful fallback when LLM is unavailable"""
+        return {
+            "message": (
+                "I can help you with:\n\n"
+                "📅 **Events**: Search, create, or update events\n"
+                "📊 **Analytics**: View sales data and generate reports\n"
+                "🎫 **Inventory**: Check ticket availability\n"
+                "💰 **Pricing**: Get pricing recommendations\n\n"
+                "What would you like to do?"
+            ),
+            "fallback": True
+        }
+    
+    # Keep all other handlers unchanged
     def _handle_search_events(self, query, params, context, user_id, conversation_id):
         """Handle event search queries"""
         filters = [Event.date >= datetime.utcnow().date()]
@@ -278,33 +386,6 @@ class AIAssistant:
         return {
             "message": "Here are my pricing recommendations:",
             "data": {"recommendations": recommendations}
-        }
-    
-    def _handle_general_query(self, query, params, context, user_id, conversation_id):
-        """Handle general queries using LLM"""
-        if not self.llm.is_enabled():
-            return {
-                "message": "I can help with:\n• Managing events\n• Analyzing sales\n• Checking inventory\n• Generating reports\n• Pricing recommendations\n\nWhat would you like to do?"
-            }
-        
-        # Build context messages
-        messages = [self.llm.build_system_message()]
-        
-        for msg in context[-5:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        messages.append({"role": "user", "content": query})
-        
-        # Use centralized LLM client
-        response = self.llm.chat_completion(messages)
-        
-        if response:
-            return {"message": response, "llm_used": True}
-        
-        # Fallback if LLM fails
-        return {
-            "message": "I'm having trouble connecting right now. Please try again or rephrase your question.",
-            "llm_used": False
         }
     
     def execute_confirmed_action(self, action):
