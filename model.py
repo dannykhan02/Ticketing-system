@@ -265,14 +265,14 @@ class Category(db.Model):
     # Relationships
     events = db.relationship('Event', backref='event_category', lazy=True)
     
-    # AI relationships
+    # AI relationships - FIXED: Changed backref to back_populates to avoid conflict
     ai_insights = db.relationship('AICategoryInsight', backref='category', lazy=True, 
                                  cascade="all, delete")
     ai_actions = db.relationship('AIActionLog', backref='category', lazy=True,
                                 foreign_keys='AIActionLog.category_id')
     ai_suggestions = db.relationship('AIEventSuggestion', 
                                     foreign_keys='AIEventSuggestion.suggested_category_id',
-                                    backref='suggested_category', lazy=True)
+                                    back_populates='suggested_category', lazy=True)
 
     @validates('popularity_score', 'trending_score')
     def validate_scores(self, key, value):
@@ -319,7 +319,6 @@ class Category(db.Model):
         self.popularity_score = min(1.0, (active_events * 0.3 + total_tickets * 0.001))
         db.session.commit()
         return self.popularity_score
-
 
 class AICategoryInsight(db.Model):
     """AI-generated insights specific to categories"""
