@@ -198,6 +198,7 @@ class Config:
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
+    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))  # Add this line
     ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1")
 
     @classmethod
