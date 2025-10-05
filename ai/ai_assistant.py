@@ -1,5 +1,5 @@
 """
-Modified AI Assistant to handle rate limits without blocking requests
+Updated AI Assistant with better error handling
 """
 
 from flask_jwt_extended import get_jwt_identity
@@ -12,12 +12,11 @@ from ai.response_formatter import ResponseFormatter
 from ai.llm_client import llm_client
 from datetime import datetime, timedelta
 import logging
-import threading
 
 logger = logging.getLogger(__name__)
 
 class AIAssistant:
-    """Main AI Assistant orchestrator with non-blocking LLM calls"""
+    """AI Assistant with non-blocking LLM calls and circuit breaker support"""
     
     def __init__(self):
         self.intent_classifier = IntentClassifier()
@@ -25,9 +24,6 @@ class AIAssistant:
         self.context_manager = ContextManager()
         self.response_formatter = ResponseFormatter()
         self.llm = llm_client
-        
-        # Track pending async requests
-        self.pending_requests = {}
         
         logger.info(f"AI Assistant initialized - LLM enabled: {self.llm.is_enabled()}")
     
@@ -41,15 +37,15 @@ class AIAssistant:
             intent, confidence, params = self.intent_classifier.classify(query)
             context = self.context_manager.get_context(conversation.id)
             
-            # Check if this requires LLM (general query)
+            # Check LLM availability before attempting general queries
             if intent == AIIntentType.GENERAL_QUERY:
-                # Try immediate response first (uses cache if available)
-                response = self._handle_general_query_fast(
-                    query, params, context, user_id, conversation.id
-                )
-                
-                if response.get('fallback'):
-                    # LLM call would block - return helpful message instead
+                if not self.llm.is_enabled():
+                    # LLM unavailable - provide helpful fallback immediately
+                    response = self._get_fallback_response(
+                        include_status=True,
+                        circuit_state=self.llm.circuit_breaker.get_state()
+                    )
+                    
                     formatted_response = self.response_formatter.format(response, intent)
                     
                     AIManager.add_message(
@@ -65,8 +61,14 @@ class AIAssistant:
                         "intent": intent.value,
                         "confidence": confidence,
                         "session_id": conversation.session_id,
-                        "rate_limited": True  # Signal to frontend
+                        "llm_unavailable": True,
+                        "circuit_breaker_open": self.llm.circuit_breaker.state == "OPEN"
                     }
+                
+                # LLM available - try with quick mode
+                response = self._handle_general_query_quick(
+                    query, params, context, user_id, conversation.id
+                )
             else:
                 # Non-LLM queries process normally
                 response = self._handle_intent(intent, query, params, context, user_id, conversation.id)
@@ -88,7 +90,8 @@ class AIAssistant:
                 "session_id": conversation.session_id,
                 "requires_confirmation": response.get('requires_confirmation', False),
                 "action_id": response.get('action_id'),
-                "metadata": formatted_response.get('metadata')
+                "metadata": formatted_response.get('metadata'),
+                "from_cache": response.get('from_cache', False)
             }
             
         except Exception as e:
@@ -125,18 +128,21 @@ class AIAssistant:
             AIIntentType.GENERATE_REPORT: self._handle_generate_report,
             AIIntentType.INVENTORY_CHECK: self._handle_inventory_check,
             AIIntentType.PRICING_RECOMMENDATION: self._handle_pricing_recommendation,
-            AIIntentType.GENERAL_QUERY: self._handle_general_query_fast,
+            AIIntentType.GENERAL_QUERY: self._handle_general_query_quick,
         }
         
-        handler = handlers.get(intent, self._handle_general_query_fast)
+        handler = handlers.get(intent, self._handle_general_query_quick)
         return handler(query, params, context, user_id, conversation_id)
     
-    def _handle_general_query_fast(self, query, params, context, user_id, conversation_id):
+    def _handle_general_query_quick(self, query, params, context, user_id, conversation_id):
         """
-        Handle general queries with fast response - no blocking retries
+        Handle general queries with quick response - uses circuit breaker
         """
         if not self.llm.is_enabled():
-            return self._get_fallback_response()
+            return self._get_fallback_response(
+                include_status=True,
+                circuit_state=self.llm.circuit_breaker.get_state()
+            )
         
         # Build context messages
         messages = [self.llm.build_system_message()]
@@ -146,57 +152,65 @@ class AIAssistant:
         
         messages.append({"role": "user", "content": query})
         
-        # Use the llm_client's chat_completion method with proper error handling
         try:
-            # Check cache first
-            if self.llm.cache_enabled and self.llm.cache:
-                cached = self.llm.cache.get(
-                    messages,
-                    temperature=self.llm.temperature,
-                    max_tokens=self.llm.max_tokens,
-                    model=self.llm.model
-                )
-                if cached:
-                    logger.info("Returning cached LLM response")
-                    return {"message": cached, "llm_used": True, "from_cache": True}
-            
-            # Make a single attempt with short timeout
-            logger.info("Attempting LLM call with short timeout")
+            # Use quick_mode=True for non-blocking behavior
+            logger.info("Attempting quick LLM call")
             response_content = self.llm.chat_completion(
                 messages=messages,
                 temperature=self.llm.temperature,
                 max_tokens=self.llm.max_tokens,
-                use_cache=True
+                use_cache=True,
+                quick_mode=True  # No retries, fail fast
             )
             
             if response_content:
                 logger.info("LLM call successful")
-                return {"message": response_content, "llm_used": True}
+                return {
+                    "message": response_content,
+                    "llm_used": True,
+                    "from_cache": False
+                }
             else:
-                # LLM returned None (failed)
-                logger.warning("LLM call returned None - using fallback")
+                # LLM returned None - use fallback
+                logger.warning("LLM returned None - using fallback")
                 return self._get_fallback_response()
             
         except Exception as e:
             logger.warning(f"Exception during LLM call: {type(e).__name__}: {e}")
-            # Return fallback immediately - don't block
             return self._get_fallback_response()
     
-    def _get_fallback_response(self):
+    def _get_fallback_response(self, include_status=False, circuit_state=None):
         """Return helpful fallback when LLM is unavailable"""
+        message = (
+            "I can help you with:\n\n"
+            "📅 **Events**: Search, create, or update events\n"
+            "📊 **Analytics**: View sales data and generate reports\n"
+            "🎫 **Inventory**: Check ticket availability\n"
+            "💰 **Pricing**: Get pricing recommendations\n\n"
+        )
+        
+        if include_status and circuit_state:
+            if circuit_state["state"] == "OPEN":
+                message += (
+                    "⚠️ _AI service temporarily unavailable. "
+                    "I'll use my standard features to assist you._\n\n"
+                )
+        
+        message += "What would you like to do?"
+        
         return {
-            "message": (
-                "I can help you with:\n\n"
-                "📅 **Events**: Search, create, or update events\n"
-                "📊 **Analytics**: View sales data and generate reports\n"
-                "🎫 **Inventory**: Check ticket availability\n"
-                "💰 **Pricing**: Get pricing recommendations\n\n"
-                "What would you like to do?"
-            ),
+            "message": message,
             "fallback": True
         }
     
-    # Keep all other handlers unchanged
+    def get_health_status(self):
+        """Get AI system health status"""
+        return {
+            "llm": self.llm.get_health_status(),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    # Keep all other handlers unchanged...
     def _handle_search_events(self, query, params, context, user_id, conversation_id):
         """Handle event search queries"""
         filters = [Event.date >= datetime.utcnow().date()]
