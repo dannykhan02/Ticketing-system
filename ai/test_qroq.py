@@ -1,195 +1,188 @@
 """
-Test script for Groq API connection
-Tests the configuration and API call structure
+Simple test script for LLM client
+Run this from inside the ai/ directory OR move it to project root
 """
-
 import os
 import sys
 from dotenv import load_dotenv
+
+# Add parent directory to path so we can import from ai module
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+
+# Load environment variables
+load_dotenv(os.path.join(parent_dir, '.env'))
+
+# Test 1: Direct OpenAI Client Test
+print("=" * 60)
+print("TEST 1: Direct OpenAI Client Test")
+print("=" * 60)
+
 from openai import OpenAI
 
-# ✅ Load the .env file before importing Config
-load_dotenv()
+try:
+    client = OpenAI(
+        api_key=os.environ.get("GROQ_API_KEY"),
+        base_url="https://api.groq.com/openai/v1",
+    )
+    
+    print("✓ Client initialized successfully")
+    print(f"✓ API Key present: {bool(os.environ.get('GROQ_API_KEY'))}")
+    print(f"✓ API Key format: {os.environ.get('GROQ_API_KEY', '')[:10]}...")
+    
+    # Make a simple test call
+    print("\n🔄 Making test API call...")
+    response = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "user", "content": "Say 'Hello, I am working!' in 5 words or less."}
+        ],
+        max_tokens=50
+    )
+    
+    result = response.choices[0].message.content
+    print(f"✅ SUCCESS! Response: {result}")
+    
+except Exception as e:
+    print(f"❌ ERROR: {type(e).__name__}: {e}")
 
-# Add parent directory to path to import config
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import Config
+# Test 2: Your LLM Client Test
+print("\n" + "=" * 60)
+print("TEST 2: Your LLMClient Class Test")
+print("=" * 60)
 
-
-def test_config():
-    """Test configuration loading"""
-    print("=" * 60)
-    print("CONFIGURATION TEST")
-    print("=" * 60)
-
-    # Add GROQ_API_KEY to Config if not defined
-    if not hasattr(Config, "GROQ_API_KEY"):
-        Config.GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-    print(f"AI Provider: {Config.AI_PROVIDER}")
-    print(f"AI Model: {Config.AI_MODEL}")
-    print(f"AI Enabled: {Config.ENABLE_AI_FEATURES}")
-    print(f"AI Temperature: {Config.AI_TEMPERATURE}")
-    print(f"AI Max Tokens: {Config.AI_MAX_TOKENS}")
-    print(f"AI Timeout: {getattr(Config, 'AI_TIMEOUT', 30)}")
-    print(f"AI Max Retries: {Config.AI_MAX_RETRIES}")
-    print(f"Cache Enabled: {Config.AI_CACHE_ENABLED}")
-    print(f"Cache TTL: {Config.AI_CACHE_TTL}")
-    print(f"Cache Max Size: {Config.AI_CACHE_MAX_SIZE}")
-    print()
-
-    # Check API key
-    if Config.GROQ_API_KEY:
-        key_prefix = (
-            Config.GROQ_API_KEY[:10]
-            if len(Config.GROQ_API_KEY) > 10
-            else Config.GROQ_API_KEY
-        )
-        print(f"✓ Groq API Key Found: {key_prefix}...")
-
-        if Config.GROQ_API_KEY.startswith("gsk_"):
-            print("✓ API Key format is valid (starts with 'gsk_')")
-        else:
-            print("✗ WARNING: API Key doesn't start with 'gsk_' - may be invalid")
-            return False
-    else:
-        print("✗ Groq API Key NOT found in environment")
-        return False
-
-    print()
-    return True
-
-
-def test_api_connection():
-    """Test actual API connection"""
-    print("=" * 60)
-    print("API CONNECTION TEST")
-    print("=" * 60)
-
-    try:
-        # Initialize client using config values
-        client = OpenAI(
-            api_key=Config.GROQ_API_KEY,
-            base_url="https://api.groq.com/openai/v1",
-            timeout=getattr(Config, "AI_TIMEOUT", 30),
-        )
-
-        print(f"✓ Client initialized successfully")
-        print(f"Base URL: https://api.groq.com/openai/v1")
-        print(f"Timeout: {getattr(Config, 'AI_TIMEOUT', 30)}s")
-        print()
-
-        print("Testing chat completion...")
-        print(f"Model: {Config.AI_MODEL}")
-        print(f"Temperature: {Config.AI_TEMPERATURE}")
-        print(f"Max Tokens: {Config.AI_MAX_TOKENS}")
-        print()
-
-        response = client.chat.completions.create(
-            model=Config.AI_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a helpful AI assistant."},
-                {
-                    "role": "user",
-                    "content": "Say 'Hello! I am working correctly.' in one sentence.",
-                },
-            ],
-            temperature=Config.AI_TEMPERATURE,
-            max_tokens=100,
-        )
-
-        message = response.choices[0].message.content
-
-        print("=" * 60)
-        print("✓ API CALL SUCCESSFUL!")
-        print("=" * 60)
-        print(f"Response: {message}")
-        print(f"Model: {response.model}")
-        print(f"Finish reason: {response.choices[0].finish_reason}")
-
-        if hasattr(response, "usage"):
-            print(f"Tokens used: {response.usage.total_tokens}")
-            print(f"  - Prompt: {response.usage.prompt_tokens}")
-            print(f"  - Completion: {response.usage.completion_tokens}")
-
-        return True
-
-    except Exception as e:
-        print("=" * 60)
-        print("✗ API CALL FAILED")
-        print("=" * 60)
-        print(f"Error Type: {type(e).__name__}")
-        print(f"Error Message: {str(e)}")
-
-        if "authentication" in str(e).lower() or "401" in str(e):
-            print("\nPossible causes:")
-            print("- Invalid or missing GROQ_API_KEY")
-            print("- Key not properly loaded from .env")
-        elif "timeout" in str(e).lower():
-            print("\nPossible causes:")
-            print("- Network connection issues")
-            print("- API timeout too short")
-        elif "rate" in str(e).lower():
-            print("\nPossible causes:")
-            print("- Rate limit exceeded")
-        else:
-            print("\nCheck:")
-            print("- Internet connection")
-            print("- API key validity")
-            print("- Groq API status: https://status.groq.com")
-
-        return False
-
-
-def test_available_models():
-    """Show supported Groq models"""
-    print("\n" + "=" * 60)
-    print("AVAILABLE MODELS TEST")
-    print("=" * 60)
-    print("\nCommonly available Groq models:")
-    models = [
-        "llama3-8b-8192",
-        "llama3-70b-8192",
-        "mixtral-8x7b-32768",
-        "gemma-7b-it",
+try:
+    # Import your LLM client - adjusted for running from ai/ directory
+    from llm_client import llm_client
+    
+    print(f"✓ LLM Client imported")
+    print(f"✓ Provider: {llm_client.provider}")
+    print(f"✓ Model: {llm_client.model}")
+    print(f"✓ Enabled: {llm_client.enabled}")
+    print(f"✓ Circuit Breaker State: {llm_client.circuit_breaker.state}")
+    
+    # Get health status
+    health = llm_client.get_health_status()
+    print(f"\n📊 Health Status:")
+    for key, value in health.items():
+        if key != 'cache_stats':  # Skip detailed cache stats for cleaner output
+            print(f"   {key}: {value}")
+    
+    # Make a test call
+    print("\n🔄 Making test API call through LLMClient...")
+    messages = [
+        llm_client.build_system_message(),
+        {"role": "user", "content": "What is 2+2? Answer in one word."}
     ]
-    for model in models:
-        if model == Config.AI_MODEL:
-            print(f"→ {model} (currently configured)")
-        else:
-            print(f"  {model}")
-
-
-def main():
-    """Run all tests"""
-    print("\n" + "=" * 60)
-    print("GROQ API TEST SUITE")
-    print("=" * 60)
-    print()
-
-    config_ok = test_config()
-    if not config_ok:
-        print("\n✗ Configuration test failed. Cannot proceed with API test.")
-        print("\nMake sure GROQ_API_KEY is set in your .env file")
-        sys.exit(1)
-
-    api_ok = test_api_connection()
-    test_available_models()
-
-    print("\n" + "=" * 60)
-    print("TEST SUMMARY")
-    print("=" * 60)
-    print(f"Configuration: {'✓ PASSED' if config_ok else '✗ FAILED'}")
-    print(f"API Connection: {'✓ PASSED' if api_ok else '✗ FAILED'}")
-    print("=" * 60)
-
-    if config_ok and api_ok:
-        print("\n🎉 All tests passed! Your Groq integration is working correctly.")
-        sys.exit(0)
+    
+    response = llm_client.chat_completion(
+        messages=messages,
+        use_cache=False,
+        fallback_response="AI unavailable"
+    )
+    
+    if response:
+        print(f"✅ SUCCESS! Response: {response}")
     else:
-        print("\n⚠️ Some tests failed. Please check the logs above.")
-        sys.exit(1)
+        print(f"❌ No response received")
+    
+    # Check circuit breaker after call
+    print(f"\n⚡ Circuit Breaker State After Call: {llm_client.circuit_breaker.state}")
+    print(f"⚡ Failures: {llm_client.circuit_breaker.failures}")
+    
+except Exception as e:
+    print(f"❌ ERROR: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
 
+# Test 3: Cache Test
+print("\n" + "=" * 60)
+print("TEST 3: Cache Test")
+print("=" * 60)
 
-if __name__ == "__main__":
-    main()
+try:
+    from llm_client import llm_client
+    
+    # Clear cache first
+    llm_client.clear_cache()
+    print("✓ Cache cleared")
+    
+    # First call (should hit API)
+    print("\n🔄 First call (should hit API)...")
+    messages = [{"role": "user", "content": "Count to 3"}]
+    
+    import time
+    start = time.time()
+    response1 = llm_client.chat_completion(messages, use_cache=True)
+    time1 = time.time() - start
+    
+    print(f"✅ Response: {response1}")
+    print(f"⏱️  Time taken: {time1:.2f}s")
+    
+    # Second call (should hit cache)
+    print("\n🔄 Second call (should hit cache)...")
+    start = time.time()
+    response2 = llm_client.chat_completion(messages, use_cache=True)
+    time2 = time.time() - start
+    
+    print(f"✅ Response: {response2}")
+    print(f"⏱️  Time taken: {time2:.2f}s")
+    
+    if time2 < time1:
+        print(f"🚀 Cache speedup: {time1/time2:.1f}x faster")
+    else:
+        print(f"⚠️  No speedup detected - cache might not be working")
+    
+    # Check cache stats
+    cache_stats = llm_client.get_cache_stats()
+    if cache_stats:
+        print(f"\n📊 Cache Stats:")
+        for key, value in cache_stats.items():
+            print(f"   {key}: {value}")
+    
+except Exception as e:
+    print(f"❌ ERROR: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
+
+# Test 4: Error Handling Test
+print("\n" + "=" * 60)
+print("TEST 4: Error Handling & Fallback Test")
+print("=" * 60)
+
+try:
+    from llm_client import llm_client
+    
+    # Test with fallback response
+    print("🔄 Testing fallback response...")
+    messages = [{"role": "user", "content": "Test message"}]
+    
+    response = llm_client.chat_completion(
+        messages=messages,
+        fallback_response="This is a fallback response if AI fails",
+        quick_mode=False
+    )
+    
+    print(f"✅ Response: {response}")
+    
+    # Test quick mode (no retries)
+    print("\n🔄 Testing quick mode (no retries)...")
+    response_quick = llm_client.chat_completion(
+        messages=messages,
+        quick_mode=True,
+        fallback_response="Quick mode fallback"
+    )
+    
+    print(f"✅ Quick mode response: {response_quick}")
+    
+except Exception as e:
+    print(f"❌ ERROR: {type(e).__name__}: {e}")
+
+print("\n" + "=" * 60)
+print("TESTING COMPLETE")
+print("=" * 60)
+print("\n💡 Next Steps:")
+print("   1. If all tests passed ✅ - Your LLM client works perfectly!")
+print("   2. Deploy to Render and set environment variables")
+print("   3. Check Render logs for network/firewall issues")
+print("=" * 60)

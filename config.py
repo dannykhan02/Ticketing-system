@@ -192,12 +192,20 @@ class Config:
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
     
     
-     # === AI Core Configuration ===
+    # === AI Core Configuration ===
     ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1", "yes")
 
-    # Provider and model info
+    # Provider and model info - UPDATED with current supported model
     AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")
-    AI_MODEL = os.getenv("AI_MODEL", "llama-3.1-8b-instant")
+    AI_MODEL = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")  # Updated from decommissioned model
+    
+    # Available Groq models (as of October 2025):
+    # - llama-3.1-8b-instant      (Recommended - Fast and efficient)
+    # - llama-3.3-70b-versatile   (More capable, slower)
+    # - llama-3.2-90b-vision-preview (With vision capabilities)
+    # - mixtral-8x7b-32768        (Good for long context)
+    # - gemma2-9b-it              (Efficient alternative)
+    
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
@@ -216,11 +224,19 @@ class Config:
     @classmethod
     def show_summary(cls):
         """Print a quick summary for debugging."""
-        print("AI Provider:", cls.AI_PROVIDER)
-        print("AI Model:", cls.AI_MODEL)
-        print("AI Enabled:", cls.ENABLE_AI_FEATURES)
-        print("Cache Enabled:", cls.AI_CACHE_ENABLED)
-        print("Groq Key Found:", bool(cls.GROQ_API_KEY))
+        print("=" * 60)
+        print("AI CONFIGURATION SUMMARY")
+        print("=" * 60)
+        print(f"AI Provider: {cls.AI_PROVIDER}")
+        print(f"AI Model: {cls.AI_MODEL}")
+        print(f"AI Enabled: {cls.ENABLE_AI_FEATURES}")
+        print(f"Cache Enabled: {cls.AI_CACHE_ENABLED}")
+        print(f"Groq Key Found: {bool(cls.GROQ_API_KEY)}")
+        print(f"Temperature: {cls.AI_TEMPERATURE}")
+        print(f"Max Tokens: {cls.AI_MAX_TOKENS}")
+        print(f"Timeout: {cls.AI_TIMEOUT}s")
+        print(f"Max Retries: {cls.AI_MAX_RETRIES}")
+        print("=" * 60)
 
     @classmethod
     def validate_config(cls):
@@ -245,6 +261,13 @@ class Config:
         # Validate payment configurations
         if cls.PAYSTACK_SECRET_KEY and not cls.PAYSTACK_PUBLIC_KEY:
             raise ValueError("PAYSTACK_PUBLIC_KEY is required when PAYSTACK_SECRET_KEY is set")
+        
+        # Validate AI configuration if AI features are enabled
+        if cls.ENABLE_AI_FEATURES:
+            if cls.AI_PROVIDER.lower() == "groq" and not cls.GROQ_API_KEY:
+                raise ValueError("GROQ_API_KEY is required when AI features are enabled with Groq provider")
+            elif cls.AI_PROVIDER.lower() == "openai" and not cls.OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY is required when AI features are enabled with OpenAI provider")
         
         return True
 
