@@ -1,13 +1,15 @@
 """
-Enhanced LLM Client with Circuit Breaker Pattern
+Enhanced LLM Client with Circuit Breaker Pattern and Async Support
 Prevents cascade failures and provides better error handling
 """
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
 import logging
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from datetime import datetime, timedelta
+from threading import Thread
+from queue import Queue
 from config import Config
 from ai.utils.cache_manager import get_cache_manager
 import httpx
@@ -20,10 +22,10 @@ class CircuitBreaker:
     
     def __init__(self, failure_threshold=3, timeout=180):
         self.failure_threshold = failure_threshold
-        self.timeout = timeout  # seconds before attempting reset
+        self.timeout = timeout
         self.failures = 0
         self.last_failure_time = None
-        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+        self.state = "CLOSED"
     
     def call_failed(self):
         """Record a failed call"""
@@ -49,7 +51,6 @@ class CircuitBreaker:
             return True
         
         if self.state == "OPEN":
-            # Check if timeout has passed
             if self.last_failure_time:
                 elapsed = (datetime.utcnow() - self.last_failure_time).total_seconds()
                 if elapsed >= self.timeout:
@@ -58,7 +59,6 @@ class CircuitBreaker:
                     return True
             return False
         
-        # HALF_OPEN state - allow one attempt
         return True
     
     def get_state(self):
@@ -71,7 +71,7 @@ class CircuitBreaker:
 
 
 class LLMClient:
-    """Enhanced LLM client with circuit breaker and better error handling"""
+    """Enhanced LLM client with circuit breaker and async support"""
     
     def __init__(self):
         """Initialize LLM client with config settings"""
@@ -83,11 +83,15 @@ class LLMClient:
         self.max_retries = Config.AI_MAX_RETRIES
         self.rate_limit_wait = Config.AI_RATE_LIMIT_WAIT
         
-        # Initialize circuit breaker with lower threshold
+        # Initialize circuit breaker
         self.circuit_breaker = CircuitBreaker(
-            failure_threshold=3,  # Reduced from 5
-            timeout=180  # 3 minutes instead of 5
+            failure_threshold=3,
+            timeout=180
         )
+        
+        # Background task queue
+        self.task_queue = Queue()
+        self.background_worker = None
         
         # Get API key based on provider
         if self.provider.lower() == "groq":
@@ -124,13 +128,13 @@ class LLMClient:
         # Configure client
         if self.enabled:
             try:
-                # Create custom httpx client with better connection settings
+                # Use longer timeouts for background tasks
                 http_client = httpx.Client(
                     timeout=httpx.Timeout(
-                        connect=10.0,  # 10s to establish connection
-                        read=self.timeout,  # 30s to read response
-                        write=10.0,  # 10s to send request
-                        pool=5.0  # 5s to get connection from pool
+                        connect=30.0,  # Increased from 10s
+                        read=60.0,     # Increased from 30s
+                        write=30.0,    # Increased from 10s
+                        pool=10.0      # Increased from 5s
                     ),
                     limits=httpx.Limits(
                         max_keepalive_connections=5,
@@ -138,13 +142,13 @@ class LLMClient:
                         keepalive_expiry=30.0
                     ),
                     follow_redirects=True,
-                    verify=True  # Verify SSL certificates
+                    verify=True
                 )
                 
                 client_kwargs = {
                     "api_key": self.api_key,
                     "timeout": self.timeout,
-                    "max_retries": 0,  # Handle retries manually
+                    "max_retries": 0,
                     "http_client": http_client
                 }
                 
@@ -153,6 +157,10 @@ class LLMClient:
                 
                 self.client = OpenAI(**client_kwargs)
                 logger.info(f"LLM Client initialized - Provider: {self.provider}, Model: {self.model}")
+                
+                # Start background worker
+                self._start_background_worker()
+                
             except Exception as e:
                 logger.error(f"Failed to initialize OpenAI client: {e}")
                 self.client = None
@@ -160,6 +168,35 @@ class LLMClient:
         else:
             self.client = None
             logger.warning(f"LLM Client disabled - API key not configured for {self.provider}")
+    
+    def _start_background_worker(self):
+        """Start background worker thread for async tasks"""
+        if self.background_worker is None or not self.background_worker.is_alive():
+            self.background_worker = Thread(target=self._process_background_tasks, daemon=True)
+            self.background_worker.start()
+            logger.info("Background worker started for AI tasks")
+    
+    def _process_background_tasks(self):
+        """Process AI tasks in background"""
+        while True:
+            try:
+                task = self.task_queue.get(timeout=1)
+                if task is None:  # Poison pill to stop worker
+                    break
+                
+                messages, callback, kwargs = task
+                result = self.chat_completion(messages, quick_mode=False, **kwargs)
+                
+                if callback:
+                    try:
+                        callback(result)
+                    except Exception as e:
+                        logger.error(f"Callback error: {e}")
+                
+                self.task_queue.task_done()
+            except Exception as e:
+                if str(e) != "":  # Ignore timeout exceptions
+                    logger.error(f"Background task error: {e}")
     
     def is_enabled(self) -> bool:
         """Check if LLM is enabled and available"""
@@ -171,10 +208,32 @@ class LLMClient:
             base_wait = self.rate_limit_wait
             return base_wait * (attempt + 1)
         elif error_type == "connection":
-            # Shorter delays for connection errors
-            return min(2 ** attempt, 8)  # Max 8 seconds
+            return min(2 ** attempt, 16)  # Increased max to 16 seconds
         else:
             return min(2 ** (attempt + 1), 30)
+    
+    def chat_completion_async(
+        self,
+        messages: List[Dict[str, str]],
+        callback: Optional[Callable] = None,
+        **kwargs
+    ):
+        """
+        Queue AI request for background processing
+        
+        Args:
+            messages: List of message dicts
+            callback: Function to call with result (receives response as argument)
+            **kwargs: Additional parameters for chat_completion
+        """
+        if not self.enabled:
+            logger.warning("LLM not enabled - cannot queue async task")
+            if callback:
+                callback(None)
+            return
+        
+        self.task_queue.put((messages, callback, kwargs))
+        logger.info("AI task queued for background processing")
     
     def chat_completion(
         self,
@@ -194,8 +253,8 @@ class LLMClient:
             temperature: Override default temperature
             max_tokens: Override default max tokens
             use_cache: Whether to use cache
-            quick_mode: If True, don't retry on failure (for real-time responses)
-            fallback_response: Response to return if AI fails (graceful degradation)
+            quick_mode: If True, don't retry on failure
+            fallback_response: Response to return if AI fails
             **kwargs: Additional API parameters
         
         Returns:
@@ -306,13 +365,12 @@ class LLMClient:
                 last_error = e
                 last_error_type = "connection"
                 
-                # Log more detailed connection error
                 error_msg = str(e)
                 if "Connection error" in error_msg or "Network is unreachable" in error_msg:
                     logger.error(
-                        f"Network connectivity issue detected. "
-                        f"This may be due to firewall rules, network restrictions, "
-                        f"or the hosting environment blocking outbound connections."
+                        f"Network connectivity issue. "
+                        f"Hosting environment may block outbound connections. "
+                        f"Consider using chat_completion_async() for background processing."
                     )
                 
                 if not quick_mode and attempt < max_attempts - 1:
@@ -326,8 +384,7 @@ class LLMClient:
                 else:
                     logger.error(
                         f"Connection failed after {attempt + 1} attempts. "
-                        f"Consider checking network configuration, firewall rules, "
-                        f"or using AI features in async/background tasks. Error: {e}"
+                        f"Use chat_completion_async() for non-blocking AI calls. Error: {e}"
                     )
                     self.circuit_breaker.call_failed()
                     return fallback_response
@@ -336,7 +393,6 @@ class LLMClient:
                 last_error = e
                 last_error_type = "api_error"
                 
-                # Retry server errors (5xx)
                 if hasattr(e, 'status_code') and 500 <= e.status_code < 600:
                     if not quick_mode and attempt < max_attempts - 1:
                         wait_time = self._calculate_retry_delay(attempt)
@@ -381,10 +437,10 @@ class LLMClient:
             "circuit_breaker": circuit_state,
             "cache_enabled": self.cache_enabled,
             "cache_stats": self.get_cache_stats() if self.cache_enabled else None,
-            "available": self.is_enabled()
+            "available": self.is_enabled(),
+            "background_tasks_queued": self.task_queue.qsize()
         }
         
-        # Add warning if circuit is open
         if circuit_state["state"] == "OPEN":
             status["warning"] = (
                 f"Circuit breaker is OPEN due to repeated failures. "
@@ -427,6 +483,13 @@ class LLMClient:
         self.circuit_breaker.state = "CLOSED"
         self.circuit_breaker.last_failure_time = None
         logger.info("Circuit breaker manually reset")
+    
+    def shutdown(self):
+        """Gracefully shutdown background worker"""
+        if self.background_worker and self.background_worker.is_alive():
+            self.task_queue.put(None)  # Poison pill
+            self.background_worker.join(timeout=5)
+            logger.info("Background worker stopped")
 
 
 # Singleton instance
