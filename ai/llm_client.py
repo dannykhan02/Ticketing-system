@@ -10,6 +10,7 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from config import Config
 from ai.utils.cache_manager import get_cache_manager
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class CircuitBreaker:
     """Circuit breaker to prevent repeated failed API calls"""
     
-    def __init__(self, failure_threshold=5, timeout=300):
+    def __init__(self, failure_threshold=3, timeout=180):
         self.failure_threshold = failure_threshold
         self.timeout = timeout  # seconds before attempting reset
         self.failures = 0
@@ -82,10 +83,10 @@ class LLMClient:
         self.max_retries = Config.AI_MAX_RETRIES
         self.rate_limit_wait = Config.AI_RATE_LIMIT_WAIT
         
-        # Initialize circuit breaker
+        # Initialize circuit breaker with lower threshold
         self.circuit_breaker = CircuitBreaker(
-            failure_threshold=5,
-            timeout=300  # 5 minutes
+            failure_threshold=3,  # Reduced from 5
+            timeout=180  # 3 minutes instead of 5
         )
         
         # Get API key based on provider
@@ -123,10 +124,28 @@ class LLMClient:
         # Configure client
         if self.enabled:
             try:
+                # Create custom httpx client with better connection settings
+                http_client = httpx.Client(
+                    timeout=httpx.Timeout(
+                        connect=10.0,  # 10s to establish connection
+                        read=self.timeout,  # 30s to read response
+                        write=10.0,  # 10s to send request
+                        pool=5.0  # 5s to get connection from pool
+                    ),
+                    limits=httpx.Limits(
+                        max_keepalive_connections=5,
+                        max_connections=10,
+                        keepalive_expiry=30.0
+                    ),
+                    follow_redirects=True,
+                    verify=True  # Verify SSL certificates
+                )
+                
                 client_kwargs = {
                     "api_key": self.api_key,
                     "timeout": self.timeout,
-                    "max_retries": 0  # Handle retries manually
+                    "max_retries": 0,  # Handle retries manually
+                    "http_client": http_client
                 }
                 
                 if self.base_url:
@@ -151,6 +170,9 @@ class LLMClient:
         if error_type == "rate_limit":
             base_wait = self.rate_limit_wait
             return base_wait * (attempt + 1)
+        elif error_type == "connection":
+            # Shorter delays for connection errors
+            return min(2 ** attempt, 8)  # Max 8 seconds
         else:
             return min(2 ** (attempt + 1), 30)
     
@@ -161,6 +183,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         use_cache: bool = True,
         quick_mode: bool = False,
+        fallback_response: Optional[str] = None,
         **kwargs
     ) -> Optional[str]:
         """
@@ -172,14 +195,15 @@ class LLMClient:
             max_tokens: Override default max tokens
             use_cache: Whether to use cache
             quick_mode: If True, don't retry on failure (for real-time responses)
+            fallback_response: Response to return if AI fails (graceful degradation)
             **kwargs: Additional API parameters
         
         Returns:
-            str: AI response or None if failed
+            str: AI response, fallback response, or None if failed
         """
         if not self.enabled or not self.client:
             logger.warning(f"LLM not enabled (Provider: {self.provider})")
-            return None
+            return fallback_response
         
         # Check circuit breaker
         if not self.circuit_breaker.can_attempt():
@@ -187,7 +211,7 @@ class LLMClient:
                 f"Circuit breaker {self.circuit_breaker.state} - skipping API call. "
                 f"Failures: {self.circuit_breaker.failures}"
             )
-            return None
+            return fallback_response
         
         temperature = temperature if temperature is not None else self.temperature
         max_tokens = max_tokens if max_tokens is not None else self.max_tokens
@@ -210,6 +234,8 @@ class LLMClient:
         
         # Make API call with retry logic
         last_error = None
+        last_error_type = None
+        
         for attempt in range(max_attempts):
             try:
                 response = self.client.chat.completions.create(
@@ -240,12 +266,13 @@ class LLMClient:
                 return response_content
                 
             except AuthenticationError as e:
-                logger.error(f"{self.provider} authentication failed - check your API key")
+                logger.error(f"{self.provider} authentication failed - check your API key: {e}")
                 self.circuit_breaker.call_failed()
-                return None
+                return fallback_response
                 
             except RateLimitError as e:
                 last_error = e
+                last_error_type = "rate_limit"
                 if not quick_mode and attempt < max_attempts - 1:
                     wait_time = self._calculate_retry_delay(attempt, "rate_limit")
                     logger.warning(
@@ -257,10 +284,11 @@ class LLMClient:
                 else:
                     logger.error(f"Rate limit exceeded after {attempt + 1} attempts")
                     self.circuit_breaker.call_failed()
-                    return None
+                    return fallback_response
                 
             except APITimeoutError as e:
                 last_error = e
+                last_error_type = "timeout"
                 if not quick_mode and attempt < max_attempts - 1:
                     wait_time = self._calculate_retry_delay(attempt)
                     logger.warning(
@@ -272,25 +300,42 @@ class LLMClient:
                 else:
                     logger.error(f"Timeout after {attempt + 1} attempts")
                     self.circuit_breaker.call_failed()
-                    return None
+                    return fallback_response
                 
             except APIConnectionError as e:
                 last_error = e
+                last_error_type = "connection"
+                
+                # Log more detailed connection error
+                error_msg = str(e)
+                if "Connection error" in error_msg or "Network is unreachable" in error_msg:
+                    logger.error(
+                        f"Network connectivity issue detected. "
+                        f"This may be due to firewall rules, network restrictions, "
+                        f"or the hosting environment blocking outbound connections."
+                    )
+                
                 if not quick_mode and attempt < max_attempts - 1:
-                    wait_time = self._calculate_retry_delay(attempt)
+                    wait_time = self._calculate_retry_delay(attempt, "connection")
                     logger.warning(
                         f"Connection error (attempt {attempt + 1}/{max_attempts}). "
-                        f"Retrying in {wait_time}s..."
+                        f"Retrying in {wait_time}s... Error: {error_msg}"
                     )
                     time.sleep(wait_time)
                     continue
                 else:
-                    logger.error(f"Connection failed after {attempt + 1} attempts: {e}")
+                    logger.error(
+                        f"Connection failed after {attempt + 1} attempts. "
+                        f"Consider checking network configuration, firewall rules, "
+                        f"or using AI features in async/background tasks. Error: {e}"
+                    )
                     self.circuit_breaker.call_failed()
-                    return None
+                    return fallback_response
                 
             except APIError as e:
                 last_error = e
+                last_error_type = "api_error"
+                
                 # Retry server errors (5xx)
                 if hasattr(e, 'status_code') and 500 <= e.status_code < 600:
                     if not quick_mode and attempt < max_attempts - 1:
@@ -305,24 +350,31 @@ class LLMClient:
                 
                 logger.error(f"API error: {e}")
                 self.circuit_breaker.call_failed()
-                return None
+                return fallback_response
                 
             except Exception as e:
-                logger.error(f"Unexpected error: {type(e).__name__}: {e}")
+                last_error = e
+                last_error_type = "unexpected"
+                logger.error(f"Unexpected error during LLM call: {type(e).__name__}: {e}")
                 self.circuit_breaker.call_failed()
-                return None
+                return fallback_response
         
         # All retries exhausted
         if last_error:
-            logger.error(f"All retries exhausted. Last error: {last_error}")
+            logger.error(
+                f"All {max_attempts} attempts exhausted. "
+                f"Last error type: {last_error_type}. "
+                f"Error: {last_error}"
+            )
             self.circuit_breaker.call_failed()
-        return None
+        
+        return fallback_response
     
     def get_health_status(self) -> Dict[str, any]:
         """Get health status of LLM client"""
         circuit_state = self.circuit_breaker.get_state()
         
-        return {
+        status = {
             "enabled": self.enabled,
             "provider": self.provider,
             "model": self.model,
@@ -331,6 +383,16 @@ class LLMClient:
             "cache_stats": self.get_cache_stats() if self.cache_enabled else None,
             "available": self.is_enabled()
         }
+        
+        # Add warning if circuit is open
+        if circuit_state["state"] == "OPEN":
+            status["warning"] = (
+                f"Circuit breaker is OPEN due to repeated failures. "
+                f"Will retry after {self.circuit_breaker.timeout}s. "
+                f"Check network connectivity and API status."
+            )
+        
+        return status
     
     def build_system_message(self, context: str = None) -> Dict[str, str]:
         """Build system message for AI assistant"""
@@ -363,6 +425,7 @@ class LLMClient:
         """Manually reset circuit breaker (for admin use)"""
         self.circuit_breaker.failures = 0
         self.circuit_breaker.state = "CLOSED"
+        self.circuit_breaker.last_failure_time = None
         logger.info("Circuit breaker manually reset")
 
 
