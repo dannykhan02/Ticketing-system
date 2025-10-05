@@ -146,10 +146,9 @@ class AIAssistant:
         
         messages.append({"role": "user", "content": query})
         
-        # Try with minimal retries and short timeout
-        # We override the config to prevent long waits
+        # Use the llm_client's chat_completion method with proper error handling
         try:
-            # First check cache
+            # Check cache first
             if self.llm.cache_enabled and self.llm.cache:
                 cached = self.llm.cache.get(
                     messages,
@@ -158,32 +157,28 @@ class AIAssistant:
                     model=self.llm.model
                 )
                 if cached:
+                    logger.info("Returning cached LLM response")
                     return {"message": cached, "llm_used": True, "from_cache": True}
             
-            # Make ONE attempt with short timeout (no retries)
-            response = self.llm.client.chat.completions.create(
-                model=self.llm.model,
+            # Make a single attempt with short timeout
+            logger.info("Attempting LLM call with short timeout")
+            response_content = self.llm.chat_completion(
                 messages=messages,
                 temperature=self.llm.temperature,
                 max_tokens=self.llm.max_tokens,
-                timeout=10  # Short timeout
+                use_cache=True
             )
             
-            response_content = response.choices[0].message.content
-            
-            # Cache for next time
-            if self.llm.cache_enabled and self.llm.cache and response_content:
-                self.llm.cache.set(
-                    messages, response_content,
-                    temperature=self.llm.temperature,
-                    max_tokens=self.llm.max_tokens,
-                    model=self.llm.model
-                )
-            
-            return {"message": response_content, "llm_used": True}
+            if response_content:
+                logger.info("LLM call successful")
+                return {"message": response_content, "llm_used": True}
+            else:
+                # LLM returned None (failed)
+                logger.warning("LLM call returned None - using fallback")
+                return self._get_fallback_response()
             
         except Exception as e:
-            logger.warning(f"Fast LLM call failed: {e}")
+            logger.warning(f"Exception during LLM call: {type(e).__name__}: {e}")
             # Return fallback immediately - don't block
             return self._get_fallback_response()
     
