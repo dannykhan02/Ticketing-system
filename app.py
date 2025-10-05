@@ -29,7 +29,7 @@ from mpesa_intergration import register_mpesa_routes
 from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from admin_report import register_admin_report_resources
-from catergory import register_catergory_resources
+from resources import register_catergory_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
