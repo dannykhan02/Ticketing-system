@@ -1,6 +1,6 @@
 """
 Centralized LLM Client for AI Features
-Handles all OpenAI API interactions with proper error handling, retries, and caching
+Handles all Groq API interactions with proper error handling, retries, and caching
 """
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError, APITimeoutError, AuthenticationError
@@ -14,11 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """Centralized client for LLM interactions"""
+    """Centralized client for LLM interactions (supports Groq and OpenAI)"""
     
     def __init__(self):
         """Initialize LLM client with config settings"""
-        self.api_key = Config.OPENAI_API_KEY
         self.provider = Config.AI_PROVIDER
         self.model = Config.AI_MODEL
         self.temperature = Config.AI_TEMPERATURE
@@ -26,6 +25,15 @@ class LLMClient:
         self.timeout = Config.AI_TIMEOUT
         self.max_retries = Config.AI_MAX_RETRIES
         self.rate_limit_wait = Config.AI_RATE_LIMIT_WAIT
+        
+        # Get API key based on provider
+        if self.provider.lower() == "groq":
+            self.api_key = Config.GROQ_API_KEY
+            self.base_url = "https://api.groq.com/openai/v1"
+        else:  # Default to OpenAI
+            self.api_key = Config.OPENAI_API_KEY
+            self.base_url = None  # Use OpenAI's default
+        
         self.enabled = Config.ENABLE_AI_FEATURES and bool(self.api_key)
         
         # Initialize cache
@@ -40,17 +48,23 @@ class LLMClient:
             self.cache = None
             logger.info("Cache disabled")
         
-        # Configure OpenAI client with retries DISABLED
+        # Configure client with retries DISABLED
         if self.enabled:
-            self.client = OpenAI(
-                api_key=self.api_key,
-                timeout=self.timeout,
-                max_retries=0  # CRITICAL: Disable OpenAI's internal retries
-            )
+            client_kwargs = {
+                "api_key": self.api_key,
+                "timeout": self.timeout,
+                "max_retries": 0  # CRITICAL: Disable internal retries
+            }
+            
+            # Add base_url for Groq
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            
+            self.client = OpenAI(**client_kwargs)
             logger.info(f"LLM Client initialized - Provider: {self.provider}, Model: {self.model}")
         else:
             self.client = None
-            logger.warning("LLM Client initialized but disabled - API key not configured")
+            logger.warning(f"LLM Client initialized but disabled - API key not configured for {self.provider}")
     
     def is_enabled(self) -> bool:
         """Check if LLM is enabled and configured"""
@@ -86,20 +100,20 @@ class LLMClient:
         **kwargs
     ) -> Optional[str]:
         """
-        Get chat completion from OpenAI with caching and improved retry logic
+        Get chat completion from LLM with caching and improved retry logic
         
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Override default temperature
             max_tokens: Override default max tokens
             use_cache: Whether to use cache (default True)
-            **kwargs: Additional OpenAI API parameters
+            **kwargs: Additional API parameters
         
         Returns:
             str: AI response content or None if failed
         """
         if not self.enabled or not self.client:
-            logger.warning("LLM chat completion requested but LLM is not enabled")
+            logger.warning(f"LLM chat completion requested but LLM is not enabled (Provider: {self.provider})")
             return None
         
         temperature = temperature if temperature is not None else self.temperature
@@ -131,7 +145,7 @@ class LLMClient:
                 )
                 
                 response_content = response.choices[0].message.content
-                logger.info(f"LLM chat completion successful on attempt {attempt + 1}")
+                logger.info(f"{self.provider} chat completion successful on attempt {attempt + 1}")
                 
                 # Cache the response
                 if use_cache and self.cache_enabled and self.cache and response_content:
@@ -151,7 +165,7 @@ class LLMClient:
                 if attempt < self.max_retries:
                     wait_time = self._calculate_retry_delay(attempt, "rate_limit")
                     logger.warning(
-                        f"OpenAI rate limit hit (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"{self.provider} rate limit hit (attempt {attempt + 1}/{self.max_retries + 1}). "
                         f"Waiting {wait_time}s before retry..."
                     )
                     time.sleep(wait_time)
@@ -159,7 +173,7 @@ class LLMClient:
                 else:
                     logger.error(
                         f"Rate limit exceeded after {self.max_retries + 1} attempts. "
-                        "Consider upgrading your OpenAI plan or reducing request frequency."
+                        f"Consider upgrading your {self.provider} plan or reducing request frequency."
                     )
                     return None
                 
@@ -168,7 +182,7 @@ class LLMClient:
                 if attempt < self.max_retries:
                     wait_time = self._calculate_retry_delay(attempt)
                     logger.warning(
-                        f"OpenAI timeout (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"{self.provider} timeout (attempt {attempt + 1}/{self.max_retries + 1}). "
                         f"Retrying in {wait_time}s..."
                     )
                     time.sleep(wait_time)
@@ -182,7 +196,7 @@ class LLMClient:
                 if attempt < self.max_retries:
                     wait_time = self._calculate_retry_delay(attempt)
                     logger.warning(
-                        f"OpenAI connection error (attempt {attempt + 1}/{self.max_retries + 1}). "
+                        f"{self.provider} connection error (attempt {attempt + 1}/{self.max_retries + 1}). "
                         f"Retrying in {wait_time}s..."
                     )
                     time.sleep(wait_time)
@@ -198,18 +212,18 @@ class LLMClient:
                     if attempt < self.max_retries:
                         wait_time = self._calculate_retry_delay(attempt)
                         logger.warning(
-                            f"OpenAI server error {e.status_code} "
+                            f"{self.provider} server error {e.status_code} "
                             f"(attempt {attempt + 1}/{self.max_retries + 1}). "
                             f"Retrying in {wait_time}s..."
                         )
                         time.sleep(wait_time)
                         continue
                 # Client errors (4xx) should not be retried
-                logger.error(f"OpenAI API error: {e}")
+                logger.error(f"{self.provider} API error: {e}")
                 return None
                 
             except AuthenticationError as e:
-                logger.error("OpenAI authentication failed - check your API key")
+                logger.error(f"{self.provider} authentication failed - check your API key")
                 return None
             
             except Exception as e:
@@ -224,6 +238,7 @@ class LLMClient:
     def generate_embedding(self, text: str, model: str = "text-embedding-ada-002") -> Optional[List[float]]:
         """
         Generate embedding for text
+        Note: Groq doesn't support embeddings, will fall back to OpenAI if needed
         
         Args:
             text: Text to embed
@@ -234,6 +249,10 @@ class LLMClient:
         """
         if not self.enabled or not self.client:
             logger.warning("Embedding generation requested but LLM is not enabled")
+            return None
+        
+        if self.provider.lower() == "groq":
+            logger.warning("Groq doesn't support embeddings. Please configure OpenAI for embedding generation.")
             return None
         
         try:
@@ -255,20 +274,20 @@ class LLMClient:
         **kwargs
     ):
         """
-        Stream chat completion from OpenAI (for real-time responses)
+        Stream chat completion from LLM (for real-time responses)
         Note: Streaming responses are not cached
         
         Args:
             messages: List of message dicts
             temperature: Override default temperature
             max_tokens: Override default max tokens
-            **kwargs: Additional OpenAI API parameters
+            **kwargs: Additional API parameters
         
         Yields:
             str: Chunks of AI response
         """
         if not self.enabled or not self.client:
-            logger.warning("LLM streaming requested but LLM is not enabled")
+            logger.warning(f"LLM streaming requested but LLM is not enabled (Provider: {self.provider})")
             return
         
         temperature = temperature if temperature is not None else self.temperature
@@ -351,7 +370,8 @@ class LLMClient:
             "timeout": self.timeout,
             "max_retries": self.max_retries,
             "rate_limit_wait": self.rate_limit_wait,
-            "cache_enabled": self.cache_enabled
+            "cache_enabled": self.cache_enabled,
+            "base_url": self.base_url if self.provider.lower() == "groq" else "default"
         }
         
         if self.cache_enabled:
