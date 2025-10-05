@@ -197,7 +197,7 @@ class Config:
 
     # Provider and model info
     AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")
-    AI_MODEL = os.getenv("AI_MODEL", "llama3-8b-8192")
+    AI_MODEL = os.getenv("AI_MODEL", "llama-3.1-8b-instant")
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
