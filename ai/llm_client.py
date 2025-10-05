@@ -34,6 +34,13 @@ class LLMClient:
             self.api_key = Config.OPENAI_API_KEY
             self.base_url = None  # Use OpenAI's default
         
+        # Debug logging
+        logger.info(f"AI Provider: {self.provider}")
+        logger.info(f"AI Features Enabled: {Config.ENABLE_AI_FEATURES}")
+        logger.info(f"API Key Present: {bool(self.api_key)}")
+        if self.api_key:
+            logger.info(f"API Key Length: {len(self.api_key)}")
+        
         self.enabled = Config.ENABLE_AI_FEATURES and bool(self.api_key)
         
         # Initialize cache
