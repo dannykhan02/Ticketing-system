@@ -192,21 +192,35 @@ class Config:
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() in ("true", "1")
     
     
-    # AI Assistant Configuration
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    AI_PROVIDER = os.getenv("AI_PROVIDER", "openai")
-    AI_MODEL = os.getenv("AI_MODEL", "gpt-3.5-turbo")
+     # === AI Core Configuration ===
+    ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1", "yes")
+
+    # Provider and model info
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")
+    AI_MODEL = os.getenv("AI_MODEL", "llama3-8b-8192")
     AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.7"))
     AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "500"))
     AI_TIMEOUT = int(os.getenv("AI_TIMEOUT", "30"))
-    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))  # Reduced from 3
-    AI_RATE_LIMIT_WAIT = int(os.getenv("AI_RATE_LIMIT_WAIT", "60"))  # Wait time for rate limits
-    ENABLE_AI_FEATURES = os.getenv("ENABLE_AI_FEATURES", "true").lower() in ("true", "1")
+    AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "2"))
+    AI_RATE_LIMIT_WAIT = int(os.getenv("AI_RATE_LIMIT_WAIT", "60"))
 
-    # AI Cache Configuration
-    AI_CACHE_ENABLED = os.getenv("AI_CACHE_ENABLED", "true").lower() in ("true", "1")
+    # === API Keys ===
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Optional fallback if needed
+
+    # === AI Cache Settings ===
+    AI_CACHE_ENABLED = os.getenv("AI_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
     AI_CACHE_TTL = int(os.getenv("AI_CACHE_TTL", "3600"))  # 1 hour default
-    AI_CACHE_MAX_SIZE = int(os.getenv("AI_CACHE_MAX_SIZE", "1000"))  # Max cached items
+    AI_CACHE_MAX_SIZE = int(os.getenv("AI_CACHE_MAX_SIZE", "1000"))
+
+    @classmethod
+    def show_summary(cls):
+        """Print a quick summary for debugging."""
+        print("AI Provider:", cls.AI_PROVIDER)
+        print("AI Model:", cls.AI_MODEL)
+        print("AI Enabled:", cls.ENABLE_AI_FEATURES)
+        print("Cache Enabled:", cls.AI_CACHE_ENABLED)
+        print("Groq Key Found:", bool(cls.GROQ_API_KEY))
 
     @classmethod
     def validate_config(cls):
