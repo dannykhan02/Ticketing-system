@@ -150,12 +150,14 @@ app.config['JWT_ACCESS_COOKIE_NAME'] = 'access_token'
 app.config['JWT_HEADER_NAME'] = 'Authorization'
 app.config['JWT_HEADER_TYPE'] = 'Bearer'
 
-# CORS Configuration - Use configuration values
+# ✅ CORS Configuration - Updated with Koyeb URL
 CORS(app,
      origins=app.config.get('CORS_ORIGINS', [
-         "http://localhost:8080", 
+         "http://localhost:8080",
+         "http://localhost:3000",
          "https://pulse-ticket-verse.netlify.app",
-         "https://ticketing-system-994g.onrender.com"
+         "https://upset-francoise-dannykhan-c14e3d9b.koyeb.app",  # ✅ New Koyeb URL
+         "https://ticketing-system-994g.onrender.com"  # Keep old Render URL for backward compatibility
      ]),
      supports_credentials=True,
      expose_headers=["Set-Cookie"],
@@ -361,9 +363,10 @@ def health_check():
     """Basic health check"""
     return {
         "status": "healthy", 
-        "message": "Ticketing system is running",
+        "message": "Ticketing system is running on Koyeb",
         "timestamp": time.time(),
-        "version": "2.0"  # Updated version
+        "version": "2.0",
+        "platform": "Koyeb"
     }, 200
 
 @app.route('/health')
@@ -373,7 +376,8 @@ def detailed_health_check():
         "status": "ok",
         "timestamp": time.time(),
         "version": os.getenv("RENDER_GIT_COMMIT", "2.0"),
-        "api_version": "2.0"
+        "api_version": "2.0",
+        "platform": "Koyeb"
     }
     
     # Test database connection
@@ -406,7 +410,8 @@ def readiness_check():
                 return {
                     "status": "ready", 
                     "api_version": "2.0",
-                    "stats_system": "unified"
+                    "stats_system": "unified",
+                    "platform": "Koyeb"
                 }, 200
             else:
                 return {
@@ -426,16 +431,22 @@ def api_info():
     return {
         "api_version": "2.0",
         "stats_system": "unified",
+        "platform": "Koyeb",
+        "base_url": "https://upset-francoise-dannykhan-c14e3d9b.koyeb.app",
         "endpoints": {
             "stats": "/api/stats",
             "detailed_stats": "/api/stats?detailed=true",
-            "health": "/api/system/health"
+            "health": "/health",
+            "ready": "/ready",
+            "system_health": "/api/system/health"
         },
         "features": [
             "role_based_stats",
             "unified_endpoints", 
             "enhanced_security",
-            "audit_logging"
+            "audit_logging",
+            "ai_features",
+            "payment_integration"
         ]
     }, 200
 
@@ -458,7 +469,7 @@ def not_found(error):
         "api_version": "2.0",
         "available_endpoints": {
             "stats": "/api/stats",
-            "health": "/api/system/health",
+            "health": "/health",
             "info": "/api/info"
         }
     }, 404
@@ -491,7 +502,7 @@ if __name__ == "__main__":
     app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
 else:
     # Production mode (Gunicorn)
-    print("🏭 Running in production mode")
+    print("🏭 Running in production mode on Koyeb")
     print("📊 Using unified stats system v2.0")
     app_initialized = initialize_app()
     if not app_initialized:
@@ -500,10 +511,12 @@ else:
 # ✅ Application information (printed at startup)
 print("=" * 60)
 print("🎫 TICKETING SYSTEM v2.0 READY")
+print("🚀 Platform: Koyeb")
+print("🌐 URL: https://upset-francoise-dannykhan-c14e3d9b.koyeb.app")
 print("📊 Stats System: Unified API")
 print("🔒 Security: Enhanced with audit logging")
 print("📡 Endpoints:")
 print("   - Main Stats: /api/stats")
-print("   - Health Check: /api/system/health") 
+print("   - Health Check: /health") 
 print("   - API Info: /api/info")
 print("=" * 60)
