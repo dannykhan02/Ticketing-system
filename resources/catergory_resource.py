@@ -85,12 +85,15 @@ class CategoryResource(Resource):
         
         # ACTION: Save AI Suggested Category
         elif action == 'save_suggested':
-            if 'name' not in data:
+            # Handle nested 'data' object in request
+            category_data = data.get('data', data)
+            
+            if 'name' not in category_data:
                 return {"message": "Category name is required"}, 400
             
             # Check for similar categories first
-            similar = category_assistant.suggest_similar_categories(data['name'])
-            if similar and not data.get('confirm_despite_similar', False):
+            similar = category_assistant.suggest_similar_categories(category_data['name'])
+            if similar and not category_data.get('confirm_despite_similar', False):
                 return {
                     "action": "similar_categories_found",
                     "similar_categories": [cat.as_dict() for cat in similar[:5]],
@@ -102,12 +105,12 @@ class CategoryResource(Resource):
                 }, 409
             
             try:
-                category = Category(name=data['name'])
-                category.description = data.get('description', '')
+                category = Category(name=category_data['name'])
+                category.description = category_data.get('description', '')
                 category.ai_description_enhanced = True
                 
-                if 'keywords' in data:
-                    category.ai_suggested_keywords = data['keywords']
+                if 'keywords' in category_data:
+                    category.ai_suggested_keywords = category_data['keywords']
                 
                 db.session.add(category)
                 db.session.commit()
