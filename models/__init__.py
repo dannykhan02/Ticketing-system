@@ -13,7 +13,10 @@
 # from .scan import Scan
 # from .report import Report
 # from .currency import Currency, ExchangeRate
-# from .partner import Partner, EventCollaboration
+# from .partner import Partner
+# from .collaboration import EventCollaboration
+
+# # Enums
 # from .enums import (
 #     UserRole, TicketTypeEnum, PaymentStatus, PaymentMethod,
 #     CurrencyCode, CollaborationType, AIIntentType, 
@@ -31,6 +34,8 @@
 #     AIInsight, AIPricingRecommendation, AIEventSuggestion,
 #     AIFeedback, AIRevenueAnalysis, AITicketAnalysis
 # )
+# from .ai.partner_insight import AIPartnerInsight
+# from .ai.partner_match_recommendation import AIPartnerMatchRecommendation
 
 # # Managers
 # from managers.ai_manager import AIManager
@@ -58,6 +63,7 @@
 #     'AIPricingRecommendation', 'AIEventSuggestion',
 #     'AICategoryInsight', 'AIQueryTemplate', 'AIUsageMetrics',
 #     'AIFeedback', 'AIRevenueAnalysis', 'AITicketAnalysis',
+#     'AIPartnerInsight', 'AIPartnerMatchRecommendation',
     
 #     # Managers
 #     'AIManager', 'CollaborationManager', 'CurrencyConverter'

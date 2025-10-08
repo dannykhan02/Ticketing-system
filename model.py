@@ -389,15 +389,46 @@ class Partner(db.Model):
     website_url = db.Column(db.String(500), nullable=True)
     contact_email = db.Column(db.String(255), nullable=True)
     contact_person = db.Column(db.String(255), nullable=True)
+    
+    # AI-Enhanced Fields
+    ai_description_enhanced = db.Column(db.Boolean, default=False)
+    ai_partnership_score = db.Column(db.Float, nullable=True)  # 0-1 score of partnership value
+    ai_recommended_collaboration_types = db.Column(JSONB, nullable=True)  # Suggested collaboration types
+    ai_target_audience_overlap = db.Column(JSONB, nullable=True)  # Audience matching data
+    ai_suggested_events = db.Column(JSONB, nullable=True)  # Events this partner would be good for
+    
+    # Partnership Performance Metrics (AI-calculated)
+    performance_score = db.Column(db.Float, default=0.0)  # Overall performance score
+    engagement_rate = db.Column(db.Float, nullable=True)  # Partner engagement metrics
+    roi_estimate = db.Column(db.Numeric(12, 2), nullable=True)  # Estimated ROI from partnership
+    
+    # AI Preferences
+    ai_auto_suggest_events = db.Column(db.Boolean, default=True)
+    ai_smart_matching_enabled = db.Column(db.Boolean, default=True)
+    
+    # Status and Metadata
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    last_ai_analysis = db.Column(db.DateTime, nullable=True)
 
+    # Relationships
     collaborations = db.relationship('EventCollaboration', back_populates='partner', lazy=True)
-
+    
     # AI relationships
     ai_actions = db.relationship('AIActionLog', backref='partner', lazy=True,
                                 foreign_keys='AIActionLog.partner_id')
+    ai_insights = db.relationship('AIPartnerInsight', backref='partner', lazy=True, 
+                                 cascade="all, delete")
+    ai_match_recommendations = db.relationship('AIPartnerMatchRecommendation', 
+                                              backref='partner', lazy=True,
+                                              cascade="all, delete")
+
+    @validates('ai_partnership_score', 'performance_score', 'engagement_rate')
+    def validate_scores(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError(f"{key} must be between 0 and 1")
+        return value
 
     def as_dict(self):
         return {
@@ -405,8 +436,31 @@ class Partner(db.Model):
             "organizer_id": self.organizer_id,
             "company_name": self.company_name,
             "logo_url": self.logo_url,
-            "total_collaborations": len([c for c in self.collaborations if c.is_active])
+            "website_url": self.website_url,
+            "total_collaborations": len([c for c in self.collaborations if c.is_active]),
+            "ai_partnership_score": self.ai_partnership_score,
+            "performance_score": self.performance_score,
+            "ai_description_enhanced": self.ai_description_enhanced,
+            "engagement_rate": self.engagement_rate
         }
+
+    def calculate_performance_score(self):
+        """AI-calculated performance based on collaboration success"""
+        from sqlalchemy import func
+        
+        # Count successful collaborations
+        successful_collabs = sum(1 for c in self.collaborations 
+                                if c.is_active and c.engagement_metrics.get('success', False))
+        total_collabs = len([c for c in self.collaborations if c.is_active])
+        
+        if total_collabs == 0:
+            self.performance_score = 0.5  # Neutral score for new partners
+        else:
+            self.performance_score = successful_collabs / total_collabs
+        
+        db.session.commit()
+        return self.performance_score
+
 
 class EventCollaboration(db.Model):
     __tablename__ = 'event_collaborations'
@@ -414,19 +468,64 @@ class EventCollaboration(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False)
     partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=False)
-    collaboration_type = db.Column(db.Enum(CollaborationType), default=CollaborationType.PARTNER, nullable=False)
+    collaboration_type = db.Column(db.Enum(CollaborationType), 
+                                  default=CollaborationType.PARTNER, nullable=False)
     description = db.Column(db.Text, nullable=True)
+    
+    # Display Settings
     show_on_event_page = db.Column(db.Boolean, default=True, nullable=False)
     display_order = db.Column(db.Integer, default=0, nullable=False)
+    logo_placement = db.Column(db.String(50), default='footer')  # 'header', 'footer', 'sidebar'
+    
+    # AI-Enhanced Fields
+    ai_suggested_collaboration = db.Column(db.Boolean, default=False)  # Was this AI-suggested?
+    ai_match_score = db.Column(db.Float, nullable=True)  # How well partner matches event
+    ai_value_prediction = db.Column(db.Numeric(12, 2), nullable=True)  # Predicted partnership value
+    ai_audience_overlap_score = db.Column(db.Float, nullable=True)  # Audience alignment score
+    ai_recommendation_reason = db.Column(db.Text, nullable=True)  # Why AI suggested this
+    
+    # Performance Tracking (AI-analyzed)
+    engagement_metrics = db.Column(JSONB, nullable=True)  # {"clicks": 100, "conversions": 10}
+    contribution_score = db.Column(db.Float, nullable=True)  # Partner's contribution to event success
+    estimated_reach = db.Column(db.Integer, nullable=True)  # AI-estimated audience reach
+    actual_impact = db.Column(JSONB, nullable=True)  # Actual measured impact after event
+    
+    # Terms and Conditions
+    partnership_terms = db.Column(JSONB, nullable=True)  # Contract details, deliverables
+    deliverables_status = db.Column(JSONB, nullable=True)  # Track what's been delivered
+    
+    # AI Insights
+    ai_performance_insights = db.Column(JSONB, nullable=True)  # Post-event AI analysis
+    ai_suggested_improvements = db.Column(JSONB, nullable=True)  # How to improve next time
+    
+    # Status and Metadata
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    status = db.Column(db.String(50), default='pending')  # 'pending', 'confirmed', 'active', 'completed'
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    activated_at = db.Column(db.DateTime, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
 
+    # Relationships
     event = db.relationship('Event', backref='collaborations')
     partner = db.relationship('Partner', back_populates='collaborations')
+    
+    # AI relationships
+    ai_actions = db.relationship('AIActionLog', backref='event_collaboration', lazy=True,
+                                foreign_keys='AIActionLog.collaboration_id')
 
     __table_args__ = (
-        db.UniqueConstraint('event_id', 'partner_id', 'is_active', name='uix_active_event_collaboration'),
+        db.UniqueConstraint('event_id', 'partner_id', 'is_active', 
+                          name='uix_active_event_collaboration'),
+        db.Index('idx_collab_match_score', 'ai_match_score'),
+        db.Index('idx_collab_status', 'status', 'is_active'),
     )
+
+    @validates('ai_match_score', 'ai_audience_overlap_score', 'contribution_score')
+    def validate_scores(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError(f"{key} must be between 0 and 1")
+        return value
 
     def as_dict(self):
         return {
@@ -434,8 +533,383 @@ class EventCollaboration(db.Model):
             "event_id": self.event_id,
             "partner_id": self.partner_id,
             "collaboration_type": self.collaboration_type.value,
-            "is_active": self.is_active
+            "is_active": self.is_active,
+            "status": self.status,
+            "ai_suggested_collaboration": self.ai_suggested_collaboration,
+            "ai_match_score": self.ai_match_score,
+            "ai_value_prediction": float(self.ai_value_prediction) if self.ai_value_prediction else None,
+            "engagement_metrics": self.engagement_metrics,
+            "contribution_score": self.contribution_score,
+            "estimated_reach": self.estimated_reach
         }
+
+    def calculate_contribution_score(self):
+        """Calculate partner's contribution to event success"""
+        if not self.engagement_metrics:
+            return None
+        
+        # Simple calculation based on engagement
+        clicks = self.engagement_metrics.get('clicks', 0)
+        conversions = self.engagement_metrics.get('conversions', 0)
+        social_reach = self.engagement_metrics.get('social_reach', 0)
+        
+        # Normalize and weight factors
+        score = (
+            min(clicks / 1000, 1) * 0.4 +  # Max 1000 clicks = full points
+            min(conversions / 50, 1) * 0.4 +  # Max 50 conversions = full points
+            min(social_reach / 10000, 1) * 0.2  # Max 10k reach = full points
+        )
+        
+        self.contribution_score = round(score, 3)
+        db.session.commit()
+        return self.contribution_score
+
+
+class AIPartnerInsight(db.Model):
+    """AI-generated insights about partners"""
+    __tablename__ = 'ai_partner_insights'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=False, index=True)
+    
+    # Insight details
+    insight_type = db.Column(db.String(50), nullable=False, index=True)
+    # Types: 'performance_analysis', 'opportunity_identification', 'risk_assessment', 
+    #        'optimization_suggestion', 'trend_analysis'
+    
+    title = db.Column(db.String(255), nullable=False)
+    description = db.Column(db.Text, nullable=False)
+    
+    # Analysis data
+    insight_data = db.Column(JSONB, nullable=True)
+    # Example: {"avg_engagement": 0.75, "best_collaboration_type": "Media Partner"}
+    
+    recommended_actions = db.Column(JSONB, nullable=True)
+    # Example: [{"action": "increase_visibility", "reason": "High performing partner"}]
+    
+    # Metrics
+    confidence_score = db.Column(db.Float, nullable=True)
+    priority = db.Column(db.String(20), default='medium', index=True)  # 'low', 'medium', 'high', 'critical'
+    potential_value_increase = db.Column(db.Numeric(12, 2), nullable=True)
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, index=True)
+    is_read = db.Column(db.Boolean, default=False)
+    is_acted_upon = db.Column(db.Boolean, default=False)
+    
+    # Timestamps
+    generated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=True, index=True)
+    acted_upon_at = db.Column(db.DateTime, nullable=True)
+    
+    @validates('confidence_score')
+    def validate_confidence(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError("Confidence score must be between 0 and 1")
+        return value
+    
+    __table_args__ = (
+        db.Index('idx_partner_active_insights', 'partner_id', 'is_active'),
+    )
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "partner_id": self.partner_id,
+            "insight_type": self.insight_type,
+            "title": self.title,
+            "description": self.description,
+            "insight_data": self.insight_data,
+            "recommended_actions": self.recommended_actions,
+            "confidence_score": self.confidence_score,
+            "priority": self.priority,
+            "potential_value_increase": float(self.potential_value_increase) if self.potential_value_increase else None,
+            "is_read": self.is_read,
+            "generated_at": self.generated_at.isoformat()
+        }
+
+
+class AIPartnerMatchRecommendation(db.Model):
+    """AI recommendations for partner-event matching"""
+    __tablename__ = 'ai_partner_match_recommendations'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=False, index=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=False, index=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False, index=True)
+    
+    # Matching details
+    match_score = db.Column(db.Float, nullable=False)  # 0-1 score
+    suggested_collaboration_type = db.Column(db.Enum(CollaborationType), nullable=False)
+    
+    # Reasoning
+    match_reason = db.Column(db.Text, nullable=False)
+    matching_factors = db.Column(JSONB, nullable=True)
+    # Example: {
+    #   "audience_overlap": 0.85,
+    #   "category_match": true,
+    #   "past_success_rate": 0.90,
+    #   "geographic_alignment": 0.75
+    # }
+    
+    # Value predictions
+    predicted_value = db.Column(db.Numeric(12, 2), nullable=True)
+    predicted_reach = db.Column(db.Integer, nullable=True)
+    predicted_engagement = db.Column(db.Float, nullable=True)
+    confidence_level = db.Column(db.Float, nullable=True)
+    
+    # Suggested terms
+    suggested_terms = db.Column(JSONB, nullable=True)
+    # Example: {
+    #   "deliverables": ["social_media_posts", "logo_placement"],
+    #   "expected_reach": 5000,
+    #   "duration": "30_days"
+    # }
+    
+    # Status
+    is_active = db.Column(db.Boolean, default=True, index=True)
+    is_viewed = db.Column(db.Boolean, default=False)
+    is_accepted = db.Column(db.Boolean, default=False)
+    is_rejected = db.Column(db.Boolean, default=False)
+    
+    created_collaboration_id = db.Column(db.Integer, 
+                                        db.ForeignKey('event_collaborations.id'), 
+                                        nullable=True)
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    viewed_at = db.Column(db.DateTime, nullable=True)
+    responded_at = db.Column(db.DateTime, nullable=True)
+    expires_at = db.Column(db.DateTime, nullable=False, index=True)
+    
+    # Relationships
+    organizer = db.relationship('Organizer', backref='partner_recommendations')
+    event = db.relationship('Event', backref='partner_recommendations')
+    created_collaboration = db.relationship('EventCollaboration', 
+                                           foreign_keys=[created_collaboration_id])
+    
+    @validates('match_score', 'predicted_engagement', 'confidence_level')
+    def validate_scores(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError(f"{key} must be between 0 and 1")
+        return value
+    
+    __table_args__ = (
+        db.Index('idx_organizer_active_recs', 'organizer_id', 'is_active'),
+        db.Index('idx_event_match_score', 'event_id', 'match_score'),
+    )
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "partner_id": self.partner_id,
+            "event_id": self.event_id,
+            "match_score": self.match_score,
+            "suggested_collaboration_type": self.suggested_collaboration_type.value,
+            "match_reason": self.match_reason,
+            "matching_factors": self.matching_factors,
+            "predicted_value": float(self.predicted_value) if self.predicted_value else None,
+            "predicted_reach": self.predicted_reach,
+            "confidence_level": self.confidence_level,
+            "is_viewed": self.is_viewed,
+            "is_accepted": self.is_accepted,
+            "created_at": self.created_at.isoformat()
+        }
+
+
+# ===== ENHANCED COLLABORATION MANAGER WITH AI =====
+class CollaborationManager:
+    """Enhanced helper class for managing event collaborations with AI features"""
+
+    @staticmethod
+    def create_partner(organizer_id, company_name, logo_url=None, website_url=None, 
+                      company_description=None, contact_email=None, contact_person=None,
+                      enable_ai_features=True):
+        """Create a new partner with optional AI features"""
+        partner = Partner(
+            organizer_id=organizer_id,
+            company_name=company_name,
+            logo_url=logo_url,
+            website_url=website_url,
+            company_description=company_description,
+            contact_email=contact_email,
+            contact_person=contact_person,
+            ai_auto_suggest_events=enable_ai_features,
+            ai_smart_matching_enabled=enable_ai_features
+        )
+        db.session.add(partner)
+        db.session.commit()
+        
+        # Trigger AI analysis if enabled
+        if enable_ai_features:
+            CollaborationManager.analyze_partner_with_ai(partner.id)
+        
+        return partner
+
+    @staticmethod
+    def add_event_collaboration(event_id, partner_id, collaboration_type="Partner", 
+                               description=None, display_order=0, ai_suggested=False,
+                               match_score=None):
+        """Add event collaboration with AI tracking"""
+        existing = EventCollaboration.query.filter_by(
+            event_id=event_id,
+            partner_id=partner_id,
+            is_active=True
+        ).first()
+
+        if existing:
+            return {"error": "Collaboration already exists", "collaboration": existing}
+
+        collaboration = EventCollaboration(
+            event_id=event_id,
+            partner_id=partner_id,
+            collaboration_type=CollaborationType(collaboration_type) if isinstance(collaboration_type, str) else collaboration_type,
+            description=description,
+            display_order=display_order,
+            ai_suggested_collaboration=ai_suggested,
+            ai_match_score=match_score,
+            status='confirmed' if not ai_suggested else 'pending'
+        )
+
+        db.session.add(collaboration)
+        db.session.commit()
+        
+        # Log AI action if AI-suggested
+        if ai_suggested:
+            AIManager.log_action(
+                user_id=Event.query.get(event_id).organizer.user_id,
+                action_type=AIIntentType.MANAGE_PARTNERS,
+                action_description=f"AI suggested collaboration between event {event_id} and partner {partner_id}",
+                target_table='event_collaborations',
+                target_id=collaboration.id
+            )
+        
+        return {"success": True, "collaboration": collaboration}
+
+    @staticmethod
+    def analyze_partner_with_ai(partner_id):
+        """Run AI analysis on a partner"""
+        partner = Partner.query.get(partner_id)
+        if not partner:
+            return None
+        
+        # Calculate partnership score based on historical performance
+        total_collabs = len([c for c in partner.collaborations if c.is_active])
+        successful_collabs = len([c for c in partner.collaborations 
+                                 if c.is_active and c.contribution_score and c.contribution_score > 0.5])
+        
+        if total_collabs > 0:
+            partner.ai_partnership_score = successful_collabs / total_collabs
+        else:
+            partner.ai_partnership_score = 0.5  # Neutral for new partners
+        
+        partner.last_ai_analysis = datetime.utcnow()
+        db.session.commit()
+        
+        return partner
+
+    @staticmethod
+    def generate_partner_recommendations(event_id, limit=5):
+        """Generate AI partner recommendations for an event"""
+        event = Event.query.get(event_id)
+        if not event:
+            return []
+        
+        # Get all active partners for the organizer
+        partners = Partner.query.filter_by(
+            organizer_id=event.organizer_id,
+            is_active=True
+        ).all()
+        
+        recommendations = []
+        expires_at = datetime.utcnow() + timedelta(days=30)
+        
+        for partner in partners:
+            # Skip if already collaborating
+            existing = EventCollaboration.query.filter_by(
+                event_id=event_id,
+                partner_id=partner.id,
+                is_active=True
+            ).first()
+            
+            if existing:
+                continue
+            
+            # Calculate match score (simplified - can be enhanced with ML)
+            match_score = partner.ai_partnership_score or 0.5
+            
+            # Create recommendation
+            recommendation = AIPartnerMatchRecommendation(
+                partner_id=partner.id,
+                event_id=event_id,
+                organizer_id=event.organizer_id,
+                match_score=match_score,
+                suggested_collaboration_type=CollaborationType.PARTNER,
+                match_reason=f"Partner has {match_score*100:.0f}% success rate with similar events",
+                confidence_level=match_score,
+                expires_at=expires_at
+            )
+            
+            recommendations.append(recommendation)
+        
+        # Sort by match score and limit
+        recommendations.sort(key=lambda x: x.match_score, reverse=True)
+        recommendations = recommendations[:limit]
+        
+        # Save to database
+        for rec in recommendations:
+            db.session.add(rec)
+        db.session.commit()
+        
+        return recommendations
+
+    @staticmethod
+    def track_collaboration_performance(collaboration_id, engagement_data):
+        """Track and analyze collaboration performance"""
+        collaboration = EventCollaboration.query.get(collaboration_id)
+        if not collaboration:
+            return None
+        
+        # Update engagement metrics
+        collaboration.engagement_metrics = engagement_data
+        
+        # Calculate contribution score
+        collaboration.calculate_contribution_score()
+        
+        # Generate AI insights
+        if collaboration.contribution_score:
+            insight_title = "Collaboration Performance Analysis"
+            
+            if collaboration.contribution_score > 0.7:
+                insight_desc = f"Excellent performance! This partnership is driving significant value."
+                priority = 'high'
+            elif collaboration.contribution_score > 0.4:
+                insight_desc = f"Good performance with room for optimization."
+                priority = 'medium'
+            else:
+                insight_desc = f"Underperforming partnership. Consider reviewing terms or strategy."
+                priority = 'high'
+            
+            insight = AIPartnerInsight(
+                partner_id=collaboration.partner_id,
+                insight_type='performance_analysis',
+                title=insight_title,
+                description=insight_desc,
+                insight_data={
+                    'collaboration_id': collaboration_id,
+                    'contribution_score': collaboration.contribution_score,
+                    'engagement_metrics': engagement_data
+                },
+                confidence_score=0.85,
+                priority=priority
+            )
+            
+            db.session.add(insight)
+        
+        db.session.commit()
+        return collaboration
+
+
 
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -809,6 +1283,8 @@ class AIActionLog(db.Model):
     partner_id = db.Column(db.Integer, db.ForeignKey('partners.id'), nullable=True, index=True)
     ticket_id = db.Column(db.Integer, db.ForeignKey('ticket.id'), nullable=True, index=True)
     category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True, index=True)
+    collaboration_id = db.Column(db.Integer, db.ForeignKey('event_collaborations.id'), 
+                            nullable=True, index=True)
 
     action_description = db.Column(db.Text, nullable=False)
 
@@ -1599,3 +2075,7 @@ class CurrencyConverter:
         db.session.add(new_exchange_rate)
         db.session.commit()
         return new_exchange_rate
+
+
+
+
