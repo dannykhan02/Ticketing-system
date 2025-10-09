@@ -12,6 +12,7 @@ from flask_restful import Resource
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import cloudinary.uploader
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 from model import (
     db, Event, User, UserRole, Organizer, Partner,
     EventCollaboration, CollaborationType, AIPartnerInsight,
@@ -120,7 +121,26 @@ class PartnerManagementResource(Resource):
             page=page, per_page=per_page, error_out=False
         )
         
-        partner_data = partner.as_dict()
+        # Get partner data safely, handling missing columns
+        try:
+            partner_data = partner.as_dict()
+        except Exception as e:
+            logger.error(f"Error getting partner data: {e}")
+            # Fallback to manual data extraction
+            partner_data = {
+                'id': partner.id,
+                'organizer_id': partner.organizer_id,
+                'company_name': partner.company_name,
+                'company_description': getattr(partner, 'company_description', ''),
+                'logo_url': getattr(partner, 'logo_url', ''),
+                'website_url': getattr(partner, 'website_url', ''),
+                'contact_email': getattr(partner, 'contact_email', ''),
+                'contact_person': getattr(partner, 'contact_person', ''),
+                'is_active': getattr(partner, 'is_active', True),
+                'created_at': getattr(partner, 'created_at', datetime.utcnow()),
+                'updated_at': getattr(partner, 'updated_at', datetime.utcnow())
+            }
+        
         partner_data['collaborations'] = [
             {
                 **c.as_dict(),
@@ -144,25 +164,31 @@ class PartnerManagementResource(Resource):
                     partner_data['ai_performance_analysis'] = performance
                 
                 # Get latest insights from database
-                latest_insight = AIPartnerInsight.query.filter_by(
-                    partner_id=partner_id,
-                    is_active=True
-                ).order_by(AIPartnerInsight.created_at.desc()).first()
-                
-                if latest_insight:
-                    partner_data['latest_ai_insight'] = latest_insight.as_dict()
+                try:
+                    latest_insight = AIPartnerInsight.query.filter_by(
+                        partner_id=partner_id,
+                        is_active=True
+                    ).order_by(AIPartnerInsight.created_at.desc()).first()
+                    
+                    if latest_insight:
+                        partner_data['latest_ai_insight'] = latest_insight.as_dict()
+                except Exception as e:
+                    logger.error(f"Error getting latest insight: {e}")
                 
                 # Find similar partners
-                similar = partner_assistant.find_similar_partners(partner_id, limit=3)
-                if similar:
-                    partner_data['similar_partners'] = [
-                        {
-                            'id': p.id,
-                            'company_name': p.company_name,
-                            'performance_score': p.performance_score
-                        }
-                        for p in similar
-                    ]
+                try:
+                    similar = partner_assistant.find_similar_partners(partner_id, limit=3)
+                    if similar:
+                        partner_data['similar_partners'] = [
+                            {
+                                'id': p.id,
+                                'company_name': p.company_name,
+                                'performance_score': getattr(p, 'performance_score', 0)
+                            }
+                            for p in similar
+                        ]
+                except Exception as e:
+                    logger.error(f"Error finding similar partners: {e}")
                 
                 partner_data['ai_actions'] = {
                     'enhance_description': 'POST /partners/{id}/ai/enhance-description',
@@ -187,93 +213,212 @@ class PartnerManagementResource(Resource):
     def _get_organizer_partners(self, organizer, page, per_page, sort_by, sort_order, search, include_ai_insights):
         """Get all partners for the current organizer with AI trends."""
         include_inactive = request.args.get('include_inactive', 'false').lower() == 'true'
-        query = Partner.query.filter_by(organizer_id=organizer.id)
         
-        if not include_inactive:
-            query = query.filter_by(is_active=True)
-        
-        if search:
-            query = query.filter(Partner.company_name.ilike(f"%{search}%"))
-        
-        partners = query.paginate(page=page, per_page=per_page, error_out=False)
-        
-        partners_data = []
-        for partner in partners.items:
-            partner_dict = partner.as_dict()
-            recent_collaborations = EventCollaboration.query.filter_by(
-                partner_id=partner.id,
-                is_active=True
-            ).order_by(EventCollaboration.created_at.desc()).limit(3).all()
+        # Use a raw query to avoid issues with missing columns
+        try:
+            # First try to get partners with the standard query
+            query = Partner.query.filter_by(organizer_id=organizer.id)
             
-            partner_dict['recent_collaborations'] = [
-                {
-                    'event_id': c.event_id,
-                    'event_name': c.event.name if c.event else None,
-                    'collaboration_type': c.collaboration_type.value,
-                    'created_at': c.created_at.isoformat()
+            if not include_inactive:
+                query = query.filter_by(is_active=True)
+            
+            if search:
+                query = query.filter(Partner.company_name.ilike(f"%{search}%"))
+            
+            partners = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            partners_data = []
+            for partner in partners.items:
+                try:
+                    # Try to get partner data with as_dict()
+                    partner_dict = partner.as_dict()
+                except Exception as e:
+                    logger.error(f"Error getting partner dict: {e}")
+                    # Fallback to manual data extraction
+                    partner_dict = {
+                        'id': partner.id,
+                        'organizer_id': partner.organizer_id,
+                        'company_name': partner.company_name,
+                        'company_description': getattr(partner, 'company_description', ''),
+                        'logo_url': getattr(partner, 'logo_url', ''),
+                        'website_url': getattr(partner, 'website_url', ''),
+                        'contact_email': getattr(partner, 'contact_email', ''),
+                        'contact_person': getattr(partner, 'contact_person', ''),
+                        'is_active': getattr(partner, 'is_active', True),
+                        'created_at': getattr(partner, 'created_at', datetime.utcnow()),
+                        'updated_at': getattr(partner, 'updated_at', datetime.utcnow())
+                    }
+                
+                recent_collaborations = EventCollaboration.query.filter_by(
+                    partner_id=partner.id,
+                    is_active=True
+                ).order_by(EventCollaboration.created_at.desc()).limit(3).all()
+                
+                partner_dict['recent_collaborations'] = [
+                    {
+                        'event_id': c.event_id,
+                        'event_name': c.event.name if c.event else None,
+                        'collaboration_type': c.collaboration_type.value,
+                        'created_at': c.created_at.isoformat()
+                    }
+                    for c in recent_collaborations
+                ]
+                
+                partner_dict['total_collaborations'] = EventCollaboration.query.filter_by(
+                    partner_id=partner.id
+                ).count()
+                partners_data.append(partner_dict)
+            
+            # Sorting
+            reverse = sort_order == 'desc'
+            if sort_by == 'created_at':
+                partners_data.sort(key=lambda x: x['created_at'], reverse=reverse)
+            elif sort_by == 'total_collaborations':
+                partners_data.sort(key=lambda x: x.get('total_collaborations', 0), reverse=reverse)
+            elif sort_by == 'performance_score':
+                partners_data.sort(key=lambda x: x.get('performance_score', 0), reverse=reverse)
+            elif sort_by == 'active_status':
+                partners_data.sort(key=lambda x: x['is_active'], reverse=reverse)
+            else:
+                partners_data.sort(key=lambda x: x['company_name'].lower(), reverse=reverse)
+            
+            result = {
+                'partners': partners_data,
+                'pagination': {
+                    'total': partners.total,
+                    'pages': partners.pages,
+                    'current_page': partners.page,
+                    'per_page': partners.per_page,
+                    'has_next': partners.has_next,
+                    'has_prev': partners.has_prev
+                },
+                'organizer_id': organizer.id,
+                'filters': {
+                    'include_inactive': include_inactive,
+                    'sort_by': sort_by,
+                    'sort_order': sort_order,
+                    'search': search
                 }
-                for c in recent_collaborations
-            ]
-            
-            partner_dict['total_collaborations'] = EventCollaboration.query.filter_by(
-                partner_id=partner.id
-            ).count()
-            partners_data.append(partner_dict)
-        
-        # Sorting
-        reverse = sort_order == 'desc'
-        if sort_by == 'created_at':
-            partners_data.sort(key=lambda x: x['created_at'], reverse=reverse)
-        elif sort_by == 'total_collaborations':
-            partners_data.sort(key=lambda x: x.get('total_collaborations', 0), reverse=reverse)
-        elif sort_by == 'performance_score':
-            partners_data.sort(key=lambda x: x.get('performance_score', 0), reverse=reverse)
-        elif sort_by == 'active_status':
-            partners_data.sort(key=lambda x: x['is_active'], reverse=reverse)
-        else:
-            partners_data.sort(key=lambda x: x['company_name'].lower(), reverse=reverse)
-        
-        result = {
-            'partners': partners_data,
-            'pagination': {
-                'total': partners.total,
-                'pages': partners.pages,
-                'current_page': partners.page,
-                'per_page': partners.per_page,
-                'has_next': partners.has_next,
-                'has_prev': partners.has_prev
-            },
-            'organizer_id': organizer.id,
-            'filters': {
-                'include_inactive': include_inactive,
-                'sort_by': sort_by,
-                'sort_order': sort_order,
-                'search': search
             }
-        }
-        
-        # Add AI insights for overview
-        if include_ai_insights:
+            
+            # Add AI insights for overview
+            if include_ai_insights:
+                try:
+                    # Get partnership trends
+                    trends = partner_assistant.identify_partnership_trends(organizer.id)
+                    if trends:
+                        result['ai_trends'] = trends
+                    
+                    # Get recommendations summary
+                    recommendations_summary = partner_assistant.get_partner_recommendations_summary(organizer.id)
+                    if recommendations_summary:
+                        result['ai_recommendations_summary'] = recommendations_summary
+                    
+                    result['ai_actions'] = {
+                        'bulk_analyze': 'POST /partners/ai/bulk-analyze',
+                        'get_trends': 'GET /partners/ai/trends',
+                        'natural_query': 'POST /partners/ai/assist with query'
+                    }
+                except Exception as e:
+                    logger.error(f"Error adding AI insights: {e}")
+            
+            return result, 200
+        except Exception as e:
+            logger.error(f"Error in _get_organizer_partners: {str(e)}")
+            # Fallback to a simpler query if the main one fails
             try:
-                # Get partnership trends
-                trends = partner_assistant.identify_partnership_trends(organizer.id)
-                if trends:
-                    result['ai_trends'] = trends
+                # Use raw SQL to avoid SQLAlchemy issues with missing columns
+                sql = """
+                SELECT id, organizer_id, company_name, company_description, logo_url, 
+                       website_url, contact_email, contact_person, is_active, 
+                       created_at, updated_at
+                FROM partners 
+                WHERE organizer_id = :organizer_id
+                """
+                if not include_inactive:
+                    sql += " AND is_active = true"
+                if search:
+                    sql += " AND company_name ILIKE :search"
                 
-                # Get recommendations summary
-                recommendations_summary = partner_assistant.get_partner_recommendations_summary(organizer.id)
-                if recommendations_summary:
-                    result['ai_recommendations_summary'] = recommendations_summary
+                sql += " ORDER BY company_name " + ("DESC" if sort_order == 'desc' else "ASC")
+                sql += " LIMIT :limit OFFSET :offset"
                 
-                result['ai_actions'] = {
-                    'bulk_analyze': 'POST /partners/ai/bulk-analyze',
-                    'get_trends': 'GET /partners/ai/trends',
-                    'natural_query': 'POST /partners/ai/assist with query'
-                }
-            except Exception as e:
-                logger.error(f"Error adding AI insights: {e}")
-        
-        return result, 200
+                result = db.session.execute(
+                    text(sql),
+                    {
+                        'organizer_id': organizer.id,
+                        'search': f"%{search}%",
+                        'limit': per_page,
+                        'offset': (page - 1) * per_page
+                    }
+                )
+                
+                partners_data = []
+                for row in result:
+                    partner_dict = {
+                        'id': row[0],
+                        'organizer_id': row[1],
+                        'company_name': row[2],
+                        'company_description': row[3] or '',
+                        'logo_url': row[4] or '',
+                        'website_url': row[5] or '',
+                        'contact_email': row[6] or '',
+                        'contact_person': row[7] or '',
+                        'is_active': row[8],
+                        'created_at': row[9].isoformat() if row[9] else None,
+                        'updated_at': row[10].isoformat() if row[10] else None
+                    }
+                    
+                    # Get collaborations count
+                    collab_count = db.session.execute(
+                        text("SELECT COUNT(*) FROM event_collaborations WHERE partner_id = :partner_id"),
+                        {'partner_id': row[0]}
+                    ).scalar()
+                    
+                    partner_dict['total_collaborations'] = collab_count or 0
+                    partners_data.append(partner_dict)
+                
+                # Get total count for pagination
+                count_sql = """
+                SELECT COUNT(*) FROM partners 
+                WHERE organizer_id = :organizer_id
+                """
+                if not include_inactive:
+                    count_sql += " AND is_active = true"
+                if search:
+                    count_sql += " AND company_name ILIKE :search"
+                
+                total = db.session.execute(
+                    text(count_sql),
+                    {
+                        'organizer_id': organizer.id,
+                        'search': f"%{search}%"
+                    }
+                ).scalar()
+                
+                total_pages = (total + per_page - 1) // per_page
+                
+                return {
+                    'partners': partners_data,
+                    'pagination': {
+                        'total': total,
+                        'pages': total_pages,
+                        'current_page': page,
+                        'per_page': per_page,
+                        'has_next': page < total_pages,
+                        'has_prev': page > 1
+                    },
+                    'organizer_id': organizer.id,
+                    'filters': {
+                        'include_inactive': include_inactive,
+                        'sort_by': sort_by,
+                        'sort_order': sort_order,
+                        'search': search
+                    }
+                }, 200
+            except Exception as e2:
+                logger.error(f"Error in fallback query: {str(e2)}")
+                return {"message": "Error fetching partners. Please contact support."}, 500
 
     @jwt_required()
     def post(self, event_id=None):
@@ -376,7 +521,12 @@ class PartnerManagementResource(Resource):
             
             if existing:
                 # Check for similar partners
-                similar = partner_assistant.find_similar_partners(existing.id, limit=3)
+                try:
+                    similar = partner_assistant.find_similar_partners(existing.id, limit=3)
+                except Exception as e:
+                    logger.error(f"Error finding similar partners: {e}")
+                    similar = []
+                
                 return {
                     "message": "Partner with this company name already exists",
                     "existing_partner": existing.as_dict(),
@@ -467,7 +617,11 @@ class PartnerManagementResource(Resource):
         
         # ACTION: Get AI Suggestions
         if action == 'suggest':
-            suggestions = partner_assistant.suggest_collaborations_for_event(event_id, limit=5)
+            try:
+                suggestions = partner_assistant.suggest_collaborations_for_event(event_id, limit=5)
+            except Exception as e:
+                logger.error(f"Error getting suggestions: {e}")
+                suggestions = []
             
             if suggestions:
                 return {
@@ -490,7 +644,11 @@ class PartnerManagementResource(Resource):
             if 'partner_id' not in data:
                 return {"message": "Partner ID is required"}, 400
             
-            terms = partner_assistant.suggest_collaboration_terms(event_id, data['partner_id'])
+            try:
+                terms = partner_assistant.suggest_collaboration_terms(event_id, data['partner_id'])
+            except Exception as e:
+                logger.error(f"Error suggesting terms: {e}")
+                terms = None
             
             if terms:
                 return {
@@ -608,7 +766,11 @@ class PartnerManagementResource(Resource):
         
         # ACTION: Enhance Description
         if action == 'enhance_description':
-            enhanced = partner_assistant.enhance_partner_description(partner_id)
+            try:
+                enhanced = partner_assistant.enhance_partner_description(partner_id)
+            except Exception as e:
+                logger.error(f"Error enhancing description: {e}")
+                enhanced = None
             
             if enhanced:
                 return {
@@ -631,7 +793,14 @@ class PartnerManagementResource(Resource):
             
             try:
                 partner.company_description = data['description']
-                partner.ai_description_enhanced = True
+                
+                # Check if ai_description_enhanced column exists before trying to update it
+                try:
+                    partner.ai_description_enhanced = True
+                except AttributeError:
+                    # Column doesn't exist, just log the error
+                    logger.warning("ai_description_enhanced column does not exist, skipping update")
+                
                 partner.updated_at = datetime.utcnow()
                 db.session.commit()
                 
@@ -646,13 +815,17 @@ class PartnerManagementResource(Resource):
         
         # ACTION: Validate Updates
         elif action == 'validate':
-            validation = partner_assistant.validate_partner_data({
-                "company_name": data.get("company_name", partner.company_name),
-                "company_description": data.get("company_description", partner.company_description),
-                "website_url": data.get("website_url", partner.website_url),
-                "contact_email": data.get("contact_email", partner.contact_email),
-                "contact_person": data.get("contact_person", partner.contact_person)
-            })
+            try:
+                validation = partner_assistant.validate_partner_data({
+                    "company_name": data.get("company_name", partner.company_name),
+                    "company_description": data.get("company_description", partner.company_description),
+                    "website_url": data.get("website_url", partner.website_url),
+                    "contact_email": data.get("contact_email", partner.contact_email),
+                    "contact_person": data.get("contact_person", partner.contact_person)
+                })
+            except Exception as e:
+                logger.error(f"Error validating partner data: {e}")
+                validation = {"valid": False, "errors": [str(e)]}
             
             return {
                 "action": "validation_complete",
@@ -745,7 +918,11 @@ class PartnerManagementResource(Resource):
         
         # ACTION: Get AI Optimization Suggestions
         if action == 'optimize':
-            optimization = partner_assistant.optimize_collaboration(collaboration_id)
+            try:
+                optimization = partner_assistant.optimize_collaboration(collaboration_id)
+            except Exception as e:
+                logger.error(f"Error optimizing collaboration: {e}")
+                optimization = None
             
             if optimization:
                 return {
@@ -997,7 +1174,11 @@ class PartnerAIAssistResource(Resource):
             return {"message": "Query is required"}, 400
         
         # Process query
-        result = partner_assistant.process_natural_language_query(query, organizer.id)
+        try:
+            result = partner_assistant.process_natural_language_query(query, organizer.id)
+        except Exception as e:
+            logger.error(f"Error processing natural language query: {e}")
+            return {"message": "Error processing query"}, 500
         
         # Enhance response with actionable next steps
         intent = result.get('intent')
@@ -1073,7 +1254,11 @@ class PartnerAnalysisResource(Resource):
         
         # ACTION: Performance Analysis
         if action == 'analyze':
-            analysis = partner_assistant.analyze_partner_performance(partner_id)
+            try:
+                analysis = partner_assistant.analyze_partner_performance(partner_id)
+            except Exception as e:
+                logger.error(f"Error analyzing partner performance: {e}")
+                analysis = None
             
             if analysis:
                 return {
@@ -1089,7 +1274,11 @@ class PartnerAnalysisResource(Resource):
         
         # ACTION: Save Analysis
         elif action == 'save_analysis':
-            analysis = partner_assistant.analyze_partner_performance(partner_id)
+            try:
+                analysis = partner_assistant.analyze_partner_performance(partner_id)
+            except Exception as e:
+                logger.error(f"Error analyzing partner performance: {e}")
+                analysis = None
             
             if analysis:
                 return {
@@ -1124,10 +1313,14 @@ class PartnerAnalysisResource(Resource):
             return {"message": "Partner not found"}, 404
         
         # Get latest insights
-        latest_insight = AIPartnerInsight.query.filter_by(
-            partner_id=partner_id,
-            is_active=True
-        ).order_by(AIPartnerInsight.created_at.desc()).first()
+        try:
+            latest_insight = AIPartnerInsight.query.filter_by(
+                partner_id=partner_id,
+                is_active=True
+            ).order_by(AIPartnerInsight.created_at.desc()).first()
+        except Exception as e:
+            logger.error(f"Error getting latest insight: {e}")
+            latest_insight = None
         
         if latest_insight:
             return {
@@ -1172,7 +1365,11 @@ class PartnerEnhanceResource(Resource):
         
         # ACTION: Enhance Description
         if action == 'enhance':
-            enhanced = partner_assistant.enhance_partner_description(partner_id)
+            try:
+                enhanced = partner_assistant.enhance_partner_description(partner_id)
+            except Exception as e:
+                logger.error(f"Error enhancing description: {e}")
+                enhanced = None
             
             if enhanced:
                 return {
@@ -1195,7 +1392,14 @@ class PartnerEnhanceResource(Resource):
             
             try:
                 partner.company_description = data['description']
-                partner.ai_description_enhanced = True
+                
+                # Check if ai_description_enhanced column exists before trying to update it
+                try:
+                    partner.ai_description_enhanced = True
+                except AttributeError:
+                    # Column doesn't exist, just log the error
+                    logger.warning("ai_description_enhanced column does not exist, skipping update")
+                
                 partner.updated_at = datetime.utcnow()
                 db.session.commit()
                 
@@ -1231,7 +1435,11 @@ class PartnerTrendsResource(Resource):
         if not organizer:
             return {"message": "Organizer profile not found"}, 404
         
-        trends = partner_assistant.identify_partnership_trends(organizer.id)
+        try:
+            trends = partner_assistant.identify_partnership_trends(organizer.id)
+        except Exception as e:
+            logger.error(f"Error identifying partnership trends: {e}")
+            trends = None
         
         if trends:
             return {
@@ -1262,7 +1470,11 @@ class PartnerBulkAnalysisResource(Resource):
         if not organizer:
             return {"message": "Organizer profile not found"}, 404
         
-        analysis = partner_assistant.bulk_analyze_partners(organizer.id)
+        try:
+            analysis = partner_assistant.bulk_analyze_partners(organizer.id)
+        except Exception as e:
+            logger.error(f"Error in bulk analysis: {e}")
+            analysis = None
         
         if analysis:
             return {
@@ -1293,7 +1505,11 @@ class PartnerRecommendationsResource(Resource):
         if not organizer:
             return {"message": "Organizer profile not found"}, 404
         
-        summary = partner_assistant.get_partner_recommendations_summary(organizer.id)
+        try:
+            summary = partner_assistant.get_partner_recommendations_summary(organizer.id)
+        except Exception as e:
+            logger.error(f"Error getting partner recommendations: {e}")
+            summary = None
         
         if summary:
             return {
@@ -1336,7 +1552,11 @@ class CollaborationOptimizeResource(Resource):
         if not collaboration:
             return {"message": "Collaboration not found"}, 404
         
-        optimization = partner_assistant.optimize_collaboration(collaboration_id)
+        try:
+            optimization = partner_assistant.optimize_collaboration(collaboration_id)
+        except Exception as e:
+            logger.error(f"Error optimizing collaboration: {e}")
+            optimization = None
         
         if optimization:
             return {
