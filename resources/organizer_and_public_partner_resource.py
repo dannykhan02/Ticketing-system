@@ -1,7 +1,7 @@
 """
 Enhanced Partner Management Resource with AI Co-pilot
 Comprehensive AI assistance for partner creation, collaboration management, and optimization
-Following the pattern of CategoryResource with explicit action buttons and clearer workflows
+Updated to work with empty databases and enhanced AI capabilities
 """
 
 import json
@@ -98,14 +98,35 @@ class PartnerManagementResource(Resource):
             try:
                 suggestions = partner_assistant.suggest_collaborations_for_event(event_id, limit=5)
                 if suggestions:
+                    # Check if these are new partner suggestions or existing partner matches
+                    new_partner_suggestions = [s for s in suggestions if s.get('is_new_partner_suggestion')]
+                    existing_partner_matches = [s for s in suggestions if not s.get('is_new_partner_suggestion')]
+                    
                     result['ai_recommendations'] = {
-                        'suggested_partners': suggestions,
+                        'suggested_partners': existing_partner_matches,
+                        'new_partner_suggestions': new_partner_suggestions,
                         'message': 'AI has identified potential partner matches for this event',
                         'next_actions': {
                             'add_collaboration': 'POST /partners/events/{event_id} with partner_id',
-                            'view_partner': 'GET /partners/{partner_id} for more details'
+                            'view_partner': 'GET /partners/{partner_id} for more details',
+                            'create_partner': 'POST /partners with action="create" for new partner suggestions'
                         }
                     }
+                    
+                    # Add partner type suggestions if no partners exist
+                    if not existing_partner_matches and not new_partner_suggestions:
+                        try:
+                            partner_types = partner_assistant.suggest_partner_types_for_event(event_id)
+                            if partner_types:
+                                result['ai_partner_types'] = {
+                                    'suggested_types': partner_types,
+                                    'message': 'Consider these partner types for your event',
+                                    'next_actions': {
+                                        'create_partner': 'POST /partners with action="create" and suggested type'
+                                    }
+                                }
+                        except Exception as e:
+                            logger.error(f"Error getting partner type suggestions: {e}")
             except Exception as e:
                 logger.error(f"Error generating AI recommendations: {e}")
         
@@ -398,7 +419,7 @@ class PartnerManagementResource(Resource):
                 
                 total_pages = (total + per_page - 1) // per_page
                 
-                return {
+                result = {
                     'partners': partners_data,
                     'pagination': {
                         'total': total,
@@ -415,7 +436,16 @@ class PartnerManagementResource(Resource):
                         'sort_order': sort_order,
                         'search': search
                     }
-                }, 200
+                }
+                
+                # Add empty database recommendations if no partners
+                if total == 0 and include_ai_insights:
+                    try:
+                        result['empty_database_recommendations'] = partner_assistant._get_empty_database_recommendations()
+                    except Exception as e:
+                        logger.error(f"Error getting empty database recommendations: {e}")
+                
+                return result, 200
             except Exception as e2:
                 logger.error(f"Error in fallback query: {str(e2)}")
                 return {"message": "Error fetching partners. Please contact support."}, 500
@@ -473,6 +503,8 @@ class PartnerManagementResource(Resource):
                         "company_description": suggestion.get('company_description'),
                         "suggested_collaboration_types": suggestion.get('suggested_collaboration_types', []),
                         "target_audience": suggestion.get('target_audience'),
+                        "potential_benefits": suggestion.get('potential_benefits'),
+                        "engagement_strategies": suggestion.get('engagement_strategies', []),
                         "ai_generated": suggestion.get('source') != 'fallback'
                     },
                     "next_actions": {
@@ -624,18 +656,41 @@ class PartnerManagementResource(Resource):
                 suggestions = []
             
             if suggestions:
-                return {
+                # Separate new partner suggestions from existing partner matches
+                new_partner_suggestions = [s for s in suggestions if s.get('is_new_partner_suggestion')]
+                existing_partner_matches = [s for s in suggestions if not s.get('is_new_partner_suggestion')]
+                
+                result = {
                     "action": "suggestions_generated",
                     "event": {
                         "id": event.id,
                         "name": event.name
                     },
-                    "suggested_partners": suggestions,
+                    "suggested_partners": existing_partner_matches,
+                    "new_partner_suggestions": new_partner_suggestions,
                     "next_actions": {
                         "add": "POST with action='add', partner_id, and collaboration details",
-                        "view_partner": "GET /partners/{partner_id} for more details"
+                        "view_partner": "GET /partners/{partner_id} for more details",
+                        "create_partner": "POST /partners with action='create' for new partner suggestions"
                     }
-                }, 200
+                }
+                
+                # Add partner type suggestions if no partners exist
+                if not existing_partner_matches and not new_partner_suggestions:
+                    try:
+                        partner_types = partner_assistant.suggest_partner_types_for_event(event_id)
+                        if partner_types:
+                            result['partner_types'] = {
+                                'suggested_types': partner_types,
+                                'message': 'Consider these partner types for your event',
+                                'next_actions': {
+                                    'create_partner': 'POST /partners with action="create" and suggested type'
+                                }
+                            }
+                    except Exception as e:
+                        logger.error(f"Error getting partner type suggestions: {e}")
+                
+                return result, 200
             else:
                 return {"message": "No suitable partners found"}, 404
         
@@ -1226,6 +1281,12 @@ class PartnerAIAssistResource(Resource):
                 "get_trends": "GET /partners/ai/trends"
             }
         
+        elif intent == 'suggest_partner_types':
+            result['next_actions'] = {
+                "get_types": "GET /partners/ai/partner-types/{event_id}",
+                "create_partner": "POST /partners with action='create' and suggested type"
+            }
+        
         return result, 200
 
 
@@ -1572,6 +1633,49 @@ class CollaborationOptimizeResource(Resource):
             return {"message": "Could not generate optimization"}, 500
 
 
+class PartnerTypesResource(Resource):
+    """AI suggestions for partner types based on event characteristics"""
+    
+    @jwt_required()
+    def get(self, event_id):
+        """Get AI suggestions for partner types for an event"""
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
+        
+        if not user or user.role != UserRole.ORGANIZER:
+            return {"message": "Only organizers can view partner type suggestions"}, 403
+        
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if not organizer:
+            return {"message": "Organizer profile not found"}, 404
+        
+        event = Event.query.filter_by(id=event_id, organizer_id=organizer.id).first()
+        if not event:
+            return {"message": "Event not found or access denied"}, 404
+        
+        try:
+            partner_types = partner_assistant.suggest_partner_types_for_event(event_id)
+        except Exception as e:
+            logger.error(f"Error getting partner type suggestions: {e}")
+            partner_types = None
+        
+        if partner_types:
+            return {
+                "action": "partner_types_suggested",
+                "event": {
+                    "id": event.id,
+                    "name": event.name
+                },
+                "partner_types": partner_types,
+                "next_actions": {
+                    "create_partner": "POST /partners with action='create' and suggested type",
+                    "get_suggestions": "POST /partners/events/{event_id} with action='suggest'"
+                }
+            }, 200
+        else:
+            return {"message": "Could not generate partner type suggestions"}, 500
+
+
 class PublicEventCollaborationsResource(Resource):
     """Public API for viewing active collaborations across multiple events."""
 
@@ -1702,6 +1806,12 @@ def register_organizer_and_public_partner_resources(api):
     api.add_resource(
         CollaborationOptimizeResource,
         '/api/partners/events/<int:event_id>/collaborations/<int:collaboration_id>/ai/optimize'
+    )
+    
+    # New endpoint for partner type suggestions
+    api.add_resource(
+        PartnerTypesResource,
+        '/api/partners/ai/partner-types/<int:event_id>'
     )
     
     # Public endpoint

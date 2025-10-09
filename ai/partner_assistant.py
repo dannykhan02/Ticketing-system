@@ -1,7 +1,7 @@
 """
 AI Partner & Collaboration Assistant - Comprehensive partnership management with AI
 Handles partner discovery, collaboration suggestions, performance analysis, and optimization
-Enhanced with graceful degradation and intelligent fallback logic
+Enhanced with graceful degradation, intelligent fallback logic, and empty database support
 """
 
 from typing import Dict, Optional, List, Tuple
@@ -50,7 +50,9 @@ class PartnerAssistant:
                 "based on user input. Respond ONLY with valid JSON format with keys: "
                 "'company_name' (concise, professional), 'company_description' (2-3 sentences), "
                 "'suggested_collaboration_types' (array of types from: Partner, Official Partner, "
-                "Collaborator, Supporter, Media Partner), 'target_audience' (brief description). "
+                "Collaborator, Supporter, Media Partner), 'target_audience' (brief description), "
+                "'potential_benefits' (brief description of what they might offer), "
+                "'engagement_strategies' (array of 2-3 strategies to engage this partner). "
                 "Do not include any markdown formatting or code blocks."
             ),
             {
@@ -113,11 +115,28 @@ class PartnerAssistant:
         if not collab_types:
             collab_types = ['Partner']
         
+        # Generate potential benefits based on keywords
+        benefits = "Brand exposure and networking opportunities"
+        if any(word in description.lower() for word in ['media', 'press', 'news']):
+            benefits = "Media coverage and promotional visibility"
+        elif any(word in description.lower() for word in ['sponsor', 'funding']):
+            benefits = "Financial support and brand association"
+        elif any(word in description.lower() for word in ['technology', 'software', 'platform']):
+            benefits = "Technical solutions and digital expertise"
+        
+        # Generate engagement strategies
+        strategies = [
+            "Offer co-branded marketing materials",
+            "Provide exclusive access to event attendees"
+        ]
+        
         return {
             "company_name": company_name,
             "company_description": description[:300],
             "suggested_collaboration_types": collab_types,
             "target_audience": "General audience",
+            "potential_benefits": benefits,
+            "engagement_strategies": strategies,
             "source": "fallback"
         }
     
@@ -193,6 +212,7 @@ class PartnerAssistant:
         """
         Suggest best partner matches for an event
         Uses AI when available, falls back to rule-based matching
+        Enhanced to work with empty partner database
         
         Args:
             event_id: Event to find partners for
@@ -215,13 +235,131 @@ class PartnerAssistant:
         existing_partner_ids = {c.partner_id for c in event.collaborations if c.is_active}
         available_partners = [p for p in partners if p.id not in existing_partner_ids]
         
+        # If no partners exist, generate AI-based partner suggestions
         if not available_partners:
-            return []
+            logger.info("No partners found in database, generating AI-based partner suggestions")
+            return self._generate_ai_partner_suggestions(event, limit)
         
         if self.llm.is_enabled():
             return self._ai_match_partners(event, available_partners, limit)
         else:
             return self._rule_based_match_partners(event, available_partners, limit)
+    
+    def _generate_ai_partner_suggestions(self, event: Event, limit: int) -> List[Dict]:
+        """Generate AI-based partner suggestions when no partners exist in database"""
+        if not self.llm.is_enabled():
+            return self._generate_generic_partner_suggestions(event, limit)
+        
+        event_context = {
+            "name": event.name,
+            "category": event.event_category.name if event.event_category else "General",
+            "city": event.city,
+            "description": event.description[:200] if event.description else "No description available"
+        }
+        
+        messages = [
+            self.llm.build_system_message(
+                "You are an expert at suggesting potential event partners. Since there are no existing partners, "
+                "suggest ideal partner profiles for this event. Return ONLY valid JSON (no markdown) with format: "
+                '{"suggestions": [{"company_name": str, "company_description": str, "collaboration_type": str, '
+                '"match_score": float(0-1), "reason": str, "engagement_approach": str}]}'
+            ),
+            {
+                "role": "user",
+                "content": f"Event: {json.dumps(event_context)}\n\n"
+                          f"Suggest {limit} ideal partner profiles for this event."
+            }
+        ]
+        
+        try:
+            response = self.llm.chat_completion(
+                messages,
+                temperature=0.7,
+                quick_mode=True,
+                fallback_response=None
+            )
+            
+            if response:
+                cleaned = response.strip()
+                if cleaned.startswith('```'):
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', cleaned, re.DOTALL)
+                    if json_match:
+                        cleaned = json_match.group(1)
+                    else:
+                        cleaned = cleaned.replace('```json', '').replace('```', '').strip()
+                
+                result = json.loads(cleaned)
+                suggestions = result.get('suggestions', [])
+                
+                # Mark these as new partner suggestions
+                for suggestion in suggestions:
+                    suggestion['is_new_partner_suggestion'] = True
+                    suggestion['next_steps'] = "Create this partner profile to begin collaboration"
+                
+                return suggestions[:limit]
+                
+        except Exception as e:
+            logger.error(f"Error generating AI partner suggestions: {e}")
+        
+        return self._generate_generic_partner_suggestions(event, limit)
+    
+    def _generate_generic_partner_suggestions(self, event: Event, limit: int) -> List[Dict]:
+        """Generate generic partner suggestions when AI is unavailable"""
+        suggestions = []
+        
+        # Base suggestions on event category
+        category = event.event_category.name.lower() if event.event_category else ""
+        
+        if "tech" in category or "software" in category:
+            suggestions.append({
+                "company_name": "Tech Solutions Inc.",
+                "company_description": "Technology provider specializing in event management software",
+                "collaboration_type": "Partner",
+                "match_score": 0.8,
+                "reason": "Technology partner would enhance event experience",
+                "engagement_approach": "Offer software demo and technical support",
+                "is_new_partner_suggestion": True,
+                "next_steps": "Create this partner profile to begin collaboration"
+            })
+        
+        if "business" in category or "conference" in category:
+            suggestions.append({
+                "company_name": "Business Network Associates",
+                "company_description": "Professional networking organization with industry connections",
+                "collaboration_type": "Official Partner",
+                "match_score": 0.85,
+                "reason": "Business network can attract high-value attendees",
+                "engagement_approach": "Offer speaking opportunities and networking sessions",
+                "is_new_partner_suggestion": True,
+                "next_steps": "Create this partner profile to begin collaboration"
+            })
+        
+        # Add a media partner suggestion
+        suggestions.append({
+            "company_name": "Local Media Group",
+            "company_description": "Media company specializing in event promotion and coverage",
+            "collaboration_type": "Media Partner",
+            "match_score": 0.75,
+            "reason": "Media partner can increase event visibility and attendance",
+            "engagement_approach": "Offer press passes and exclusive content opportunities",
+            "is_new_partner_suggestion": True,
+            "next_steps": "Create this partner profile to begin collaboration"
+        })
+        
+        # Add a food/beverage suggestion if not already present
+        if "food" not in category and "dining" not in category:
+            suggestions.append({
+                "company_name": "Catering Excellence",
+                "company_description": "Professional catering service for events of all sizes",
+                "collaboration_type": "Supporter",
+                "match_score": 0.7,
+                "reason": "Food service enhances attendee experience",
+                "engagement_approach": "Offer tasting sessions and branded food stations",
+                "is_new_partner_suggestion": True,
+                "next_steps": "Create this partner profile to begin collaboration"
+            })
+        
+        return suggestions[:limit]
     
     def _ai_match_partners(self, event: Event, partners: List[Partner], limit: int) -> List[Dict]:
         """AI-powered partner matching"""
@@ -229,7 +367,7 @@ class PartnerAssistant:
             "name": event.name,
             "category": event.event_category.name if event.event_category else "General",
             "city": event.city,
-            "description": event.description[:200]
+            "description": event.description[:200] if event.description else "No description available"
         }
         
         partner_list = [
@@ -248,7 +386,7 @@ class PartnerAssistant:
                 "You are an expert at matching event partners. Analyze the event and partners, "
                 "then return ONLY valid JSON (no markdown) with format: "
                 '{"recommendations": [{"partner_id": int, "match_score": float(0-1), '
-                '"collaboration_type": str, "reason": str}]}. '
+                '"collaboration_type": str, "reason": str}]} '
                 "Collaboration types: Partner, Official Partner, Collaborator, Supporter, Media Partner"
             ),
             {
@@ -342,6 +480,10 @@ class PartnerAssistant:
             expires_at = datetime.utcnow() + timedelta(days=30)
             
             for rec in recommendations:
+                # Skip saving if it's a new partner suggestion (not in database yet)
+                if rec.get('is_new_partner_suggestion'):
+                    continue
+                    
                 match_rec = AIPartnerMatchRecommendation(
                     partner_id=rec['partner_id'],
                     event_id=event_id,
@@ -708,7 +850,7 @@ class PartnerAssistant:
             self.llm.build_system_message(
                 "You help manage event partners and collaborations. Determine user intent and respond with ONLY valid JSON, no markdown. "
                 "Possible intents: 'create_partner', 'find_partners', 'analyze_partner', 'suggest_collaborations', "
-                "'optimize_collaboration', 'list_partners', 'performance_report', 'help'. "
+                "'optimize_collaboration', 'list_partners', 'performance_report', 'help', 'suggest_partner_types'. "
                 "Format: {\"intent\": \"<intent>\", \"params\": {<extracted_params>}, \"message\": \"<user_friendly_message>\"}"
             ),
             {"role": "user", "content": query}
@@ -799,6 +941,14 @@ class PartnerAssistant:
                 "message": "I can generate a comprehensive partner performance report."
             }
         
+        # Partner type suggestions
+        elif any(word in query_lower for word in ['what partners', 'partner types', 'suggest partner types']):
+            return {
+                "intent": "suggest_partner_types",
+                "params": {},
+                "message": "I can suggest partner types based on your event category. Which event are you planning?"
+            }
+        
         # Default help
         else:
             return {
@@ -812,6 +962,7 @@ class PartnerAssistant:
     def identify_partnership_trends(self, organizer_id: int) -> Dict:
         """
         Identify trends in partnerships and collaborations
+        Enhanced to work with empty partner database
         
         Args:
             organizer_id: Organizer to analyze
@@ -908,7 +1059,8 @@ class PartnerAssistant:
         messages = [
             self.llm.build_system_message(
                 "You analyze partnership trends for event organizers. Provide 3-4 key insights "
-                "about growth, performance, and opportunities. Be specific and actionable."
+                "about growth, performance, and opportunities. Be specific and actionable. "
+                "If there are no partners or collaborations, focus on recommendations for building a partner network."
             ),
             {
                 "role": "user",
@@ -936,6 +1088,13 @@ class PartnerAssistant:
     def _fallback_analyze_trends(self, trends_data: Dict) -> str:
         """Rule-based trend analysis"""
         insights = []
+        
+        # Handle empty database case
+        if trends_data['total_partners'] == 0:
+            insights.append("You haven't established any partnerships yet. Consider starting with local businesses or industry contacts.")
+            insights.append("Media partners can help increase event visibility, while sponsors can provide financial support.")
+            insights.append("Begin with 2-3 strategic partners that align with your event's target audience and values.")
+            return " ".join(insights)
         
         # Growth insights
         if trends_data['new_partners_last_month'] > 2:
@@ -965,6 +1124,7 @@ class PartnerAssistant:
     def bulk_analyze_partners(self, organizer_id: int) -> Dict:
         """
         Analyze all partners for an organizer at once
+        Enhanced to work with empty partner database
         
         Args:
             organizer_id: Organizer whose partners to analyze
@@ -982,7 +1142,8 @@ class PartnerAssistant:
             return {
                 "organizer_id": organizer_id,
                 "total_partners": 0,
-                "message": "No active partners to analyze"
+                "message": "No active partners to analyze",
+                "recommendations": self._get_empty_database_recommendations()
             }
         
         analyses = []
@@ -1021,6 +1182,31 @@ class PartnerAssistant:
             },
             "generated_at": datetime.utcnow().isoformat()
         }
+    
+    def _get_empty_database_recommendations(self) -> List[Dict]:
+        """Get recommendations for organizers with no partners"""
+        return [
+            {
+                "title": "Start with Local Businesses",
+                "description": "Partner with local businesses that align with your event theme. They often have strong community connections.",
+                "priority": "high"
+            },
+            {
+                "title": "Identify Media Partners",
+                "description": "Local media, industry publications, and influencers can help promote your event to a wider audience.",
+                "priority": "high"
+            },
+            {
+                "title": "Consider Sponsorship Tiers",
+                "description": "Create different sponsorship levels (Gold, Silver, Bronze) to accommodate various partner budgets.",
+                "priority": "medium"
+            },
+            {
+                "title": "Offer Value-Exchange Partnerships",
+                "description": "For early-stage events, consider value-exchange partnerships where both parties contribute services rather than money.",
+                "priority": "medium"
+            }
+        ]
     
     # ==================== VALIDATION & UTILITIES ====================
     
@@ -1169,6 +1355,7 @@ class PartnerAssistant:
     def get_partner_recommendations_summary(self, organizer_id: int) -> Dict:
         """
         Get summary of all active recommendations for an organizer
+        Enhanced to work with empty partner database
         
         Args:
             organizer_id: Organizer to check
@@ -1200,7 +1387,10 @@ class PartnerAssistant:
         critical_insights = [i for i in insights if i.priority == 'critical']
         high_priority_insights = [i for i in insights if i.priority == 'high']
         
-        return {
+        # Check if there are any partners at all
+        has_partners = Partner.query.filter_by(organizer_id=organizer_id, is_active=True).first() is not None
+        
+        result = {
             "total_recommendations": len(recommendations),
             "high_priority_matches": len(high_priority),
             "pending_review": len(pending_review),
@@ -1211,6 +1401,146 @@ class PartnerAssistant:
             "insights": [i.as_dict() for i in insights[:10]],  # Top 10
             "generated_at": datetime.utcnow().isoformat()
         }
+        
+        # Add empty database recommendations if needed
+        if not has_partners:
+            result["empty_database_recommendations"] = self._get_empty_database_recommendations()
+        
+        return result
+    
+    def suggest_partner_types_for_event(self, event_id: int) -> List[Dict]:
+        """
+        Suggest partner types for an event based on its characteristics
+        Works even when no partners exist in the database
+        
+        Args:
+            event_id: Event to analyze
+        
+        Returns:
+            list: Suggested partner types with details
+        """
+        event = Event.query.get(event_id)
+        if not event:
+            return []
+        
+        if self.llm.is_enabled():
+            return self._ai_suggest_partner_types(event)
+        else:
+            return self._fallback_suggest_partner_types(event)
+    
+    def _ai_suggest_partner_types(self, event: Event) -> List[Dict]:
+        """AI-powered partner type suggestions"""
+        event_context = {
+            "name": event.name,
+            "category": event.event_category.name if event.event_category else "General",
+            "city": event.city,
+            "description": event.description[:200] if event.description else "No description available",
+            "expected_attendees": event.expected_attendees if hasattr(event, 'expected_attendees') else "Unknown"
+        }
+        
+        messages = [
+            self.llm.build_system_message(
+                "You suggest ideal partner types for events based on their characteristics. "
+                "Return ONLY valid JSON (no markdown) with format: "
+                '{"partner_types": [{"type": str, "description": str, "benefits": str, '
+                '"engagement_approach": str, "priority": str}]} '
+                "Priority should be 'high', 'medium', or 'low'."
+            ),
+            {
+                "role": "user",
+                "content": f"Suggest partner types for this event:\n\n{json.dumps(event_context, indent=2)}"
+            }
+        ]
+        
+        try:
+            response = self.llm.chat_completion(
+                messages,
+                temperature=0.7,
+                quick_mode=True,
+                fallback_response=None
+            )
+            
+            if response:
+                cleaned = response.strip()
+                if cleaned.startswith('```'):
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', cleaned, re.DOTALL)
+                    if json_match:
+                        cleaned = json_match.group(1)
+                    else:
+                        cleaned = cleaned.replace('```json', '').replace('```', '').strip()
+                
+                result = json.loads(cleaned)
+                return result.get('partner_types', [])
+                
+        except Exception as e:
+            logger.error(f"Error generating AI partner type suggestions: {e}")
+        
+        return self._fallback_suggest_partner_types(event)
+    
+    def _fallback_suggest_partner_types(self, event: Event) -> List[Dict]:
+        """Rule-based partner type suggestions"""
+        suggestions = []
+        
+        # Base suggestions for all events
+        suggestions.append({
+            "type": "Media Partner",
+            "description": "Local media, industry publications, or influencers who can promote your event",
+            "benefits": "Increased visibility and credibility through media coverage",
+            "engagement_approach": "Offer press passes, exclusive interviews, or content partnerships",
+            "priority": "high"
+        })
+        
+        suggestions.append({
+            "type": "Venue Partner",
+            "description": "Venue or location provider that can host your event or provide space",
+            "benefits": "Reduced venue costs and professional event space",
+            "engagement_approach": "Offer promotion of their venue to attendees and cross-promotion opportunities",
+            "priority": "high"
+        })
+        
+        # Category-specific suggestions
+        if event.event_category:
+            category = event.event_category.name.lower()
+            
+            if "tech" in category or "software" in category:
+                suggestions.append({
+                    "type": "Technology Partner",
+                    "description": "Tech companies providing software, hardware, or technical expertise",
+                    "benefits": "Enhanced event experience with technology solutions and demos",
+                    "engagement_approach": "Offer speaking opportunities, demo stations, or branded tech experiences",
+                    "priority": "high"
+                })
+            
+            if "food" in category or "dining" in category or "culinary" in category:
+                suggestions.append({
+                    "type": "Catering Partner",
+                    "description": "Food service providers for your event",
+                    "benefits": "Quality food and beverage service for attendees",
+                    "engagement_approach": "Offer branding opportunities at food stations and menu mentions",
+                    "priority": "high"
+                })
+            
+            if "business" in category or "conference" in category or "networking" in category:
+                suggestions.append({
+                    "type": "Industry Association Partner",
+                    "description": "Professional associations or industry groups",
+                    "benefits": "Access to their member network and industry credibility",
+                    "engagement_approach": "Offer co-branded sessions and membership promotions",
+                    "priority": "medium"
+                })
+        
+        # Size-based suggestions
+        if hasattr(event, 'expected_attendees') and event.expected_attendees:
+            if event.expected_attendees > 500:
+                suggestions.append({
+                    "type": "Sponsor",
+                    "description": "Financial sponsors who can provide funding for larger events",
+                    "benefits": "Financial support and brand association with a successful event",
+                    "engagement_approach": "Offer tiered sponsorship packages with varying benefits",
+                    "priority": "high"
+                })
+        
+        return suggestions
 
 
 # Singleton instance
