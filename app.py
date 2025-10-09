@@ -30,7 +30,8 @@ from paystack import register_paystack_routes
 from ticket_type import register_ticket_type_resources
 from admin_report import register_admin_report_resources
 from resources import register_category_resources
-from resources import register_partner_resources  # Fixed spelling
+from resources import register_organizer_and_public_partner_resources
+from resources import register_admin_partner_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources
@@ -351,7 +352,8 @@ register_admin_resources(api)
 register_currency_resources(api)
 register_ai_resources(api)
 register_category_resources(api) 
-register_partner_resources(api) # Fixed spelling
+register_organizer_and_public_partner_resources(api)
+register_admin_partner_resources(api)
 ReportResourceRegistry.register_organizer_report_resources(api)
 
 # ✅ Updated stats registration - using unified stats system

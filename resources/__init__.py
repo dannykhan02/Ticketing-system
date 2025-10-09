@@ -1,2 +1,4 @@
-from .catergory_resource import register_category_resources  # Fixed spelling
-from .partner_resource import register_partner_resources
+from .catergory_resource import register_category_resources  # 
+from .organizer_and_public_partner_resource import register_organizer_and_public_partner_resources
+from .admin_partner_resource import register_admin_partner_resources
+
