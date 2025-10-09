@@ -48,9 +48,6 @@ class Config:
         # Render/Heroku often provide postgres:// but SQLAlchemy needs postgresql://
         if _database_url.startswith("postgres://"):
             _database_url = _database_url.replace("postgres://", "postgresql://", 1)
-        # Ensure SSL mode is set for PostgreSQL connections
-        if "postgresql://" in _database_url and "sslmode=" not in _database_url:
-            _database_url += "?sslmode=require" if "?" not in _database_url else "&sslmode=require"
         SQLALCHEMY_DATABASE_URI = _database_url
     else:
         # Fallback for local development
@@ -63,11 +60,14 @@ class Config:
     SQLALCHEMY_RECORD_QUERIES = DEBUG  # Only record queries in debug mode
     SQLALCHEMY_ECHO = DEBUG and os.getenv("SQL_ECHO", "False").lower() in ("true", "1")
     
-    # Database connection pool settings (will be merged with app.py settings)
+    # Database connection pool settings (optimized for cloud environments)
     DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
     DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
     DB_POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
     DB_POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", "3600"))
+    DB_POOL_PRE_PING = True  # Enable connection health checks
+    DB_RETRY_ATTEMPTS = int(os.getenv("DB_RETRY_ATTEMPTS", "3"))
+    DB_RETRY_DELAY = int(os.getenv("DB_RETRY_DELAY", "1"))
 
     # JWT Configuration
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "fallback-jwt-secret")
@@ -279,16 +279,17 @@ class Config:
             'max_overflow': cls.DB_MAX_OVERFLOW,
             'pool_timeout': cls.DB_POOL_TIMEOUT,
             'pool_recycle': cls.DB_POOL_RECYCLE,
-            'pool_pre_ping': True,
+            'pool_pre_ping': cls.DB_POOL_PRE_PING,
             'echo': cls.SQLALCHEMY_ECHO
         }
         
         # Only add connect_args for PostgreSQL
         if cls.SQLALCHEMY_DATABASE_URI and 'postgresql' in cls.SQLALCHEMY_DATABASE_URI:
             options['connect_args'] = {
-                'sslmode': 'require',  # Changed from 'prefer' to 'require' for Render
+                'sslmode': 'prefer',  # Use 'prefer' instead of 'require' for better compatibility
                 'connect_timeout': cls.DATABASE_PING_TIMEOUT,
-                'application_name': 'ticketing_system'
+                'application_name': 'ticketing_system',
+                'options': '-c statement_timeout=30s'  # Reduced statement timeout
             }
         
         return options
@@ -377,59 +378,3 @@ config = {
     'testing': TestingConfig,
     'default': Config
 }
-#sk-abcdef1234567890abcdef1234567890abcdef12
-# sk-1234567890abcdef1234567890abcdef12345678
-# sk-abcdefabcdefabcdefabcdefabcdefabcdef12
-# sk-7890abcdef7890abcdef7890abcdef7890abcd
-# sk-1234abcd1234abcd1234abcd1234abcd1234abcd
-# sk-abcd1234abcd1234abcd1234abcd1234abcd1234
-# sk-5678efgh5678efgh5678efgh5678efgh5678efgh
-# sk-efgh5678efgh5678efgh5678efgh5678efgh5678
-# sk-ijkl1234ijkl1234ijkl1234ijkl1234ijkl1234
-# sk-mnop5678mnop5678mnop5678mnop5678mnop5678
-# sk-qrst1234qrst1234qrst1234qrst1234qrst1234
-# sk-uvwx5678uvwx5678uvwx5678uvwx5678uvwx5678
-# sk-1234ijkl1234ijkl1234ijkl1234ijkl1234ijkl
-# sk-5678mnop5678mnop5678mnop5678mnop5678mnop
-# sk-qrst5678qrst5678qrst5678qrst5678qrst5678
-# sk-uvwx1234uvwx1234uvwx1234uvwx1234uvwx1234
-# sk-1234abcd5678efgh1234abcd5678efgh1234abcd
-# sk-5678ijkl1234mnop5678ijkl1234mnop5678ijkl
-# sk-abcdqrstefghuvwxabcdqrstefghuvwxabcdqrst
-# sk-ijklmnop1234qrstijklmnop1234qrstijklmnop
-# sk-1234uvwx5678abcd1234uvwx5678abcd1234uvwx
-# sk-efghijkl5678mnopabcd1234efghijkl5678mnop
-# sk-mnopqrstuvwxabcdmnopqrstuvwxabcdmnopqrst
-# sk-ijklmnopqrstuvwxijklmnopqrstuvwxijklmnop
-# sk-abcd1234efgh5678abcd1234efgh5678abcd1234
-# sk-1234ijklmnop5678ijklmnop1234ijklmnop5678
-# sk-qrstefghuvwxabcdqrstefghuvwxabcdqrstefgh
-# sk-uvwxijklmnop1234uvwxijklmnop1234uvwxijkl
-# sk-abcd5678efgh1234abcd5678efgh1234abcd5678
-# sk-ijklmnopqrstuvwxijklmnopqrstuvwxijklmnop
-# sk-1234qrstuvwxabcd1234qrstuvwxabcd1234qrst
-# sk-efghijklmnop5678efghijklmnop5678efghijkl
-# sk-mnopabcd1234efghmnopabcd1234efghmnopabcd
-# sk-ijklqrst5678uvwxijklqrst5678uvwxijklqrst
-# sk-1234ijkl5678mnop1234ijkl5678mnop1234ijkl
-# sk-abcdqrstefgh5678abcdqrstefgh5678abcdqrst
-# sk-ijklmnopuvwx1234ijklmnopuvwx1234ijklmnop
-# sk-efgh5678abcd1234efgh5678abcd1234efgh5678
-# sk-mnopqrstijkl5678mnopqrstijkl5678mnopqrst
-# sk-1234uvwxabcd5678uvwxabcd1234uvwxabcd5678
-# sk-ijklmnop5678efghijklmnop5678efghijklmnop
-# sk-abcd1234qrstuvwxabcd1234qrstuvwxabcd1234
-# sk-1234efgh5678ijkl1234efgh5678ijkl1234efgh
-# sk-5678mnopqrstuvwx5678mnopqrstuvwx5678mnop
-# sk-abcdijkl1234uvwxabcdijkl1234uvwxabcdijkl
-# sk-ijklmnopabcd5678ijklmnopabcd5678ijklmnop
-# sk-1234efghqrstuvwx1234efghqrstuvwx1234efgh
-# sk-5678ijklmnopabcd5678ijklmnopabcd5678ijkl
-# sk-abcd1234efgh5678abcd1234efgh5678abcd1234
-# sk-ijklmnopqrstuvwxijklmnopqrstuvwxijklmnop
-
-
-
-
-
-

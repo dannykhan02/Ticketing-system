@@ -89,7 +89,7 @@ def prepare_database_url(url):
     return f"{url}{separator}sslmode=prefer&connect_timeout=30"
 
 def get_engine_options():
-    """Get database engine options optimized for Render"""
+    """Get database engine options optimized for cloud environments"""
     # Use configuration values if available, otherwise use defaults
     config_class = config.get(os.getenv('FLASK_ENV', 'production'), Config)
     
@@ -98,12 +98,12 @@ def get_engine_options():
         'max_overflow': getattr(config_class, 'DB_MAX_OVERFLOW', 10),
         'pool_timeout': getattr(config_class, 'DB_POOL_TIMEOUT', 30),
         'pool_recycle': getattr(config_class, 'DB_POOL_RECYCLE', 3600),
-        'pool_pre_ping': True,
+        'pool_pre_ping': True,  # Enable connection health checks
         'connect_args': {
-            'sslmode': 'prefer',
+            'sslmode': 'prefer',  # Use 'prefer' for better compatibility
             'connect_timeout': getattr(config_class, 'DATABASE_PING_TIMEOUT', 30),
             'application_name': 'ticketing_system',
-            'options': '-c statement_timeout=30000'  # 30 second statement timeout
+            'options': '-c statement_timeout=30s'  # Reduced statement timeout
         }
     }
 

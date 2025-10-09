@@ -15,6 +15,8 @@ import logging
 import cloudinary.uploader
 from itsdangerous import URLSafeTimedSerializer
 from urllib.parse import urlencode
+import time
+from sqlalchemy.exc import OperationalError, DisconnectionError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +24,23 @@ logger = logging.getLogger(__name__)
 
 # Authentication Blueprint
 auth_bp = Blueprint('auth', __name__)
+
+# Database retry function for handling connection issues
+def db_query_with_retry(query_func, max_retries=3, retry_delay=1):
+    """
+    Execute a database query with retry logic for connection issues
+    """
+    for attempt in range(max_retries):
+        try:
+            return query_func()
+        except (OperationalError, DisconnectionError) as e:
+            if "SSL SYSCALL error" in str(e) or "connection" in str(e).lower():
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                    continue
+            # Re-raise if it's not a connection error or we've exhausted retries
+            raise
+    return None
 
 def generate_token(user):
     return create_access_token(
@@ -282,10 +301,13 @@ def google_callback():
                 "received_info": {k: v for k, v in user_info.items() if k in ['email', 'name', 'sub']}
             }), 400
         
-        # Find or create user
-        user = User.query.filter(
-            (User.google_id == google_id) | (User.email == email)
-        ).first()
+        # Find or create user with retry logic
+        def find_user():
+            return User.query.filter(
+                (User.google_id == google_id) | (User.email == email)
+            ).first()
+        
+        user = db_query_with_retry(find_user)
         
         try:
             if not user:
@@ -757,11 +779,17 @@ def register():
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    # Check if Email or Phone Already Exists
-    if User.query.filter_by(email=email).first():
+    # Check if Email or Phone Already Exists with retry logic
+    def check_email_exists():
+        return User.query.filter_by(email=email).first()
+    
+    def check_phone_exists():
+        return User.query.filter_by(phone_number=phone).first()
+    
+    if db_query_with_retry(check_email_exists):
         return jsonify({"msg": "Email already registered"}), 400
 
-    if User.query.filter_by(phone_number=phone).first():
+    if db_query_with_retry(check_phone_exists):
         return jsonify({"msg": "Phone number already registered"}), 400
 
     # Hash Password
@@ -787,7 +815,10 @@ def register():
 def check_admin():
     """Check if an admin user exists in the system"""
     try:
-        admin_exists = User.query.filter_by(role=UserRole.ADMIN).first() is not None
+        def check_admin_exists():
+            return User.query.filter_by(role=UserRole.ADMIN).first() is not None
+        
+        admin_exists = db_query_with_retry(check_admin_exists)
         return jsonify({"admin_exists": admin_exists}), 200
     except Exception as e:
         return jsonify({"msg": "Error checking admin status"}), 500
@@ -796,8 +827,11 @@ def check_admin():
 @auth_bp.route('/register-first-admin', methods=['POST'])
 def register_first_admin():
     """Register the first admin user - only available when no admin exists"""
-    # Check if any admin already exists in the database
-    existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
+    # Check if any admin already exists in the database with retry logic
+    def get_existing_admin():
+        return User.query.filter_by(role=UserRole.ADMIN).first()
+    
+    existing_admin = db_query_with_retry(get_existing_admin)
     if existing_admin:
         return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
     
@@ -825,13 +859,16 @@ def register_first_admin():
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    # Check if email already exists (additional safety check)
-    if User.query.filter_by(email=email).first():
+    # Check if email already exists (additional safety check) with retry logic
+    def check_email_exists():
+        return User.query.filter_by(email=email).first()
+    
+    if db_query_with_retry(check_email_exists):
         return jsonify({"msg": "Email already registered"}), 409
 
     try:
         # Double-check admin doesn't exist before creating (race condition protection)
-        existing_admin = User.query.filter_by(role=UserRole.ADMIN).first()
+        existing_admin = db_query_with_retry(get_existing_admin)
         if existing_admin:
             return jsonify({"msg": "Admin already exists. First admin registration is no longer available."}), 403
         
@@ -883,11 +920,17 @@ def register_admin():
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    # Check if Email or Phone Already Exists
-    if User.query.filter_by(email=email).first():
+    # Check if Email or Phone Already Exists with retry logic
+    def check_email_exists():
+        return User.query.filter_by(email=email).first()
+    
+    def check_phone_exists():
+        return User.query.filter_by(phone_number=phone).first()
+    
+    if db_query_with_retry(check_email_exists):
         return jsonify({"msg": "Email already registered"}), 400
 
-    if User.query.filter_by(phone_number=phone).first():
+    if db_query_with_retry(check_phone_exists):
         return jsonify({"msg": "Phone number already registered"}), 400
 
     # Hash password and create new admin user with AI enabled
@@ -918,7 +961,11 @@ def login():
     if not email or not password:
         return jsonify({"error": "Email and password are required"}), 400
 
-    user = User.query.filter_by(email=email).first()
+    # Find user with retry logic
+    def get_user():
+        return User.query.filter_by(email=email).first()
+    
+    user = db_query_with_retry(get_user)
     if not user or not check_password_hash(user.password, password):
         return jsonify({"error": "Invalid email or password"}), 401
 
@@ -987,8 +1034,11 @@ def register_organizer():
     if not user_id or not company_name:
         return jsonify({"msg": "User ID and company name are required"}), 400
 
-    # Get the existing user
-    user = User.query.get(user_id)
+    # Get the existing user with retry logic
+    def get_user():
+        return User.query.get(user_id)
+    
+    user = db_query_with_retry(get_user)
     if not user:
         return jsonify({"msg": "User not found"}), 404
 
@@ -998,7 +1048,10 @@ def register_organizer():
 
     # CRITICAL SECURITY CHECK: Prevent converting the last admin
     if user.role == UserRole.ADMIN:
-        admin_count = User.query.filter_by(role=UserRole.ADMIN).count()
+        def count_admins():
+            return User.query.filter_by(role=UserRole.ADMIN).count()
+        
+        admin_count = db_query_with_retry(count_admins)
         if admin_count <= 1:
             logger.warning(f"Attempted to convert last admin to organizer. Admin: {user.email}, Current Admin: {get_jwt_identity()}")
             return jsonify({"msg": "Cannot convert the last admin user. At least one admin must remain in the system."}), 403
@@ -1080,11 +1133,17 @@ def register_security():
     if not validate_password(password):
         return jsonify({"msg": "Password must be at least 8 characters long, contain letters and numbers"}), 400
 
-    # Check if Email or Phone already exists
-    if User.query.filter_by(email=email).first():
+    # Check if Email or Phone already exists with retry logic
+    def check_email_exists():
+        return User.query.filter_by(email=email).first()
+    
+    def check_phone_exists():
+        return User.query.filter_by(phone_number=phone).first()
+    
+    if db_query_with_retry(check_email_exists):
         return jsonify({"msg": "Email already registered"}), 400
 
-    if User.query.filter_by(phone_number=phone).first():
+    if db_query_with_retry(check_phone_exists):
         return jsonify({"msg": "Phone number already registered"}), 400
 
     try:
@@ -1119,7 +1178,11 @@ def forgot_password():
     data = request.get_json()
     email = data.get("email")
 
-    user = User.query.filter_by(email=email).first()
+    # Find user with retry logic
+    def get_user():
+        return User.query.filter_by(email=email).first()
+    
+    user = db_query_with_retry(get_user)
     if not user:
         return jsonify({"msg": "Email not found"}), 404
 
@@ -1162,7 +1225,11 @@ def reset_password(token):
     if not new_password or len(new_password) < 6:
         return jsonify({"msg": "Password must be at least 6 characters long"}), 400
 
-    user = User.query.filter_by(email=email).first()
+    # Find user with retry logic
+    def get_user():
+        return User.query.filter_by(email=email).first()
+    
+    user = db_query_with_retry(get_user)
     if not user:
         return jsonify({"msg": "User not found"}), 404
 
@@ -1180,27 +1247,41 @@ def reset_password(token):
 @auth_bp.route('/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    """Get user profile information including AI preferences"""
-    user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    """Get user profile information including AI preferences with enhanced error handling"""
+    try:
+        user_id = get_jwt_identity()
+        
+        # Use retry logic for database query
+        def get_user():
+            return User.query.get(user_id)
+        
+        user = db_query_with_retry(get_user)
+        
+        if not user:
+            return jsonify({"msg": "User not found"}), 404
 
-    if not user:
-        return jsonify({"msg": "User not found"}), 404
+        profile_data = user.as_dict()
 
-    profile_data = user.as_dict()
+        # If user is an organizer, include organizer profile
+        if user.role == UserRole.ORGANIZER and hasattr(user, 'organizer_profile'):
+            profile_data['organizer_profile'] = user.organizer_profile.as_dict()
 
-    # If user is an organizer, include organizer profile
-    if user.role == UserRole.ORGANIZER and hasattr(user, 'organizer_profile'):
-        profile_data['organizer_profile'] = user.organizer_profile.as_dict()
-
-    return jsonify(profile_data), 200
+        return jsonify(profile_data), 200
+    except Exception as e:
+        current_app.logger.error(f"Error in get_profile: {str(e)}")
+        return jsonify({"error": "Failed to retrieve user profile"}), 500
 
 @auth_bp.route('/profile', methods=['PUT'])
 @jwt_required()
 def update_profile():
     """Update user profile information including AI preferences"""
     user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    
+    # Use retry logic for database query
+    def get_user():
+        return User.query.get(user_id)
+    
+    user = db_query_with_retry(get_user)
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -1259,7 +1340,12 @@ def update_profile():
 def get_ai_preferences():
     """Get user's AI preferences"""
     user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    
+    # Use retry logic for database query
+    def get_user():
+        return User.query.get(user_id)
+    
+    user = db_query_with_retry(get_user)
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -1275,7 +1361,12 @@ def get_ai_preferences():
 def update_ai_preferences():
     """Update user's AI preferences"""
     user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    
+    # Use retry logic for database query
+    def get_user():
+        return User.query.get(user_id)
+    
+    user = db_query_with_retry(get_user)
 
     if not user:
         return jsonify({"msg": "User not found"}), 404
@@ -1308,7 +1399,11 @@ def update_ai_preferences():
 def get_organizers():
     """Get list of all organizers with their event counts"""
     try:
-        organizers = User.query.filter_by(role=UserRole.ORGANIZER).all()
+        # Use retry logic for database query
+        def get_organizers():
+            return User.query.filter_by(role=UserRole.ORGANIZER).all()
+        
+        organizers = db_query_with_retry(get_organizers)
 
         result = []
         for organizer in organizers:
@@ -1339,8 +1434,11 @@ def get_organizers():
 def delete_organizer(organizer_id):
     """Delete an organizer"""
 
-    # First fetch the user with role ORGANIZER
-    user = User.query.filter_by(id=organizer_id, role=UserRole.ORGANIZER).first()
+    # Use retry logic for database query
+    def get_organizer():
+        return User.query.filter_by(id=organizer_id, role=UserRole.ORGANIZER).first()
+    
+    user = db_query_with_retry(get_organizer)
 
     if not user:
         return jsonify({"msg": "Organizer not found"}), 404
@@ -1381,8 +1479,11 @@ def get_users():
                 )
             )
 
-        # Get all users
-        users = query.all()
+        # Use retry logic for database query
+        def get_users():
+            return query.all()
+        
+        users = db_query_with_retry(get_users)
 
         # Format response
         result = []
