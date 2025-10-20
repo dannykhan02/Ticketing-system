@@ -117,21 +117,23 @@ class AdminPartnerOverviewResource(Resource):
             # Add AI insights if requested
             if include_ai_insights:
                 try:
-                    # Get latest insight
+                    # Get latest insight - FIXED: Use generated_at instead of created_at
                     latest_insight = AIPartnerInsight.query.filter_by(
                         partner_id=partner.id,
                         is_active=True
-                    ).order_by(AIPartnerInsight.created_at.desc()).first()
+                    ).order_by(AIPartnerInsight.generated_at.desc()).first()
 
                     if latest_insight:
                         partner_dict['latest_ai_insight'] = {
                             'insight_type': latest_insight.insight_type,
                             'priority': latest_insight.priority,
                             'title': latest_insight.title,
-                            'confidence_score': latest_insight.confidence_score
+                            'confidence_score': latest_insight.confidence_score,
+                            'generated_at': latest_insight.generated_at.isoformat()
                         }
                 except Exception as e:
                     logger.error(f"Error fetching AI insight for partner {partner.id}: {e}")
+                    # Continue without AI insights for this partner
 
             partners_data.append(partner_dict)
 
@@ -203,10 +205,10 @@ class AdminPartnerOverviewResource(Resource):
                 if performance:
                     partner_data['ai_performance_analysis'] = performance
 
-                # All insights history
+                # All insights history - FIXED: Use generated_at instead of created_at
                 all_insights = AIPartnerInsight.query.filter_by(
                     partner_id=partner_id
-                ).order_by(AIPartnerInsight.created_at.desc()).limit(10).all()
+                ).order_by(AIPartnerInsight.generated_at.desc()).limit(10).all()
 
                 partner_data['ai_insights_history'] = [
                     {
@@ -214,7 +216,7 @@ class AdminPartnerOverviewResource(Resource):
                         'type': insight.insight_type,
                         'title': insight.title,
                         'priority': insight.priority,
-                        'created_at': insight.created_at.isoformat(),
+                        'generated_at': insight.generated_at.isoformat(),  # FIXED
                         'is_read': insight.is_read
                     }
                     for insight in all_insights

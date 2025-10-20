@@ -1454,7 +1454,7 @@ class PartnerEnhanceResource(Resource):
             try:
                 partner.company_description = data['description']
                 
-                # Check if ai_description_enhanced column exists before trying to update it
+                # Check if aai_description_enhanced column exists before trying to update it
                 try:
                     partner.ai_description_enhanced = True
                 except AttributeError:
