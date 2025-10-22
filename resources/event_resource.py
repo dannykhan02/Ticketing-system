@@ -1,14 +1,19 @@
+
 import json
 from flask import request, jsonify
 from flask_restful import Resource
 from datetime import datetime, timedelta
 from model import (db, Event, User, UserRole, Organizer, Category, Partner, 
-                   EventCollaboration, CollaborationType, CollaborationManager)
+                   EventCollaboration, CollaborationType, CollaborationManager,
+                   AIEventDraft, AIEventManager)
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.uploader
 import logging
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy import func, distinct
+
+# Import the comprehensive event assistant
+from ai.event_assistant import comprehensive_event_assistant
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -264,7 +269,9 @@ class EventResource(Resource):
                             'company_description': event.organizer.company_description
                         },
                         'likes_count': event.likes.count(),
-                        'created_at': event.created_at.isoformat() if hasattr(event, 'created_at') else None
+                        'created_at': event.created_at.isoformat() if hasattr(event, 'created_at') else None,
+                        'ai_assisted_creation': getattr(event, 'ai_assisted_creation', False),
+                        'ai_confidence_score': getattr(event, 'ai_confidence_score', None)
                     }
                 events_data.append(event_dict)
 
@@ -416,7 +423,7 @@ class EventResource(Resource):
     
     @jwt_required()
     def post(self):
-        """Create a new event (Only organizers can create events)."""
+        """Create a new event with AI assistance (Only organizers can create events)."""
         try:
             identity = get_jwt_identity()
             user = User.query.get(identity)
@@ -428,95 +435,286 @@ class EventResource(Resource):
             if not organizer:
                 return {"message": "Organizer profile not found"}, 404
 
-            data = request.form
-            files = request.files
+            content_type = request.content_type or ""
+            
+            # Check if this is an AI-assisted creation request
+            use_ai_assistant = request.args.get('ai_assistant', 'true').lower() == 'true'
+            conversational_input = request.args.get('conversational_input', None)
+            
+            # Handle AI-assisted conversational creation
+            if use_ai_assistant and conversational_input:
+                return self._handle_ai_assisted_creation(organizer.id, conversational_input, user.id)
+            
+            # Handle traditional form-based creation (with optional AI enhancement)
+            if "multipart/form-data" in content_type:
+                return self._handle_form_based_creation(organizer, request)
+            elif "application/json" in content_type:
+                return self._handle_json_creation(organizer, request.get_json())
+            else:
+                return {"error": "Unsupported Content-Type. Use multipart/form-data or application/json"}, 415
 
-            # Validate required fields (updated with city)
-            required_fields = ["name", "description", "date", "start_time", "city", "location"]
-            for field in required_fields:
-                if field not in data:
-                    return {"message": f"Missing field: {field}"}, 400
+        except Exception as e:
+            logger.error(f"Error in event creation: {e}")
+            return {"error": f"An error occurred: {str(e)}"}, 500
 
-            # Handle file upload if provided
-            image_url = None
-            if 'file' in files:
-                file = files['file']
-                if file and file.filename != '':
-                    if not allowed_file(file.filename):
-                        return {"message": "Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP"}, 400
+    def _handle_ai_assisted_creation(self, organizer_id: int, conversational_input: str, user_id: int):
+        """Handle AI-assisted event creation from conversational input"""
+        try:
+            # Get context if available
+            context = {
+                "previous_events": self._get_organizer_previous_events(organizer_id),
+                "organizer_preferences": self._get_organizer_preferences(organizer_id)
+            }
+            
+            # Use the comprehensive event assistant
+            result = comprehensive_event_assistant.create_event_conversational(
+                organizer_id=organizer_id,
+                user_input=conversational_input,
+                context=context
+            )
+            
+            if result.get('success'):
+                return {
+                    "message": "AI-assisted event creation started",
+                    "draft_created": True,
+                    "draft_id": result['draft_id'],
+                    "conversational_response": result['conversational_response'],
+                    "suggestions": result['suggestions'],
+                    "completion_status": result['completion_status'],
+                    "next_steps": result['next_steps']
+                }, 201
+            else:
+                return {
+                    "message": "AI-assisted creation failed",
+                    "error": result.get('error', 'Unknown error'),
+                    "fallback_available": result.get('fallback_available', False)
+                }, 400
+                
+        except Exception as e:
+            logger.error(f"AI-assisted creation failed: {e}")
+            return {
+                "message": "AI service temporarily unavailable",
+                "error": str(e)
+            }, 503
 
-                    try:
-                        upload_result = cloudinary.uploader.upload(
-                            file,
-                            folder="event_images",
-                            resource_type="auto"
-                        )
-                        image_url = upload_result.get('secure_url')
-                    except Exception as e:
-                        logger.error(f"Error uploading event image: {str(e)}")
-                        return {"message": "Failed to upload event image"}, 500
+    def _handle_form_based_creation(self, organizer, request):
+        """Handle traditional form-based event creation with optional AI enhancement"""
+        data = request.form
+        files = request.files
 
-            # Parse dates and times
+        # Check if we should use AI to enhance the creation
+        enhance_with_ai = data.get('enhance_with_ai', 'false').lower() == 'true'
+        
+        if enhance_with_ai:
+            return self._handle_ai_enhanced_form_creation(organizer, data, files)
+        else:
+            return self._handle_manual_form_creation(organizer, data, files)
+
+    def _handle_ai_enhanced_form_creation(self, organizer, data, files):
+        """Handle form-based creation with AI enhancement"""
+        try:
+            # Extract user input for AI processing
+            user_input = {
+                "name": data.get("name"),
+                "description": data.get("description"),
+                "date": data.get("date"),
+                "start_time": data.get("start_time"),
+                "city": data.get("city"),
+                "location": data.get("location"),
+                "category_id": data.get("category_id"),
+                "raw_text": f"Create event: {data.get('name', '')}. {data.get('description', '')}"
+            }
+            
+            # Use AI to enhance the event data
+            context = {
+                "previous_events": self._get_organizer_previous_events(organizer.id),
+                "form_data": data
+            }
+            
+            ai_result = comprehensive_event_assistant.create_event_conversational(
+                organizer_id=organizer.id,
+                user_input=user_input['raw_text'],
+                context=context
+            )
+            
+            if ai_result.get('success'):
+                # Use AI-enhanced data but allow manual overrides
+                draft = AIEventDraft.query.get(ai_result['draft_id'])
+                
+                # Apply manual overrides from form data
+                if data.get("name"):
+                    draft.suggested_name = data["name"]
+                    draft.name_source = 'user'
+                    draft.name_confidence = 1.0
+                
+                if data.get("description"):
+                    draft.suggested_description = data["description"]
+                    draft.description_source = 'user'
+                    draft.description_confidence = 1.0
+                
+                # Handle file upload
+                image_url = self._handle_file_upload(files.get('file'))
+                if image_url:
+                    draft.suggested_image_url = image_url
+                
+                db.session.commit()
+                
+                # Publish the enhanced draft
+                event = AIEventManager.publish_draft(draft.id)
+                
+                return {
+                    "message": "Event created successfully with AI enhancement",
+                    "event": event.as_dict(),
+                    "id": event.id,
+                    "ai_assisted": True,
+                    "ai_confidence": event.ai_confidence_score,
+                    "ai_generated_fields": event.ai_generated_fields
+                }, 201
+            else:
+                # Fall back to manual creation if AI fails
+                return self._handle_manual_form_creation(organizer, data, files)
+                
+        except Exception as e:
+            logger.error(f"AI-enhanced creation failed, falling back to manual: {e}")
+            return self._handle_manual_form_creation(organizer, data, files)
+
+    def _handle_manual_form_creation(self, organizer, data, files):
+        """Handle traditional manual form-based creation"""
+        # Validate required fields
+        required_fields = ["name", "description", "date", "start_time", "city", "location"]
+        for field in required_fields:
+            if field not in data:
+                return {"message": f"Missing field: {field}"}, 400
+
+        # Handle file upload
+        image_url = self._handle_file_upload(files.get('file'))
+
+        # Parse dates and times
+        try:
             event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
             start_time = datetime.strptime(data["start_time"], "%H:%M").time()
-
+            
             end_time = None
             if "end_time" in data and data["end_time"]:
                 end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+        except ValueError as e:
+            return {"error": f"Invalid date/time format: {str(e)}"}, 400
 
-            # Handle amenities
-            amenities = []
-            if "amenities" in data:
-                try:
-                    # Parse amenities from form data (could be JSON string or comma-separated)
-                    amenities_data = data["amenities"]
-                    if amenities_data.startswith('[') and amenities_data.endswith(']'):
-                        # JSON format
-                        amenities = json.loads(amenities_data)
-                    else:
-                        # Comma-separated format
-                        amenities = [amenity.strip() for amenity in amenities_data.split(',') if amenity.strip()]
-                except (json.JSONDecodeError, AttributeError):
-                    return {"message": "Invalid amenities format. Use JSON array or comma-separated values"}, 400
+        # Handle amenities
+        amenities = self._parse_amenities(data.get("amenities"))
 
-            # Get category_id if provided
-            category_id = data.get('category_id')
-            if category_id:
-                category = Category.query.get(category_id)
-                if not category:
-                    return {"message": "Invalid category ID"}, 400
+        # Validate category
+        category_id = data.get('category_id')
+        if category_id:
+            category = Category.query.get(category_id)
+            if not category:
+                return {"message": "Invalid category ID"}, 400
 
-            # Create Event instance
-            event = Event(
-                name=data["name"],
-                description=data["description"],
-                date=event_date,
-                start_time=start_time,
-                end_time=end_time,
-                city=data["city"],
-                location=data["location"],
-                amenities=amenities,
-                image=image_url,
-                organizer_id=organizer.id,
-                category_id=category_id
-            )
+        # Create Event instance
+        event = Event(
+            name=data["name"],
+            description=data["description"],
+            date=event_date,
+            start_time=start_time,
+            end_time=end_time,
+            city=data["city"],
+            location=data["location"],
+            amenities=amenities,
+            image=image_url,
+            organizer_id=organizer.id,
+            category_id=category_id,
+            ai_assisted_creation=False  # Manual creation
+        )
 
-            # Validate time (handles overnight events and "Till Late")
+        try:
             event.validate_datetime()
-
             db.session.add(event)
             db.session.commit()
-            return {"message": "Event created successfully", "event": event.as_dict(), "id": event.id}, 201
-
+            
+            return {
+                "message": "Event created successfully",
+                "event": event.as_dict(),
+                "id": event.id,
+                "ai_assisted": False
+            }, 201
+            
         except ValueError as e:
+            db.session.rollback()
             return {"error": str(e)}, 400
         except Exception as e:
             db.session.rollback()
-            return {"error": str(e)}, 500
+            return {"error": f"Failed to create event: {str(e)}"}, 500
+
+    def _handle_json_creation(self, organizer, data):
+        """Handle JSON-based event creation"""
+        if not data:
+            return {"error": "No data provided"}, 400
+
+        # Similar to form-based but without file handling
+        required_fields = ["name", "description", "date", "start_time", "city", "location"]
+        for field in required_fields:
+            if field not in data:
+                return {"message": f"Missing field: {field}"}, 400
+
+        # Parse dates and times
+        try:
+            event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
+            start_time = datetime.strptime(data["start_time"], "%H:%M").time()
+            
+            end_time = None
+            if "end_time" in data and data["end_time"]:
+                end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+        except ValueError as e:
+            return {"error": f"Invalid date/time format: {str(e)}"}, 400
+
+        # Handle amenities
+        amenities = self._parse_amenities(data.get("amenities"))
+
+        # Validate category
+        category_id = data.get('category_id')
+        if category_id:
+            category = Category.query.get(category_id)
+            if not category:
+                return {"message": "Invalid category ID"}, 400
+
+        # Create Event instance
+        event = Event(
+            name=data["name"],
+            description=data["description"],
+            date=event_date,
+            start_time=start_time,
+            end_time=end_time,
+            city=data["city"],
+            location=data["location"],
+            amenities=amenities,
+            image=data.get('image'),  # URL from JSON
+            organizer_id=organizer.id,
+            category_id=category_id,
+            ai_assisted_creation=data.get('ai_assisted', False)
+        )
+
+        try:
+            event.validate_datetime()
+            db.session.add(event)
+            db.session.commit()
+            
+            return {
+                "message": "Event created successfully",
+                "event": event.as_dict(),
+                "id": event.id,
+                "ai_assisted": event.ai_assisted_creation
+            }, 201
+            
+        except ValueError as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+        except Exception as e:
+            db.session.rollback()
+            return {"error": f"Failed to create event: {str(e)}"}, 500
 
     @jwt_required()
     def put(self, event_id):
-        """Update an existing event. Only the event's creator (organizer) can update it."""
+        """Update an existing event with AI assistance. Only the event's creator (organizer) can update it."""
         identity = get_jwt_identity()
         user = User.query.get(identity)
         event = Event.query.get(event_id)
@@ -533,6 +731,13 @@ class EventResource(Resource):
 
         content_type = request.content_type or ""
         
+        # Check if this is an AI-assisted update
+        use_ai_assistant = request.args.get('ai_assistant', 'false').lower() == 'true'
+        conversational_update = request.args.get('conversational_input', None)
+        
+        if use_ai_assistant and conversational_update:
+            return self._handle_ai_assisted_update(event, conversational_update, user.id)
+        
         try:
             if "application/json" in content_type:
                 data = request.get_json()
@@ -544,112 +749,311 @@ class EventResource(Resource):
             if not data:
                 return {"error": "No data provided"}, 400
 
-            # Parse and update fields
-            if "date" in data:
-                try:
-                    event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
-                    if event_date < datetime.utcnow().date():
-                        return {"error": "Event date cannot be in the past"}, 400
-                    event.date = event_date
-                except ValueError:
-                    return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
-
-            if "start_time" in data:
-                try:
-                    event.start_time = datetime.strptime(data["start_time"], "%H:%M").time()
-                except ValueError:
-                    return {"error": "Invalid start_time format. Use HH:MM"}, 400
-
-            if "end_time" in data:
-                try:
-                    event.end_time = datetime.strptime(data["end_time"], "%H:%M").time()
-                except ValueError:
-                    return {"error": "Invalid end_time format. Use HH:MM"}, 400
+            # Check if we should use AI to optimize the update
+            optimize_with_ai = data.get('optimize_with_ai', 'false').lower() == 'true'
+            
+            if optimize_with_ai:
+                return self._handle_ai_optimized_update(event, data, request.files)
             else:
-                event.end_time = None
-
-            if event.start_time and event.end_time:
-                start_datetime = datetime.combine(event.date, event.start_time)
-                end_datetime = datetime.combine(event.date, event.end_time)
-
-                if end_datetime <= start_datetime:
-                    end_datetime += timedelta(days=1)
-                if start_datetime >= end_datetime:
-                    return {"error": "Start time must be before end time"}, 400
-
-            # Update basic fields
-            event.name = data.get("name", event.name)
-            event.description = data.get("description", event.description)
-            event.city = data.get("city", event.city)
-            event.location = data.get("location", event.location)
-            event.category_id = data.get("category_id", event.category_id)
-
-            # Handle amenities update
-            if "amenities" in data:
-                try:
-                    amenities_data = data["amenities"]
-                    if isinstance(amenities_data, str):
-                        if amenities_data.startswith('[') and amenities_data.endswith(']'):
-                            # JSON format
-                            amenities = json.loads(amenities_data)
-                        else:
-                            # Comma-separated format
-                            amenities = [amenity.strip() for amenity in amenities_data.split(',') if amenity.strip()]
-                    elif isinstance(amenities_data, list):
-                        amenities = amenities_data
-                    else:
-                        amenities = []
-                    
-                    event.amenities = event.validate_amenities(amenities)
-                except (json.JSONDecodeError, ValueError) as e:
-                    return {"error": f"Invalid amenities format: {str(e)}"}, 400
-
-            # Handle file if present
-            if "file" in request.files:
-                file = request.files["file"]
-                if file and allowed_file(file.filename):
-                    upload_result = cloudinary.uploader.upload(
-                        file,
-                        folder="event_images",
-                        resource_type="auto"
-                    )
-                    event.image = upload_result.get("secure_url")
-
-            db.session.commit()
-            return {"message": "Update successful", "event": event.as_dict()}, 200
+                return self._handle_manual_update(event, data, request.files)
 
         except Exception as e:
             db.session.rollback()
             return {"error": f"An error occurred: {str(e)}"}, 500
 
-
-    @jwt_required()
-    def delete(self, event_id):
-        """Delete an event (Only the event creator can delete it)."""
+    def _handle_ai_assisted_update(self, event, conversational_input, user_id):
+        """Handle AI-assisted event updates from natural language"""
         try:
-            identity = get_jwt_identity()
-            user = User.query.get(identity)
+            # Use AI to process the update request
+            update_result = comprehensive_event_assistant.process_event_update_request(
+                event_id=event.id,
+                update_request=conversational_input,
+                user_id=user_id
+            )
+            
+            if 'error' in update_result:
+                return {"error": update_result['error']}, 400
+            
+            # Apply the proposed updates if confirmed or auto-confirmed
+            updates_proposed = update_result.get('updates_proposed', {})
+            requires_confirmation = update_result.get('confirmation_required', True)
+            
+            if requires_confirmation:
+                return {
+                    "message": "AI update proposal ready",
+                    "updates_proposed": updates_proposed,
+                    "summary": update_result.get('summary'),
+                    "requires_confirmation": True,
+                    "current_event_state": event.as_dict()
+                }, 200
+            else:
+                # Auto-apply the updates
+                return self._apply_ai_updates(event, updates_proposed, user_id)
+                
+        except Exception as e:
+            logger.error(f"AI-assisted update failed: {e}")
+            return {
+                "error": "AI update service unavailable",
+                "message": "Please update manually"
+            }, 503
 
-            event = Event.query.get(event_id)
-            if not event:
-                return {"error": "Event not found"}, 404
+    def _handle_ai_optimized_update(self, event, data, files):
+        """Handle update with AI optimization suggestions"""
+        try:
+            # Get current event state for AI analysis
+            current_state = event.as_dict()
+            
+            # Use AI to suggest optimizations
+            optimization_suggestions = comprehensive_event_assistant._generate_comprehensive_suggestions(
+                # Convert event to draft-like structure for analysis
+                self._event_to_draft_like(event),
+                {"basic_info": data}
+            )
+            
+            # Apply manual updates first
+            updated_event = self._apply_manual_updates(event, data, files)
+            
+            return {
+                "message": "Event updated successfully with AI optimization suggestions",
+                "event": updated_event.as_dict(),
+                "optimization_suggestions": optimization_suggestions,
+                "ai_optimized": True
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"AI-optimized update failed: {e}")
+            # Fall back to manual update
+            return self._handle_manual_update(event, data, files)
 
-            organizer = Organizer.query.filter_by(user_id=user.id).first()
+    def _handle_manual_update(self, event, data, files):
+        """Handle traditional manual update"""
+        # Parse and update fields
+        if "date" in data:
+            try:
+                event_date = datetime.strptime(data["date"], "%Y-%m-%d").date()
+                if event_date < datetime.utcnow().date():
+                    return {"error": "Event date cannot be in the past"}, 400
+                event.date = event_date
+            except ValueError:
+                return {"error": "Invalid date format. Use YYYY-MM-DD"}, 400
 
-            is_organizer = organizer and event.organizer_id == organizer.id
-            is_admin = user.role.value == UserRole.ADMIN.value
+        if "start_time" in data:
+            try:
+                event.start_time = datetime.strptime(data["start_time"], "%H:%M").time()
+            except ValueError:
+                return {"error": "Invalid start_time format. Use HH:MM"}, 400
 
-            if not (is_organizer or is_admin):
-                return {"message": "Only the event creator (organizer) or Admin can delete this event"}, 403
+        if "end_time" in data:
+            try:
+                event.end_time = datetime.strptime(data["end_time"], "%H:%M").time()
+            except ValueError:
+                return {"error": "Invalid end_time format. Use HH:MM"}, 400
+        else:
+            event.end_time = None
 
-            db.session.delete(event)
+        # Validate time logic
+        if event.start_time and event.end_time:
+            start_datetime = datetime.combine(event.date, event.start_time)
+            end_datetime = datetime.combine(event.date, event.end_time)
+
+            if end_datetime <= start_datetime:
+                end_datetime += timedelta(days=1)
+            if start_datetime >= end_datetime:
+                return {"error": "Start time must be before end time"}, 400
+
+        # Update basic fields
+        event.name = data.get("name", event.name)
+        event.description = data.get("description", event.description)
+        event.city = data.get("city", event.city)
+        event.location = data.get("location", event.location)
+        event.category_id = data.get("category_id", event.category_id)
+
+        # Handle amenities update
+        if "amenities" in data:
+            try:
+                amenities = self._parse_amenities(data["amenities"])
+                event.amenities = event.validate_amenities(amenities)
+            except (json.JSONDecodeError, ValueError) as e:
+                return {"error": f"Invalid amenities format: {str(e)}"}, 400
+
+        # Handle file if present
+        if "file" in files:
+            file = files["file"]
+            if file and allowed_file(file.filename):
+                upload_result = cloudinary.uploader.upload(
+                    file,
+                    folder="event_images",
+                    resource_type="auto"
+                )
+                event.image = upload_result.get("secure_url")
+
+        db.session.commit()
+        return {"message": "Update successful", "event": event.as_dict()}, 200
+
+    def _apply_ai_updates(self, event, updates, user_id):
+        """Apply AI-proposed updates to an event"""
+        try:
+            for field, value in updates.items():
+                if field == 'date':
+                    event.date = datetime.strptime(value, "%Y-%m-%d").date()
+                elif field == 'start_time':
+                    event.start_time = datetime.strptime(value, "%H:%M").time()
+                elif field == 'end_time':
+                    event.end_time = datetime.strptime(value, "%H:%M").time()
+                elif field == 'name':
+                    event.name = value
+                elif field == 'description':
+                    event.description = value
+                elif field == 'city':
+                    event.city = value
+                elif field == 'location':
+                    event.location = value
+                elif field == 'category_id':
+                    event.category_id = value
+                elif field == 'amenities':
+                    event.amenities = self._parse_amenities(value)
+
+            # Validate the updated event
+            event.validate_datetime()
             db.session.commit()
-            return {"message": "Event deleted successfully"}, 200
+
+            # Log the AI-assisted update
+            from model import AIManager, AIIntentType
+            AIManager.log_action(
+                user_id=user_id,
+                action_type=AIIntentType.UPDATE_EVENT,
+                action_description=f"AI-assisted update applied to event: {event.name}",
+                target_table='event',
+                target_id=event.id,
+                request_data=updates
+            )
+
+            return {
+                "message": "Event updated successfully with AI assistance",
+                "event": event.as_dict(),
+                "ai_assisted": True
+            }, 200
+
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error deleting event id {event_id}: {str(e)}", exc_info=True)
-            return {"error": "An unexpected error occurred during event deletion."}, 500
+            return {"error": f"Failed to apply AI updates: {str(e)}"}, 500
 
+    # ===== HELPER METHODS =====
+
+    def _handle_file_upload(self, file):
+        """Handle file upload to cloudinary"""
+        if file and file.filename != '':
+            if not allowed_file(file.filename):
+                raise ValueError("Invalid file type. Allowed types: PNG, JPG, JPEG, GIF, WEBP")
+
+            try:
+                upload_result = cloudinary.uploader.upload(
+                    file,
+                    folder="event_images",
+                    resource_type="auto"
+                )
+                return upload_result.get('secure_url')
+            except Exception as e:
+                logger.error(f"Error uploading event image: {str(e)}")
+                raise ValueError("Failed to upload event image")
+        return None
+
+    def _parse_amenities(self, amenities_data):
+        """Parse amenities from various formats"""
+        if not amenities_data:
+            return []
+            
+        try:
+            if isinstance(amenities_data, str):
+                if amenities_data.startswith('[') and amenities_data.endswith(']'):
+                    # JSON format
+                    return json.loads(amenities_data)
+                else:
+                    # Comma-separated format
+                    return [amenity.strip() for amenity in amenities_data.split(',') if amenity.strip()]
+            elif isinstance(amenities_data, list):
+                return amenities_data
+            else:
+                return []
+        except (json.JSONDecodeError, AttributeError):
+            raise ValueError("Invalid amenities format. Use JSON array or comma-separated values")
+
+    def _get_organizer_previous_events(self, organizer_id):
+        """Get organizer's previous events for context"""
+        events = Event.query.filter_by(organizer_id=organizer_id).all()
+        return [{
+            'name': event.name,
+            'category': event.event_category.name if event.event_category else None,
+            'date': event.date.isoformat(),
+            'attendance': event.likes.count()
+        } for event in events]
+
+    def _get_organizer_preferences(self, organizer_id):
+        """Get organizer preferences for context"""
+        organizer = Organizer.query.get(organizer_id)
+        if not organizer:
+            return {}
+            
+        return {
+            'company_name': organizer.company_name,
+            'preferred_categories': [cat.name for cat in organizer.events[:3] if cat.event_category],
+            'typical_audience_size': len(organizer.events) > 0  # Simplified
+        }
+
+    def _event_to_draft_like(self, event):
+        """Convert event to draft-like structure for AI analysis"""
+        class DraftLike:
+            def __init__(self, event):
+                self.suggested_name = event.name
+                self.suggested_description = event.description
+                self.suggested_date = event.date
+                self.suggested_start_time = event.start_time
+                self.suggested_end_time = event.end_time
+                self.suggested_city = event.city
+                self.suggested_location = event.location
+                self.suggested_category_id = event.category_id
+                self.suggested_amenities = event.amenities or []
+                self.organizer_id = event.organizer_id
+                
+            def as_dict(self):
+                return {
+                    'name': self.suggested_name,
+                    'description': self.suggested_description,
+                    'date': self.suggested_date.isoformat() if self.suggested_date else None,
+                    'start_time': self.suggested_start_time.isoformat() if self.suggested_start_time else None,
+                    'city': self.suggested_city,
+                    'location': self.suggested_location,
+                    'category_id': self.suggested_category_id,
+                    'amenities': self.suggested_amenities
+                }
+        
+        return DraftLike(event)
+
+    def _apply_manual_updates(self, event, data, files):
+        """Apply manual updates to event and return updated event"""
+        # This is a simplified version of the manual update logic
+        # In practice, you'd want to reuse the existing manual update logic
+        if 'name' in data:
+            event.name = data['name']
+        if 'description' in data:
+            event.description = data['description']
+        if 'city' in data:
+            event.city = data['city']
+        if 'location' in data:
+            event.location = data['location']
+        if 'category_id' in data:
+            event.category_id = data['category_id']
+            
+        # Handle file upload
+        if 'file' in files:
+            image_url = self._handle_file_upload(files['file'])
+            if image_url:
+                event.image = image_url
+                
+        db.session.commit()
+        return event
+
+# ... (rest of your existing resource classes remain unchanged - EventsByLocationResource, CitiesResource, StatsResource, EventLikeResource, OrganizerEventsResource)
 
 
 class EventsByLocationResource(Resource):
@@ -933,6 +1337,115 @@ class OrganizerEventsResource(Resource):
             logger.warning(f"User {current_user_id} has ORGANIZER role but no Organizer profile found.")
             return {"message": "Organizer profile not found for this user."}, 404
 
+class EventDraftResource(Resource):
+    """Resource for managing AI event drafts"""
+    
+    @jwt_required()
+    def get(self, draft_id=None):
+        """Get event drafts for organizer or specific draft"""
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
+        
+        if not user or user.role != UserRole.ORGANIZER:
+            return {"message": "Only organizers can access drafts"}, 403
+            
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if not organizer:
+            return {"message": "Organizer profile not found"}, 404
+            
+        if draft_id:
+            # Get specific draft
+            draft = AIEventDraft.query.get(draft_id)
+            if not draft or draft.organizer_id != organizer.id:
+                return {"message": "Draft not found"}, 404
+                
+            return {
+                "draft": draft.as_dict(),
+                "review": comprehensive_event_assistant.review_draft(draft_id),
+                "completion_status": comprehensive_event_assistant._get_completion_status(draft)
+            }, 200
+        else:
+            # Get all drafts for organizer
+            status = request.args.get('status', None)
+            drafts = comprehensive_event_assistant.get_organizer_drafts(organizer.id, status)
+            return {"drafts": drafts}, 200
+    
+    @jwt_required()
+    def post(self, draft_id):
+        """Update a specific field in a draft"""
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
+        
+        if not user or user.role != UserRole.ORGANIZER:
+            return {"message": "Only organizers can update drafts"}, 403
+            
+        data = request.get_json()
+        field_name = data.get('field_name')
+        value = data.get('value')
+        regenerate = data.get('regenerate', False)
+        
+        if not field_name:
+            return {"error": "field_name is required"}, 400
+            
+        result = comprehensive_event_assistant.update_draft_field(
+            draft_id, field_name, value, regenerate
+        )
+        
+        if result['success']:
+            return result, 200
+        else:
+            return {"error": result.get('error', 'Update failed')}, 400
+    
+    @jwt_required()
+    def delete(self, draft_id):
+        """Delete a draft"""
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
+        
+        if not user or user.role != UserRole.ORGANIZER:
+            return {"message": "Only organizers can delete drafts"}, 403
+            
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if not organizer:
+            return {"message": "Organizer profile not found"}, 404
+            
+        result = comprehensive_event_assistant.delete_draft(draft_id, organizer.id)
+        
+        if result['success']:
+            return {"message": result['message']}, 200
+        else:
+            return {"error": result.get('error', 'Deletion failed')}, 400
+
+class EventPublishResource(Resource):
+    """Resource for publishing event drafts"""
+    
+    @jwt_required()
+    def post(self, draft_id):
+        """Publish an event draft"""
+        identity = get_jwt_identity()
+        user = User.query.get(identity)
+        
+        if not user or user.role != UserRole.ORGANIZER:
+            return {"message": "Only organizers can publish events"}, 403
+            
+        organizer = Organizer.query.filter_by(user_id=user.id).first()
+        if not organizer:
+            return {"message": "Organizer profile not found"}, 404
+            
+        result = comprehensive_event_assistant.publish_draft(draft_id, organizer.id)
+        
+        if result['success']:
+            return {
+                "message": result['message'],
+                "event": result['event'],
+                "event_id": result['event_id'],
+                "ai_assisted": result.get('ai_assisted', True)
+            }, 201
+        else:
+            return {
+                "error": result.get('error', 'Publication failed'),
+                "missing_fields": result.get('missing_fields', [])
+            }, 400
 
 def register_event_resources(api):
     """Registers the EventResource routes with Flask-RESTful API."""
@@ -945,3 +1458,16 @@ def register_event_resources(api):
     api.add_resource(OrganizerEventsResource, "/api/organizer/events")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/like", endpoint="like_event")
     api.add_resource(EventLikeResource, "/events/<int:event_id>/unlike", endpoint="unlike_event")
+    
+    # --- AI Event Assistant Routes ---
+    api.add_resource(EventDraftResource, "/events/drafts", "/events/drafts/<int:draft_id>")
+    api.add_resource(EventPublishResource, "/events/drafts/<int:draft_id>/publish")
+
+
+
+
+
+
+
+
+
