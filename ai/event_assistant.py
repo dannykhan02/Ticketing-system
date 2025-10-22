@@ -922,6 +922,223 @@ class ComprehensiveEventAssistant:
         
         return opportunities
     
+    # ===== DRAFT MANAGEMENT =====
+
+    def get_organizer_drafts(self, organizer_id: int, status: str = None) -> Dict:
+        """
+        Get all drafts for an organizer with optional status filtering
+        
+        Args:
+            organizer_id: Organizer ID to get drafts for
+            status: Optional status filter ('in_progress', 'completed', 'archived')
+        
+        Returns:
+            dict: Organized drafts with metadata
+        """
+        try:
+            # Build query
+            query = AIEventDraft.query.filter_by(organizer_id=organizer_id)
+            
+            # Apply status filter if provided
+            if status:
+                query = query.filter_by(draft_status=status)
+            
+            # Get drafts ordered by latest first
+            drafts = query.order_by(AIEventDraft.updated_at.desc()).all()
+            
+            # Organize drafts by status
+            organized_drafts = {
+                "in_progress": [],
+                "completed": [],
+                "archived": [],
+                "all": []
+            }
+            
+            for draft in drafts:
+                draft_data = self._format_draft_for_response(draft)
+                status_key = draft.draft_status or "in_progress"
+                
+                # Add to appropriate status list
+                if status_key in organized_drafts:
+                    organized_drafts[status_key].append(draft_data)
+                organized_drafts["all"].append(draft_data)
+            
+            # Calculate statistics
+            stats = {
+                "total_drafts": len(drafts),
+                "in_progress_count": len(organized_drafts["in_progress"]),
+                "completed_count": len(organized_drafts["completed"]),
+                "archived_count": len(organized_drafts["archived"]),
+                "completion_rate": len(organized_drafts["completed"]) / len(drafts) if drafts else 0
+            }
+            
+            return {
+                "success": True,
+                "drafts": organized_drafts,
+                "statistics": stats,
+                "filters_applied": {"status": status} if status else {}
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get organizer drafts: {e}")
+            return {
+                "success": False,
+                "error": "Could not retrieve drafts",
+                "drafts": {"in_progress": [], "completed": [], "archived": [], "all": []},
+                "statistics": {
+                    "total_drafts": 0,
+                    "in_progress_count": 0,
+                    "completed_count": 0,
+                    "archived_count": 0,
+                    "completion_rate": 0
+                }
+            }
+
+    def _format_draft_for_response(self, draft: AIEventDraft) -> Dict:
+        """Format draft data for API response"""
+        return {
+            "id": draft.id,
+            "suggested_name": draft.suggested_name,
+            "suggested_description": draft.suggested_description,
+            "suggested_date": draft.suggested_date.isoformat() if draft.suggested_date else None,
+            "suggested_city": draft.suggested_city,
+            "suggested_location": draft.suggested_location,
+            "suggested_category_id": draft.suggested_category_id,
+            "category_name": Category.query.get(draft.suggested_category_id).name 
+                if draft.suggested_category_id else None,
+            "draft_status": draft.draft_status or "in_progress",
+            "completion_percentage": self._calculate_draft_completion(draft),
+            "created_at": draft.created_at.isoformat(),
+            "updated_at": draft.updated_at.isoformat(),
+            "ai_confidence": self._calculate_draft_confidence(draft),
+            "missing_fields": self._identify_missing_required_fields(draft)
+        }
+
+    def _calculate_draft_completion(self, draft: AIEventDraft) -> float:
+        """Calculate draft completion percentage"""
+        required_fields = ['suggested_name', 'suggested_description', 'suggested_date', 
+                          'suggested_start_time', 'suggested_city', 'suggested_location']
+        
+        completed = sum(1 for field in required_fields if getattr(draft, field))
+        return (completed / len(required_fields)) * 100
+
+    def _calculate_draft_confidence(self, draft: AIEventDraft) -> float:
+        """Calculate overall confidence for a draft"""
+        confidences = []
+        
+        if draft.name_confidence:
+            confidences.append(draft.name_confidence)
+        if draft.description_confidence:
+            confidences.append(draft.description_confidence)
+        if draft.category_confidence:
+            confidences.append(draft.category_confidence)
+        
+        return sum(confidences) / len(confidences) if confidences else 0.0
+
+    def update_draft_status(self, draft_id: int, status: str, organizer_id: int = None) -> Dict:
+        """
+        Update draft status with validation
+        
+        Args:
+            draft_id: Draft ID to update
+            status: New status ('in_progress', 'completed', 'archived')
+            organizer_id: Optional organizer ID for validation
+        
+        Returns:
+            dict: Update result
+        """
+        try:
+            # Get draft
+            query = AIEventDraft.query.filter_by(id=draft_id)
+            if organizer_id:
+                query = query.filter_by(organizer_id=organizer_id)
+            
+            draft = query.first()
+            
+            if not draft:
+                return {"success": False, "error": "Draft not found"}
+            
+            # Validate status
+            valid_statuses = ['in_progress', 'completed', 'archived']
+            if status not in valid_statuses:
+                return {"success": False, "error": f"Invalid status. Must be one of: {valid_statuses}"}
+            
+            # Update status
+            draft.draft_status = status
+            draft.updated_at = datetime.utcnow()
+            db.session.commit()
+            
+            # Log the action
+            organizer = Organizer.query.get(draft.organizer_id)
+            if organizer:
+                AIManager.log_action(
+                    user_id=organizer.user_id,
+                    action_type=AIIntentType.UPDATE_EVENT,
+                    action_description=f"Updated draft status to {status}",
+                    target_table='ai_event_drafts',
+                    target_id=draft.id
+                )
+            
+            return {
+                "success": True,
+                "draft_id": draft.id,
+                "new_status": status,
+                "completion_percentage": self._calculate_draft_completion(draft)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to update draft status: {e}")
+            db.session.rollback()
+            return {"success": False, "error": "Could not update draft status"}
+
+    def delete_draft(self, draft_id: int, organizer_id: int = None) -> Dict:
+        """
+        Delete a draft with validation
+        
+        Args:
+            draft_id: Draft ID to delete
+            organizer_id: Optional organizer ID for validation
+        
+        Returns:
+            dict: Delete result
+        """
+        try:
+            # Get draft
+            query = AIEventDraft.query.filter_by(id=draft_id)
+            if organizer_id:
+                query = query.filter_by(organizer_id=organizer_id)
+            
+            draft = query.first()
+            
+            if not draft:
+                return {"success": False, "error": "Draft not found"}
+            
+            # Log before deletion
+            organizer = Organizer.query.get(draft.organizer_id)
+            if organizer:
+                AIManager.log_action(
+                    user_id=organizer.user_id,
+                    action_type=AIIntentType.DELETE_EVENT,
+                    action_description=f"Deleted draft: {draft.suggested_name}",
+                    target_table='ai_event_drafts',
+                    target_id=draft.id
+                )
+            
+            # Delete the draft
+            db.session.delete(draft)
+            db.session.commit()
+            
+            return {
+                "success": True,
+                "deleted_draft_id": draft_id,
+                "message": "Draft deleted successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to delete draft: {e}")
+            db.session.rollback()
+            return {"success": False, "error": "Could not delete draft"}
+    
     # ===== ANALYTICS & INSIGHTS =====
     
     def generate_event_insights(self, event_id: int, analysis_type: str = "comprehensive") -> Dict:
