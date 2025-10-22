@@ -981,12 +981,15 @@ class AIEventDraft(db.Model):
     # Metadata
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    published_event_id = db.Column(db.Integer, nullable=True)  # Removed foreign key to avoid circular dependency
+    published_event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)
     
     # Relationships
     organizer = db.relationship('Organizer', backref='event_drafts')
     suggested_category = db.relationship('Category', foreign_keys=[suggested_category_id])
-    # Removed the relationship to Event to avoid circular dependency
+    published_event = db.relationship('Event', 
+                                     foreign_keys=[published_event_id],
+                                     backref='source_draft',
+                                     post_update=True)  # Prevents circular dependency
     
     __table_args__ = (
         db.Index('idx_organizer_status', 'organizer_id', 'draft_status'),
@@ -1007,17 +1010,25 @@ class AIEventDraft(db.Model):
             "draft_status": self.draft_status,
             "suggested_name": self.suggested_name,
             "name_confidence": self.name_confidence,
+            "name_source": self.name_source,
             "suggested_description": self.suggested_description,
+            "description_confidence": self.description_confidence,
+            "description_source": self.description_source,
             "suggested_city": self.suggested_city,
             "suggested_location": self.suggested_location,
             "suggested_amenities": self.suggested_amenities,
             "suggested_date": self.suggested_date.isoformat() if self.suggested_date else None,
             "suggested_start_time": self.suggested_start_time.isoformat() if self.suggested_start_time else None,
             "suggested_end_time": self.suggested_end_time.isoformat() if self.suggested_end_time else None,
+            "suggested_category_id": self.suggested_category_id,
+            "category_confidence": self.category_confidence,
             "ai_reasoning": self.ai_reasoning,
             "alternative_suggestions": self.alternative_suggestions,
-            "created_at": self.created_at.isoformat()
+            "ai_iterations": self.ai_iterations,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat()
         }
+
 
 class AIEventAssistanceLog(db.Model):
     """Tracks AI assistance provided during event creation/updates"""
@@ -1063,9 +1074,13 @@ class AIEventAssistanceLog(db.Model):
             "user_input": self.user_input,
             "ai_suggestions": self.ai_suggestions,
             "user_accepted": self.user_accepted,
+            "user_modified": self.user_modified,
+            "final_value": self.final_value,
             "confidence_score": self.confidence_score,
+            "processing_time_ms": self.processing_time_ms,
             "created_at": self.created_at.isoformat()
         }
+
 
 # ===== EVENT MODEL WITH AI ASSISTANCE =====
 class Event(db.Model):
@@ -1087,17 +1102,19 @@ class Event(db.Model):
     ai_description_enhanced = db.Column(db.Boolean, default=False)
     ai_recommendations_enabled = db.Column(db.Boolean, default=True)
     
-    # AI creation/update tracking
+    # AI Copilot - Creation/Update Tracking
     ai_assisted_creation = db.Column(db.Boolean, default=False)
     ai_generated_fields = db.Column(JSONB, nullable=True)
     # Format: ["name", "description", "amenities"] - which fields were AI-generated
     
     ai_confidence_score = db.Column(db.Float, nullable=True)
-    # Overall confidence in AI-generated content
+    # Overall confidence in AI-generated content (0.0 - 1.0)
     
-    created_from_draft_id = db.Column(db.Integer, nullable=True)  # Removed foreign key to avoid circular dependency
+    created_from_draft_id = db.Column(db.Integer, 
+                                     db.ForeignKey('ai_event_drafts.id'), 
+                                     nullable=True)
     
-    # Original user input (for learning)
+    # Original user input (for learning and improvement)
     original_user_input = db.Column(JSONB, nullable=True)
     # What organizer initially provided before AI enhancement
     
@@ -1121,9 +1138,15 @@ class Event(db.Model):
                                          foreign_keys='AIRevenueAnalysis.event_id')
     ai_ticket_analyses = db.relationship('AITicketAnalysis', backref='event', lazy=True)
     
-    # Removed the relationship to AIEventDraft to avoid circular dependency
+    # AI Copilot relationship
+    created_from_draft = db.relationship('AIEventDraft',
+                                        foreign_keys=[created_from_draft_id],
+                                        backref='final_event',
+                                        post_update=True)  # Prevents circular dependency
 
-    def __init__(self, name, description, date, start_time, end_time, city, location, amenities, image, organizer_id, category_id):
+    def __init__(self, name, description, date, start_time, end_time, city, location, 
+                 amenities, image, organizer_id, category_id, 
+                 ai_assisted_creation=False, created_from_draft_id=None):
         self.name = name
         self.description = description
         self.date = date
@@ -1135,6 +1158,8 @@ class Event(db.Model):
         self.image = image
         self.organizer_id = organizer_id
         self.category_id = category_id
+        self.ai_assisted_creation = ai_assisted_creation
+        self.created_from_draft_id = created_from_draft_id
         self.validate_datetime()
 
     def validate_amenities(self, amenities):
@@ -1178,8 +1203,10 @@ class Event(db.Model):
             "category": self.event_category.name if self.event_category else None,
             "ai_assisted_creation": self.ai_assisted_creation,
             "ai_generated_fields": self.ai_generated_fields,
-            "ai_confidence_score": self.ai_confidence_score
+            "ai_confidence_score": self.ai_confidence_score,
+            "created_from_draft_id": self.created_from_draft_id
         }
+
 
 # ===== AI EVENT MANAGER =====
 class AIEventManager:
@@ -1376,7 +1403,8 @@ class AIEventManager:
         assistance_log = AIEventAssistanceLog(
             draft_id=draft_id,
             organizer_id=draft.organizer_id,
-            assistance_type=f"{field_name}_{'regeneration' if regenerate else 'update'}"
+            assistance_type=f"{field_name}_{'regeneration' if regenerate else 'update'}",
+            ai_suggestions={}  # Will be populated below
         )
         
         if field_name == 'name':
@@ -1386,6 +1414,7 @@ class AIEventManager:
                 draft.name_confidence = 1.0
                 assistance_log.user_input = {"value": user_value}
                 assistance_log.user_accepted = True
+                assistance_log.ai_suggestions = {"accepted_user_input": True}
             elif regenerate:
                 suggestions = AIEventManager.generate_event_name(
                     draft.suggested_description,
@@ -1401,6 +1430,9 @@ class AIEventManager:
                 draft.suggested_description = user_value
                 draft.description_source = 'user'
                 draft.description_confidence = 1.0
+                assistance_log.user_input = {"value": user_value}
+                assistance_log.user_accepted = True
+                assistance_log.ai_suggestions = {"accepted_user_input": True}
             elif regenerate or not draft.suggested_description:
                 enhanced = AIEventManager.enhance_description(
                     draft.suggested_description or user_value,
@@ -1410,6 +1442,7 @@ class AIEventManager:
                 draft.suggested_description = enhanced['enhanced_text']
                 draft.description_confidence = enhanced['confidence']
                 draft.description_source = 'ai'
+                assistance_log.ai_suggestions = enhanced
         
         elif field_name == 'amenities':
             suggestions = AIEventManager.suggest_amenities(
@@ -1420,12 +1453,16 @@ class AIEventManager:
                 user_value
             )
             draft.suggested_amenities = suggestions
+            assistance_log.ai_suggestions = {"amenities": suggestions}
         
         elif field_name == 'category':
             if user_value:
                 draft.suggested_category_id = user_value
                 draft.category_source = 'user'
                 draft.category_confidence = 1.0
+                assistance_log.user_input = {"value": user_value}
+                assistance_log.user_accepted = True
+                assistance_log.ai_suggestions = {"accepted_user_input": True}
             elif regenerate:
                 classification = AIEventManager.classify_category(
                     draft.suggested_name or "",
@@ -1435,6 +1472,7 @@ class AIEventManager:
                     draft.suggested_category_id = classification['category_id']
                     draft.category_confidence = classification['confidence']
                     draft.category_source = 'ai'
+                    assistance_log.ai_suggestions = classification
         
         draft.ai_iterations += 1
         draft.updated_at = datetime.utcnow()
@@ -1462,7 +1500,7 @@ class AIEventManager:
         # Extract amenity names
         amenities = []
         if draft.suggested_amenities:
-            amenities = [a['name'] for a in draft.suggested_amenities]
+            amenities = [a['name'] for a in draft.suggested_amenities if isinstance(a, dict)]
         
         # Create the event
         event = Event(
@@ -1495,18 +1533,34 @@ class AIEventManager:
         event.ai_generated_fields = ai_fields
         
         # Calculate overall confidence
-        confidences = [
+        confidences = [c for c in [
             draft.name_confidence,
             draft.description_confidence,
             draft.category_confidence
-        ]
-        event.ai_confidence_score = sum(c for c in confidences if c) / len([c for c in confidences if c])
+        ] if c is not None]
+        
+        if confidences:
+            event.ai_confidence_score = sum(confidences) / len(confidences)
+        
+        # Store original user input
+        event.original_user_input = {
+            "name": draft.suggested_name if draft.name_source == 'user' else None,
+            "description": draft.suggested_description if draft.description_source == 'user' else None,
+            "city": draft.suggested_city,
+            "location": draft.suggested_location,
+            "date": draft.suggested_date.isoformat() if draft.suggested_date else None
+        }
         
         # Update draft status
         draft.draft_status = 'published'
         draft.published_event_id = event.id
         
         db.session.add(event)
+        db.session.flush()  # Get event.id before commit
+        
+        # Update draft with published event ID
+        draft.published_event_id = event.id
+        
         db.session.commit()
         
         # Log the action
