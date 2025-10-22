@@ -246,7 +246,6 @@ class Organizer(db.Model):
             "partners_count": len([p for p in self.partners if p.is_active])
         }
 
-
 class Category(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100), nullable=False, unique=True)
@@ -461,7 +460,6 @@ class Partner(db.Model):
         db.session.commit()
         return self.performance_score
 
-
 class EventCollaboration(db.Model):
     __tablename__ = 'event_collaborations'
 
@@ -564,7 +562,6 @@ class EventCollaboration(db.Model):
         db.session.commit()
         return self.contribution_score
 
-
 class AIPartnerInsight(db.Model):
     """AI-generated insights about partners"""
     __tablename__ = 'ai_partner_insights'
@@ -627,7 +624,6 @@ class AIPartnerInsight(db.Model):
             "is_read": self.is_read,
             "generated_at": self.generated_at.isoformat()
         }
-
 
 class AIPartnerMatchRecommendation(db.Model):
     """AI recommendations for partner-event matching"""
@@ -715,7 +711,6 @@ class AIPartnerMatchRecommendation(db.Model):
             "is_accepted": self.is_accepted,
             "created_at": self.created_at.isoformat()
         }
-
 
 # ===== ENHANCED COLLABORATION MANAGER WITH AI =====
 class CollaborationManager:
@@ -909,8 +904,170 @@ class CollaborationManager:
         db.session.commit()
         return collaboration
 
+# ===== AI EVENT ASSISTANCE MODELS =====
+class AIEventDraft(db.Model):
+    """Stores AI-assisted event drafts during creation/editing"""
+    __tablename__ = 'ai_event_drafts'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False, index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey('ai_conversations.id'), nullable=True)
+    
+    # Draft status
+    draft_status = db.Column(db.String(20), default='in_progress', index=True)
+    # 'in_progress', 'ready_for_review', 'approved', 'rejected', 'published'
+    
+    # Event fields (AI-suggested or user-provided)
+    suggested_name = db.Column(db.Text, nullable=True)
+    name_confidence = db.Column(db.Float, nullable=True)
+    name_source = db.Column(db.String(20), default='ai')  # 'ai', 'user', 'hybrid'
+    
+    suggested_description = db.Column(db.Text, nullable=True)
+    description_confidence = db.Column(db.Float, nullable=True)
+    description_source = db.Column(db.String(20), default='ai')
+    
+    suggested_city = db.Column(db.String(100), nullable=True)
+    city_confidence = db.Column(db.Float, nullable=True)
+    city_source = db.Column(db.String(20), default='user')
+    
+    suggested_location = db.Column(db.Text, nullable=True)
+    location_confidence = db.Column(db.Float, nullable=True)
+    location_source = db.Column(db.String(20), default='user')
+    
+    suggested_amenities = db.Column(JSONB, nullable=True)
+    # Format: [{"name": "Parking", "confidence": 0.9, "source": "ai", "reason": "Large venue"}]
+    
+    suggested_date = db.Column(db.Date, nullable=True)
+    date_confidence = db.Column(db.Float, nullable=True)
+    date_source = db.Column(db.String(20), default='user')
+    
+    suggested_start_time = db.Column(db.Time, nullable=True)
+    start_time_confidence = db.Column(db.Float, nullable=True)
+    start_time_source = db.Column(db.String(20), default='user')
+    
+    suggested_end_time = db.Column(db.Time, nullable=True)
+    end_time_confidence = db.Column(db.Float, nullable=True)
+    end_time_source = db.Column(db.String(20), default='user')
+    
+    suggested_category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True)
+    category_confidence = db.Column(db.Float, nullable=True)
+    category_source = db.Column(db.String(20), default='ai')
+    
+    suggested_image_url = db.Column(db.String(255), nullable=True)
+    image_source = db.Column(db.String(20), default='user')
+    
+    # AI reasoning and alternatives
+    ai_reasoning = db.Column(JSONB, nullable=True)
+    # Format: {
+    #   "name_reasoning": "Based on description and category",
+    #   "amenities_reasoning": "Standard amenities for concerts",
+    #   "alternatives": {...}
+    # }
+    
+    alternative_suggestions = db.Column(JSONB, nullable=True)
+    # Format: {
+    #   "names": ["Alt Name 1", "Alt Name 2"],
+    #   "dates": ["2025-12-01", "2025-12-15"],
+    #   "amenities": [["WiFi", "Catering"], ["Parking", "Security"]]
+    # }
+    
+    # User interaction tracking
+    user_edits = db.Column(JSONB, nullable=True)
+    # Track what fields user modified vs accepted AI suggestions
+    
+    user_feedback = db.Column(db.Text, nullable=True)
+    ai_iterations = db.Column(db.Integer, default=0)  # How many AI refinements
+    
+    # Metadata
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    published_event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)
+    
+    # Relationships
+    organizer = db.relationship('Organizer', backref='event_drafts')
+    suggested_category = db.relationship('Category', foreign_keys=[suggested_category_id])
+    published_event = db.relationship('Event', foreign_keys=[published_event_id])
+    
+    __table_args__ = (
+        db.Index('idx_organizer_status', 'organizer_id', 'draft_status'),
+    )
+    
+    @validates('name_confidence', 'description_confidence', 'city_confidence', 
+               'location_confidence', 'date_confidence', 'start_time_confidence',
+               'end_time_confidence', 'category_confidence')
+    def validate_confidence(self, key, value):
+        if value is not None and not (0 <= value <= 1):
+            raise ValueError(f"{key} must be between 0 and 1")
+        return value
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "organizer_id": self.organizer_id,
+            "draft_status": self.draft_status,
+            "suggested_name": self.suggested_name,
+            "name_confidence": self.name_confidence,
+            "suggested_description": self.suggested_description,
+            "suggested_city": self.suggested_city,
+            "suggested_location": self.suggested_location,
+            "suggested_amenities": self.suggested_amenities,
+            "suggested_date": self.suggested_date.isoformat() if self.suggested_date else None,
+            "suggested_start_time": self.suggested_start_time.isoformat() if self.suggested_start_time else None,
+            "suggested_end_time": self.suggested_end_time.isoformat() if self.suggested_end_time else None,
+            "ai_reasoning": self.ai_reasoning,
+            "alternative_suggestions": self.alternative_suggestions,
+            "created_at": self.created_at.isoformat()
+        }
 
+class AIEventAssistanceLog(db.Model):
+    """Tracks AI assistance provided during event creation/updates"""
+    __tablename__ = 'ai_event_assistance_logs'
+    
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True, index=True)
+    draft_id = db.Column(db.Integer, db.ForeignKey('ai_event_drafts.id'), nullable=True)
+    organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
+    
+    # Assistance type
+    assistance_type = db.Column(db.String(50), nullable=False, index=True)
+    # Types: 'name_generation', 'description_enhancement', 'amenity_suggestion',
+    #        'time_optimization', 'category_classification', 'full_creation'
+    
+    # Input from user
+    user_input = db.Column(JSONB, nullable=True)
+    # What the organizer provided
+    
+    # AI output
+    ai_suggestions = db.Column(JSONB, nullable=False)
+    # What AI suggested
+    
+    # User decision
+    user_accepted = db.Column(db.Boolean, nullable=True)
+    user_modified = db.Column(db.Boolean, nullable=True)
+    final_value = db.Column(JSONB, nullable=True)
+    # What was actually used
+    
+    # Quality metrics
+    confidence_score = db.Column(db.Float, nullable=True)
+    processing_time_ms = db.Column(db.Integer, nullable=True)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    
+    event = db.relationship('Event', backref='ai_assistance_logs')
+    draft = db.relationship('AIEventDraft', backref='assistance_logs')
+    
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "assistance_type": self.assistance_type,
+            "user_input": self.user_input,
+            "ai_suggestions": self.ai_suggestions,
+            "user_accepted": self.user_accepted,
+            "confidence_score": self.confidence_score,
+            "created_at": self.created_at.isoformat()
+        }
 
+# ===== EVENT MODEL WITH AI ASSISTANCE =====
 class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.Text, nullable=False)
@@ -925,9 +1082,25 @@ class Event(db.Model):
     organizer_id = db.Column(db.Integer, db.ForeignKey('organizer.id'), nullable=False)
     featured = db.Column(db.Boolean, default=False, nullable=False)
     category_id = db.Column(db.Integer, db.ForeignKey('category.id'), nullable=True)
+    
     # AI-generated content flags
     ai_description_enhanced = db.Column(db.Boolean, default=False)
     ai_recommendations_enabled = db.Column(db.Boolean, default=True)
+    
+    # AI creation/update tracking
+    ai_assisted_creation = db.Column(db.Boolean, default=False)
+    ai_generated_fields = db.Column(JSONB, nullable=True)
+    # Format: ["name", "description", "amenities"] - which fields were AI-generated
+    
+    ai_confidence_score = db.Column(db.Float, nullable=True)
+    # Overall confidence in AI-generated content
+    
+    created_from_draft_id = db.Column(db.Integer, db.ForeignKey('ai_event_drafts.id'), nullable=True)
+    
+    # Original user input (for learning)
+    original_user_input = db.Column(JSONB, nullable=True)
+    # What organizer initially provided before AI enhancement
+    
     # Existing relationships
     likes = db.relationship('User', secondary=event_likes, backref='liked_events', lazy='dynamic')
     ticket_types = db.relationship('TicketType', backref='event', lazy=True, cascade="all, delete")
@@ -947,6 +1120,11 @@ class Event(db.Model):
     ai_revenue_analyses = db.relationship('AIRevenueAnalysis', backref='event', lazy=True,
                                          foreign_keys='AIRevenueAnalysis.event_id')
     ai_ticket_analyses = db.relationship('AITicketAnalysis', backref='event', lazy=True)
+    
+    # New AI relationships
+    created_from_draft = db.relationship('AIEventDraft', 
+                                        foreign_keys=[created_from_draft_id],
+                                        backref='final_events')
 
     def __init__(self, name, description, date, start_time, end_time, city, location, amenities, image, organizer_id, category_id):
         self.name = name
@@ -1000,8 +1178,361 @@ class Event(db.Model):
             "location": self.location,
             "featured": self.featured,
             "likes_count": self.likes.count(),
-            "category": self.event_category.name if self.event_category else None
+            "category": self.event_category.name if self.event_category else None,
+            "ai_assisted_creation": self.ai_assisted_creation,
+            "ai_generated_fields": self.ai_generated_fields,
+            "ai_confidence_score": self.ai_confidence_score
         }
+
+# ===== AI EVENT MANAGER =====
+class AIEventManager:
+    """Manager for AI-assisted event creation and updates"""
+    
+    @staticmethod
+    def create_draft_from_conversation(organizer_id, user_input, conversation_id=None):
+        """
+        Create an event draft from conversational input
+        
+        Args:
+            organizer_id: ID of the organizer
+            user_input: Dict containing user's input like:
+                {
+                    "raw_text": "I want to create a tech conference...",
+                    "name": "optional explicit name",
+                    "city": "Nairobi",
+                    "date": "2025-12-01",
+                    etc.
+                }
+            conversation_id: Optional conversation ID for context
+        """
+        draft = AIEventDraft(
+            organizer_id=organizer_id,
+            conversation_id=conversation_id,
+            draft_status='in_progress'
+        )
+        
+        # Process user input and generate AI suggestions
+        # This is where you'd call your AI model/service
+        
+        # Example: Extract from user input
+        if 'name' in user_input:
+            draft.suggested_name = user_input['name']
+            draft.name_source = 'user'
+            draft.name_confidence = 1.0
+        
+        if 'city' in user_input:
+            draft.suggested_city = user_input['city']
+            draft.city_source = 'user'
+            draft.city_confidence = 1.0
+        
+        if 'location' in user_input:
+            draft.suggested_location = user_input['location']
+            draft.location_source = 'user'
+            draft.location_confidence = 1.0
+        
+        if 'date' in user_input:
+            draft.suggested_date = user_input['date']
+            draft.date_source = 'user'
+            draft.date_confidence = 1.0
+        
+        if 'start_time' in user_input:
+            draft.suggested_start_time = user_input['start_time']
+            draft.start_time_source = 'user'
+            draft.start_time_confidence = 1.0
+        
+        if 'end_time' in user_input:
+            draft.suggested_end_time = user_input['end_time']
+            draft.end_time_source = 'user'
+            draft.end_time_confidence = 1.0
+        
+        db.session.add(draft)
+        db.session.commit()
+        
+        return draft
+    
+    @staticmethod
+    def generate_event_name(description, category=None):
+        """
+        Generate event name suggestions based on description
+        This would integrate with your AI model
+        """
+        # Placeholder for AI integration
+        # In reality, you'd call Claude/GPT here
+        
+        suggestions = {
+            "primary": "AI-Generated Event Name",
+            "alternatives": [
+                "Alternative Name 1",
+                "Alternative Name 2",
+                "Alternative Name 3"
+            ],
+            "confidence": 0.85,
+            "reasoning": "Based on description keywords and category"
+        }
+        
+        return suggestions
+    
+    @staticmethod
+    def enhance_description(draft_description, event_name=None, category=None):
+        """
+        Enhance/expand event description using AI
+        """
+        # Placeholder for AI enhancement
+        enhanced = {
+            "enhanced_text": f"{draft_description}\n\n[AI Enhanced Content]",
+            "confidence": 0.9,
+            "improvements": ["Added context", "Improved clarity", "SEO optimization"]
+        }
+        
+        return enhanced
+    
+    @staticmethod
+    def suggest_amenities(event_name=None, description=None, category=None, 
+                         location=None, user_provided_amenities=None):
+        """
+        Suggest appropriate amenities based on event details
+        """
+        suggested = []
+        
+        # AI logic would go here
+        # For now, simple rule-based suggestions
+        
+        base_amenities = ["Parking", "WiFi", "Security"]
+        
+        if category:
+            category_name = Category.query.get(category).name if isinstance(category, int) else category
+            if "conference" in category_name.lower() or "tech" in category_name.lower():
+                base_amenities.extend(["Projector", "Microphone", "Catering"])
+            elif "concert" in category_name.lower() or "music" in category_name.lower():
+                base_amenities.extend(["Sound System", "Stage", "Lighting"])
+        
+        # Format with confidence scores
+        for amenity in base_amenities[:5]:  # Max 5
+            suggested.append({
+                "name": amenity,
+                "confidence": 0.8,
+                "source": "ai",
+                "reason": f"Standard for this type of event"
+            })
+        
+        # Merge with user-provided amenities
+        if user_provided_amenities:
+            for amenity in user_provided_amenities:
+                suggested.append({
+                    "name": amenity,
+                    "confidence": 1.0,
+                    "source": "user",
+                    "reason": "User specified"
+                })
+        
+        return suggested[:5]  # Return max 5
+    
+    @staticmethod
+    def classify_category(event_name, description):
+        """
+        Auto-classify event category based on name and description
+        """
+        # AI classification would go here
+        # Simple keyword matching for now
+        
+        keywords_map = {
+            "tech": ["technology", "tech", "software", "coding", "developer"],
+            "music": ["concert", "music", "festival", "band", "performance"],
+            "sports": ["sports", "tournament", "match", "game", "athletic"],
+            "business": ["conference", "summit", "networking", "business"],
+        }
+        
+        text = f"{event_name} {description}".lower()
+        
+        for category_type, keywords in keywords_map.items():
+            if any(keyword in text for keyword in keywords):
+                category = Category.query.filter(
+                    Category.name.ilike(f"%{category_type}%")
+                ).first()
+                
+                if category:
+                    return {
+                        "category_id": category.id,
+                        "category_name": category.name,
+                        "confidence": 0.75,
+                        "reasoning": f"Detected keywords: {', '.join([k for k in keywords if k in text])}"
+                    }
+        
+        return None
+    
+    @staticmethod
+    def update_draft_with_ai(draft_id, field_name, user_value=None, regenerate=False):
+        """
+        Update a specific field in the draft with AI assistance
+        
+        Args:
+            draft_id: Draft ID
+            field_name: Field to update ('name', 'description', 'amenities', etc.)
+            user_value: Optional user-provided value
+            regenerate: Whether to regenerate AI suggestion
+        """
+        draft = AIEventDraft.query.get(draft_id)
+        if not draft:
+            return None
+        
+        # Log the assistance
+        assistance_log = AIEventAssistanceLog(
+            draft_id=draft_id,
+            organizer_id=draft.organizer_id,
+            assistance_type=f"{field_name}_{'regeneration' if regenerate else 'update'}"
+        )
+        
+        if field_name == 'name':
+            if user_value:
+                draft.suggested_name = user_value
+                draft.name_source = 'user'
+                draft.name_confidence = 1.0
+                assistance_log.user_input = {"value": user_value}
+                assistance_log.user_accepted = True
+            elif regenerate:
+                suggestions = AIEventManager.generate_event_name(
+                    draft.suggested_description,
+                    draft.suggested_category_id
+                )
+                draft.suggested_name = suggestions['primary']
+                draft.name_confidence = suggestions['confidence']
+                draft.name_source = 'ai'
+                assistance_log.ai_suggestions = suggestions
+        
+        elif field_name == 'description':
+            if user_value:
+                draft.suggested_description = user_value
+                draft.description_source = 'user'
+                draft.description_confidence = 1.0
+            elif regenerate or not draft.suggested_description:
+                enhanced = AIEventManager.enhance_description(
+                    draft.suggested_description or user_value,
+                    draft.suggested_name,
+                    draft.suggested_category_id
+                )
+                draft.suggested_description = enhanced['enhanced_text']
+                draft.description_confidence = enhanced['confidence']
+                draft.description_source = 'ai'
+        
+        elif field_name == 'amenities':
+            suggestions = AIEventManager.suggest_amenities(
+                draft.suggested_name,
+                draft.suggested_description,
+                draft.suggested_category_id,
+                draft.suggested_location,
+                user_value
+            )
+            draft.suggested_amenities = suggestions
+        
+        elif field_name == 'category':
+            if user_value:
+                draft.suggested_category_id = user_value
+                draft.category_source = 'user'
+                draft.category_confidence = 1.0
+            elif regenerate:
+                classification = AIEventManager.classify_category(
+                    draft.suggested_name or "",
+                    draft.suggested_description or ""
+                )
+                if classification:
+                    draft.suggested_category_id = classification['category_id']
+                    draft.category_confidence = classification['confidence']
+                    draft.category_source = 'ai'
+        
+        draft.ai_iterations += 1
+        draft.updated_at = datetime.utcnow()
+        
+        db.session.add(assistance_log)
+        db.session.commit()
+        
+        return draft
+    
+    @staticmethod
+    def publish_draft(draft_id):
+        """
+        Convert a draft to an actual Event
+        """
+        draft = AIEventDraft.query.get(draft_id)
+        if not draft or draft.draft_status == 'published':
+            return None
+        
+        # Validate required fields
+        if not all([draft.suggested_name, draft.suggested_description, 
+                   draft.suggested_date, draft.suggested_start_time,
+                   draft.suggested_city, draft.suggested_location]):
+            raise ValueError("Missing required fields for event creation")
+        
+        # Extract amenity names
+        amenities = []
+        if draft.suggested_amenities:
+            amenities = [a['name'] for a in draft.suggested_amenities]
+        
+        # Create the event
+        event = Event(
+            name=draft.suggested_name,
+            description=draft.suggested_description,
+            date=draft.suggested_date,
+            start_time=draft.suggested_start_time,
+            end_time=draft.suggested_end_time,
+            city=draft.suggested_city,
+            location=draft.suggested_location,
+            amenities=amenities,
+            image=draft.suggested_image_url,
+            organizer_id=draft.organizer_id,
+            category_id=draft.suggested_category_id,
+            ai_assisted_creation=True,
+            created_from_draft_id=draft_id
+        )
+        
+        # Track which fields were AI-generated
+        ai_fields = []
+        if draft.name_source == 'ai':
+            ai_fields.append('name')
+        if draft.description_source == 'ai':
+            ai_fields.append('description')
+        if draft.category_source == 'ai':
+            ai_fields.append('category')
+        if any(a.get('source') == 'ai' for a in (draft.suggested_amenities or [])):
+            ai_fields.append('amenities')
+        
+        event.ai_generated_fields = ai_fields
+        
+        # Calculate overall confidence
+        confidences = [
+            draft.name_confidence,
+            draft.description_confidence,
+            draft.category_confidence
+        ]
+        event.ai_confidence_score = sum(c for c in confidences if c) / len([c for c in confidences if c])
+        
+        # Update draft status
+        draft.draft_status = 'published'
+        draft.published_event_id = event.id
+        
+        db.session.add(event)
+        db.session.commit()
+        
+        # Log the action
+        AIManager.log_action(
+            user_id=draft.organizer.user_id,
+            action_type=AIIntentType.CREATE_EVENT,
+            action_description=f"Published AI-assisted event: {event.name}",
+            target_table='event',
+            target_id=event.id,
+            request_data=draft.as_dict()
+        )
+        
+        return event
+    
+    @staticmethod
+    def get_organizer_drafts(organizer_id, status=None):
+        """Get all drafts for an organizer"""
+        query = AIEventDraft.query.filter_by(organizer_id=organizer_id)
+        
+        if status:
+            query = query.filter_by(draft_status=status)
+        
+        return query.order_by(AIEventDraft.updated_at.desc()).all()
 
 class TicketType(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -1822,7 +2353,6 @@ class AITicketAnalysis(db.Model):
             "projected_sellout_date": self.projected_sellout_date.isoformat() if self.projected_sellout_date else None,
             "confidence_level": self.confidence_level,
             "analyzed_at": self.analyzed_at.isoformat()
-
         }
 
 # ===== AI MANAGER UTILITY CLASS =====
@@ -1987,52 +2517,6 @@ class AIManager:
             page=page, per_page=per_page, error_out=False
         )
 
-
-# ===== COLLABORATION MANAGER =====
-class CollaborationManager:
-    """Helper class for managing event collaborations"""
-
-    @staticmethod
-    def create_partner(organizer_id, company_name, logo_url=None, website_url=None, 
-                      company_description=None, contact_email=None, contact_person=None):
-        partner = Partner(
-            organizer_id=organizer_id,
-            company_name=company_name,
-            logo_url=logo_url,
-            website_url=website_url,
-            company_description=company_description,
-            contact_email=contact_email,
-            contact_person=contact_person
-        )
-        db.session.add(partner)
-        db.session.commit()
-        return partner
-
-    @staticmethod
-    def add_event_collaboration(event_id, partner_id, collaboration_type="Partner", 
-                               description=None, display_order=0):
-        existing = EventCollaboration.query.filter_by(
-            event_id=event_id,
-            partner_id=partner_id,
-            is_active=True
-        ).first()
-
-        if existing:
-            return {"error": "Collaboration already exists", "collaboration": existing}
-
-        collaboration = EventCollaboration(
-            event_id=event_id,
-            partner_id=partner_id,
-            collaboration_type=CollaborationType(collaboration_type) if isinstance(collaboration_type, str) else collaboration_type,
-            description=description,
-            display_order=display_order
-        )
-
-        db.session.add(collaboration)
-        db.session.commit()
-        return {"success": True, "collaboration": collaboration}
-
-
 # ===== CURRENCY CONVERTER =====
 class CurrencyConverter:
     """Helper class for currency operations"""
@@ -2075,7 +2559,3 @@ class CurrencyConverter:
         db.session.add(new_exchange_rate)
         db.session.commit()
         return new_exchange_rate
-
-
-
-

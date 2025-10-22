@@ -32,6 +32,7 @@ from admin_report import register_admin_report_resources
 from resources import register_category_resources
 from resources import register_organizer_and_public_partner_resources
 from resources import register_admin_partner_resources
+from resources import register_event_resources
 from email_utils import mail
 from admin import register_admin_resources
 from currency_routes import register_currency_resources

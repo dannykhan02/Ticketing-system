@@ -1,4 +1,4 @@
 from .catergory_resource import register_category_resources  # 
 from .organizer_and_public_partner_resource import register_organizer_and_public_partner_resources
 from .admin_partner_resource import register_admin_partner_resources
-
+from .event_resource import register_event_resources
