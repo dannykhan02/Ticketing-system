@@ -22,7 +22,6 @@ from model import db, Currency, CurrencyCode
 # Blueprints and modules
 from auth import auth_bp
 from oauth_config import oauth, init_oauth
-from Event import register_event_resources
 from ticket import register_ticket_resources, complete_ticket_operation
 from scan import register_ticket_validation_resources
 from mpesa_intergration import register_mpesa_routes
