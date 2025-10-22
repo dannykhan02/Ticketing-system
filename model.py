@@ -981,12 +981,12 @@ class AIEventDraft(db.Model):
     # Metadata
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    published_event_id = db.Column(db.Integer, db.ForeignKey('event.id'), nullable=True)
+    published_event_id = db.Column(db.Integer, nullable=True)  # Removed foreign key to avoid circular dependency
     
     # Relationships
     organizer = db.relationship('Organizer', backref='event_drafts')
     suggested_category = db.relationship('Category', foreign_keys=[suggested_category_id])
-    published_event = db.relationship('Event', foreign_keys=[published_event_id])
+    # Removed the relationship to Event to avoid circular dependency
     
     __table_args__ = (
         db.Index('idx_organizer_status', 'organizer_id', 'draft_status'),
@@ -1095,7 +1095,7 @@ class Event(db.Model):
     ai_confidence_score = db.Column(db.Float, nullable=True)
     # Overall confidence in AI-generated content
     
-    created_from_draft_id = db.Column(db.Integer, db.ForeignKey('ai_event_drafts.id'), nullable=True)
+    created_from_draft_id = db.Column(db.Integer, nullable=True)  # Removed foreign key to avoid circular dependency
     
     # Original user input (for learning)
     original_user_input = db.Column(JSONB, nullable=True)
@@ -1121,10 +1121,7 @@ class Event(db.Model):
                                          foreign_keys='AIRevenueAnalysis.event_id')
     ai_ticket_analyses = db.relationship('AITicketAnalysis', backref='event', lazy=True)
     
-    # New AI relationships
-    created_from_draft = db.relationship('AIEventDraft', 
-                                        foreign_keys=[created_from_draft_id],
-                                        backref='final_events')
+    # Removed the relationship to AIEventDraft to avoid circular dependency
 
     def __init__(self, name, description, date, start_time, end_time, city, location, amenities, image, organizer_id, category_id):
         self.name = name
