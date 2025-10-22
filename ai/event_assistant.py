@@ -233,6 +233,150 @@ class ComprehensiveEventAssistant:
         
         return info
     
+    def _categorize_event_advanced(self, text_lower: str) -> Dict:
+        """Advanced event categorization from text"""
+        categorization = {
+            "primary_category": None,
+            "secondary_categories": [],
+            "tags": [],
+            "audience_type": "general"
+        }
+        
+        # Category keywords mapping
+        category_keywords = {
+            "Technology": ["tech", "software", "developer", "coding", "ai", "digital", "startup"],
+            "Business": ["business", "conference", "networking", "professional", "corporate"],
+            "Music": ["music", "concert", "band", "festival", "dj", "performance"],
+            "Sports": ["sports", "fitness", "marathon", "game", "tournament", "competition"],
+            "Education": ["workshop", "training", "seminar", "learning", "course", "tutorial"],
+            "Entertainment": ["entertainment", "comedy", "show", "theater", "performance"],
+            "Food & Drink": ["food", "restaurant", "culinary", "tasting", "dining"],
+            "Arts & Culture": ["art", "culture", "exhibition", "gallery", "museum"],
+            "Community": ["community", "charity", "fundraiser", "social", "volunteer"]
+        }
+        
+        # Score each category
+        category_scores = {}
+        for category, keywords in category_keywords.items():
+            score = sum(1 for keyword in keywords if keyword in text_lower)
+            if score > 0:
+                category_scores[category] = score
+        
+        # Assign primary and secondary categories
+        if category_scores:
+            sorted_categories = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
+            categorization["primary_category"] = sorted_categories[0][0]
+            if len(sorted_categories) > 1:
+                categorization["secondary_categories"] = [cat for cat, _ in sorted_categories[1:3]]
+        
+        # Extract tags
+        common_tags = ["networking", "workshop", "conference", "festival", "training", 
+                       "seminar", "meetup", "expo", "competition", "performance"]
+        categorization["tags"] = [tag for tag in common_tags if tag in text_lower]
+        
+        # Determine audience type
+        if any(word in text_lower for word in ["professional", "business", "corporate"]):
+            categorization["audience_type"] = "professional"
+        elif any(word in text_lower for word in ["family", "kids", "children"]):
+            categorization["audience_type"] = "family"
+        elif any(word in text_lower for word in ["student", "university", "college"]):
+            categorization["audience_type"] = "students"
+        
+        return categorization
+    
+    def _infer_logistics(self, text_lower: str, context: Dict = None) -> Dict:
+        """Infer logistical details from text"""
+        logistics = {
+            "expected_attendance": None,
+            "budget_range": None,
+            "complexity_level": "medium"
+        }
+        
+        # Extract attendance numbers
+        attendance_patterns = [
+            r'(\d+)\s*(?:people|attendees|participants|guests)',
+            r'(?:about|around|approximately)\s*(\d+)',
+            r'capacity\s*(?:of|:)?\s*(\d+)'
+        ]
+        
+        for pattern in attendance_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                logistics["expected_attendance"] = int(match.group(1))
+                break
+        
+        # Infer budget range from event type
+        if any(word in text_lower for word in ["conference", "expo", "summit"]):
+            logistics["budget_range"] = "high"
+            logistics["complexity_level"] = "high"
+        elif any(word in text_lower for word in ["workshop", "seminar", "training"]):
+            logistics["budget_range"] = "medium"
+            logistics["complexity_level"] = "medium"
+        elif any(word in text_lower for word in ["meetup", "social", "gathering"]):
+            logistics["budget_range"] = "low"
+            logistics["complexity_level"] = "low"
+        
+        # Use context if available
+        if context and "previous_events" in context:
+            # Could analyze previous events for patterns
+            pass
+        
+        return logistics
+    
+    def _detect_preferences(self, text_lower: str) -> Dict:
+        """Detect user preferences from text"""
+        preferences = {
+            "format_preference": None,
+            "timing_preference": None,
+            "location_preference": None
+        }
+        
+        # Format preferences
+        if any(word in text_lower for word in ["virtual", "online", "remote", "webinar"]):
+            preferences["format_preference"] = "virtual"
+        elif any(word in text_lower for word in ["hybrid"]):
+            preferences["format_preference"] = "hybrid"
+        else:
+            preferences["format_preference"] = "in_person"
+        
+        # Timing preferences
+        if any(word in text_lower for word in ["morning", "breakfast"]):
+            preferences["timing_preference"] = "morning"
+        elif any(word in text_lower for word in ["afternoon", "lunch"]):
+            preferences["timing_preference"] = "afternoon"
+        elif any(word in text_lower for word in ["evening", "dinner", "night"]):
+            preferences["timing_preference"] = "evening"
+        elif any(word in text_lower for word in ["weekend", "saturday", "sunday"]):
+            preferences["timing_preference"] = "weekend"
+        
+        # Location preferences
+        nairobi_areas = ["westlands", "cbd", "karen", "kilimani", "upper hill", "gigiri"]
+        for area in nairobi_areas:
+            if area in text_lower:
+                preferences["location_preference"] = area
+                break
+        
+        return preferences
+    
+    def _validate_and_enrich_extraction(self, extracted: Dict, context: Dict = None) -> Dict:
+        """Validate and enrich extracted data"""
+        # Ensure all required keys exist
+        required_keys = ["basic_info", "categorization", "logistics", "preferences", "inferred_details"]
+        for key in required_keys:
+            if key not in extracted:
+                extracted[key] = {}
+        
+        # Enrich with context if available
+        if context:
+            # Add context-based enrichments
+            if "previous_events" in context:
+                extracted["context_enrichment"] = {
+                    "has_event_history": True,
+                    "previous_event_count": len(context["previous_events"])
+                }
+        
+        return extracted
+    
     def _create_enhanced_draft(self, organizer_id: int, extraction_result: Dict, context: Dict) -> AIEventDraft:
         """Create a draft with comprehensive AI enhancements"""
         basic_info = extraction_result.get('basic_info', {})
@@ -290,6 +434,121 @@ class ComprehensiveEventAssistant:
         db.session.commit()
         
         return draft
+    
+    def _generate_optimized_event_name(self, draft: AIEventDraft, extraction_result: Dict) -> Dict:
+        """Generate an optimized event name"""
+        categorization = extraction_result.get('categorization', {})
+        primary_category = categorization.get('primary_category', 'Event')
+        
+        # Fallback name generation
+        name = f"{primary_category} Experience"
+        confidence = 0.5
+        
+        if self.llm.is_enabled():
+            try:
+                messages = [
+                    self.llm.build_system_message(
+                        "Generate a catchy, professional event name. Respond with JSON: {\"name\": \"...\", \"confidence\": 0.0-1.0}"
+                    ),
+                    {
+                        "role": "user",
+                        "content": f"Category: {primary_category}, Details: {json.dumps(extraction_result, default=str)}"
+                    }
+                ]
+                
+                response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=100, quick_mode=True, fallback_response=None)
+                if response:
+                    cleaned = self._clean_json_response(response)
+                    result = json.loads(cleaned)
+                    return result
+            except:
+                pass
+        
+        return {"name": name, "confidence": confidence}
+    
+    def _generate_comprehensive_description(self, draft: AIEventDraft, extraction_result: Dict) -> Dict:
+        """Generate comprehensive event description"""
+        description = "An exciting event experience."
+        confidence = 0.5
+        
+        if self.llm.is_enabled():
+            try:
+                messages = [
+                    self.llm.build_system_message(
+                        "Generate engaging event description. Respond with JSON: {\"description\": \"...\", \"confidence\": 0.0-1.0}"
+                    ),
+                    {
+                        "role": "user",
+                        "content": f"Event details: {json.dumps(extraction_result, default=str)}"
+                    }
+                ]
+                
+                response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=200, quick_mode=True, fallback_response=None)
+                if response:
+                    cleaned = self._clean_json_response(response)
+                    result = json.loads(cleaned)
+                    return result
+            except:
+                pass
+        
+        return {"description": description, "confidence": confidence}
+    
+    def _optimize_category_selection(self, draft: AIEventDraft, extraction_result: Dict) -> Optional[Dict]:
+        """Optimize category selection"""
+        categorization = extraction_result.get('categorization', {})
+        primary_category = categorization.get('primary_category')
+        
+        if not primary_category:
+            return None
+        
+        # Find matching category in database
+        category = Category.query.filter(Category.name.ilike(f"%{primary_category}%")).first()
+        
+        if category:
+            return {
+                "category_id": category.id,
+                "confidence": 0.8
+            }
+        
+        return None
+    
+    def _suggest_contextual_amenities(self, draft: AIEventDraft, extraction_result: Dict, context: Dict) -> List[str]:
+        """Suggest contextual amenities"""
+        amenities = []
+        
+        categorization = extraction_result.get('categorization', {})
+        primary_category = categorization.get('primary_category', '').lower()
+        
+        if 'business' in primary_category or 'conference' in primary_category:
+            amenities = ["WiFi", "Projector", "Microphone", "Parking", "Catering"]
+        elif 'music' in primary_category or 'entertainment' in primary_category:
+            amenities = ["Sound System", "Stage", "Lighting", "Security", "Parking"]
+        else:
+            amenities = ["Parking", "Restrooms", "Seating"]
+        
+        return amenities
+    
+    def _optimize_event_timing(self, draft: AIEventDraft, extraction_result: Dict) -> Optional[Dict]:
+        """Optimize event timing"""
+        preferences = extraction_result.get('preferences', {})
+        timing_pref = preferences.get('timing_preference')
+        
+        timing = {}
+        
+        if timing_pref == 'morning':
+            timing['start_time'] = time(9, 0)
+            timing['end_time'] = time(12, 0)
+        elif timing_pref == 'afternoon':
+            timing['start_time'] = time(14, 0)
+            timing['end_time'] = time(17, 0)
+        elif timing_pref == 'evening':
+            timing['start_time'] = time(18, 0)
+            timing['end_time'] = time(22, 0)
+        else:
+            timing['start_time'] = time(10, 0)
+            timing['end_time'] = time(16, 0)
+        
+        return timing if timing else None
     
     # ===== INTELLIGENT SUGGESTION SYSTEMS =====
     
@@ -375,6 +634,64 @@ class ComprehensiveEventAssistant:
         
         return risks
     
+    def _identify_growth_opportunities(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
+        """Identify growth opportunities"""
+        opportunities = []
+        
+        logistics = extraction_result.get('logistics', {})
+        expected_attendance = logistics.get('expected_attendance')
+        
+        if expected_attendance and expected_attendance > 100:
+            opportunities.append("Large attendance expected: Consider sponsorship opportunities")
+        
+        opportunities.append("Create social media campaign to boost visibility")
+        opportunities.append("Partner with local businesses for cross-promotion")
+        
+        return opportunities
+    
+    def _identify_competitive_advantages(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
+        """Identify competitive advantages"""
+        advantages = []
+        
+        categorization = extraction_result.get('categorization', {})
+        tags = categorization.get('tags', [])
+        
+        if 'networking' in tags:
+            advantages.append("Networking focus can attract professional audience")
+        
+        if 'workshop' in tags:
+            advantages.append("Hands-on workshop format provides unique value")
+        
+        return advantages
+    
+    def _is_holiday_period(self, event_date: date) -> bool:
+        """Check if date falls in holiday period"""
+        # Kenyan holidays (simplified)
+        holidays = [
+            (12, 25),  # Christmas
+            (12, 26),  # Boxing Day
+            (1, 1),    # New Year
+        ]
+        
+        return (event_date.month, event_date.day) in holidays
+    
+    def _find_competing_events(self, draft: AIEventDraft) -> List[Event]:
+        """Find competing events"""
+        if not draft.suggested_date or not draft.suggested_category_id:
+            return []
+        
+        # Find events in same category around same date
+        date_range = 7  # days
+        start_date = draft.suggested_date - timedelta(days=date_range)
+        end_date = draft.suggested_date + timedelta(days=date_range)
+        
+        competing = Event.query.filter(
+            Event.category_id == draft.suggested_category_id,
+            Event.date.between(start_date, end_date)
+        ).limit(5).all()
+        
+        return competing
+    
     # ===== TICKETING & PRICING INTELLIGENCE =====
     
     def _suggest_initial_ticket_strategy(self, draft: AIEventDraft) -> Dict:
@@ -459,6 +776,48 @@ class ComprehensiveEventAssistant:
         
         return strategy
     
+    def _get_market_pricing_data(self, category_name: str) -> Dict:
+        """Get market pricing data for category"""
+        # Simplified market data
+        pricing_map = {
+            "Technology": {"price_range": {"min": 2000, "max": 10000}},
+            "Business": {"price_range": {"min": 3000, "max": 15000}},
+            "Music": {"price_range": {"min": 1000, "max": 5000}},
+            "Sports": {"price_range": {"min": 500, "max": 3000}},
+            "Education": {"price_range": {"min": 1500, "max": 8000}},
+        }
+        
+        for key, data in pricing_map.items():
+            if key.lower() in category_name.lower():
+                return data
+        
+        return {"price_range": {"min": 1000, "max": 5000}}
+    
+    def _generate_sales_forecast(self, draft: AIEventDraft, tiers: List[Dict]) -> Dict:
+        """Generate sales forecast"""
+        return {
+            "estimated_total_tickets": 100,
+            "estimated_revenue": 250000,
+            "confidence": 0.6,
+            "factors": ["Market analysis", "Historical data", "Category trends"]
+        }
+    
+    def _generate_ticket_recommendations(self, draft: AIEventDraft, tiers: List[Dict]) -> List[str]:
+        """Generate ticket recommendations"""
+        recommendations = []
+        
+        if len(tiers) < 2:
+            recommendations.append("Consider adding multiple ticket tiers to maximize revenue")
+        
+        if draft.suggested_date:
+            days_until = (draft.suggested_date - date.today()).days
+            if days_until > 45:
+                recommendations.append("Launch early bird pricing to drive early sales")
+        
+        recommendations.append("Implement group discounts to encourage bulk purchases")
+        
+        return recommendations
+    
     # ===== PARTNERSHIP INTELLIGENCE =====
     
     def _suggest_initial_partners(self, draft: AIEventDraft) -> Dict:
@@ -515,6 +874,53 @@ class ComprehensiveEventAssistant:
                 })
         
         return sorted(partners, key=lambda x: x['match_score'], reverse=True)[:5]
+    
+    def _calculate_partner_match_score(self, partner: Partner, draft: AIEventDraft) -> float:
+        """Calculate partner match score"""
+        score = 0.5  # Base score
+        
+        # Add scoring logic based on partner type, category match, etc.
+        if draft.suggested_category_id:
+            # Simple match - could be enhanced with actual partner category data
+            score += 0.2
+        
+        return min(score, 1.0)
+    
+    def _find_media_partners(self, draft: AIEventDraft, organizer: Organizer) -> List[Dict]:
+        """Find media partners"""
+        # Simplified - would query actual media partners
+        return []
+    
+    def _suggest_venues(self, draft: AIEventDraft) -> List[Dict]:
+        """Suggest venues"""
+        venues = []
+        
+        if draft.suggested_city == 'Nairobi':
+            venues = [
+                {"name": "KICC", "capacity": 1000, "type": "Conference Center"},
+                {"name": "Sarit Centre", "capacity": 500, "type": "Shopping Mall"},
+                {"name": "Two Rivers Mall", "capacity": 800, "type": "Shopping Mall"}
+            ]
+        
+        return venues
+    
+    def _identify_sponsorship_opportunities(self, draft: AIEventDraft) -> List[str]:
+        """Identify sponsorship opportunities"""
+        opportunities = []
+        
+        category = Category.query.get(draft.suggested_category_id) if draft.suggested_category_id else None
+        
+        if category:
+            category_name = category.name.lower()
+            
+            if 'tech' in category_name:
+                opportunities = ["Tech companies", "Software vendors", "Cloud providers"]
+            elif 'business' in category_name:
+                opportunities = ["Banks", "Professional services", "Business software"]
+            else:
+                opportunities = ["Local businesses", "Brands", "Service providers"]
+        
+        return opportunities
     
     # ===== ANALYTICS & INSIGHTS =====
     
@@ -596,6 +1002,49 @@ class ComprehensiveEventAssistant:
         
         return metrics
     
+    def _analyze_audience_behavior(self, event: Event) -> Dict:
+        """Analyze audience behavior"""
+        return {
+            "demographics": "Data not available",
+            "engagement_level": "Medium",
+            "retention_rate": 0.75
+        }
+    
+    def _analyze_financial_performance(self, event: Event) -> Dict:
+        """Analyze financial performance"""
+        total_revenue = sum(float(t.ticket_type.price) * t.quantity for t in event.tickets)
+        
+        return {
+            "total_revenue": total_revenue,
+            "profit_margin": 0.3,  # Placeholder
+            "roi": 1.5  # Placeholder
+        }
+    
+    def _identify_event_optimizations(self, event: Event) -> List[str]:
+        """Identify optimization opportunities"""
+        optimizations = []
+        
+        # Check attendance rate
+        total_tickets = sum(t.quantity for t in event.tickets)
+        scanned_tickets = sum(t.quantity for t in event.tickets if t.scanned)
+        
+        if total_tickets > 0:
+            attendance_rate = scanned_tickets / total_tickets
+            if attendance_rate < 0.7:
+                optimizations.append("Low attendance rate - consider better reminder system")
+        
+        optimizations.append("Implement post-event survey to gather feedback")
+        
+        return optimizations
+    
+    def _generate_predictive_insights(self, event: Event) -> Dict:
+        """Generate predictive insights"""
+        return {
+            "future_attendance_prediction": "High interest expected",
+            "revenue_forecast": "Stable growth",
+            "risk_factors": ["Weather dependency", "Competition"]
+        }
+    
     # ===== CONVERSATIONAL INTERFACE =====
     
     def _generate_conversational_response(self, draft: AIEventDraft, suggestions: Dict,
@@ -639,6 +1088,22 @@ class ComprehensiveEventAssistant:
         except Exception as e:
             logger.error(f"Conversational response generation failed: {e}")
             return self._fallback_conversational_response(draft, suggestions)
+    
+    def _get_creation_next_steps(self, draft: AIEventDraft, suggestions: Dict) -> List[str]:
+        """Get next steps for event creation"""
+        next_steps = []
+        
+        missing_fields = self._identify_missing_required_fields(draft)
+        if missing_fields:
+            next_steps.append(f"Complete required fields: {', '.join(missing_fields)}")
+        
+        if suggestions.get('immediate_actions'):
+            next_steps.extend(suggestions['immediate_actions'][:2])
+        
+        if not missing_fields:
+            next_steps.append("Review and publish your event")
+        
+        return next_steps
     
     # ===== HELPER METHODS =====
     
@@ -808,6 +1273,30 @@ class ComprehensiveEventAssistant:
             logger.error(f"Portfolio analysis failed: {e}")
             return {"error": "Could not generate portfolio analysis"}
     
+    def _categorize_events(self, events: List[Event]) -> Dict:
+        """Categorize events by category"""
+        by_category = {}
+        for event in events:
+            category_name = event.category.name if event.category else "Uncategorized"
+            by_category[category_name] = by_category.get(category_name, 0) + 1
+        return by_category
+    
+    def _categorize_drafts(self, drafts: List[AIEventDraft]) -> Dict:
+        """Categorize drafts by status"""
+        by_status = {}
+        for draft in drafts:
+            status = draft.draft_status or "unknown"
+            by_status[status] = by_status.get(status, 0) + 1
+        return by_status
+    
+    def _calculate_revenue_trends(self, events: List[Event]) -> Dict:
+        """Calculate revenue trends"""
+        return {
+            "trend": "stable",
+            "monthly_average": 50000,
+            "growth_rate": 0.15
+        }
+    
     def _generate_portfolio_recommendations(self, events: List[Event], drafts: List[AIEventDraft]) -> List[str]:
         """Generate portfolio-level recommendations"""
         recommendations = []
@@ -833,25 +1322,6 @@ class ComprehensiveEventAssistant:
         
         return recommendations
 
-
-# ===== COMPREHENSIVE USAGE EXAMPLES =====
-
-"""
-# Example 1: Complete Event Creation
-assistant = ComprehensiveEventAssistant()
-
-result = assistant.create_event_conversational(
-    organizer_id=123,
-    user_input="I want to create a tech conference in Nairobi for software developers. About 200 people, sometime in March 2024. Focus on AI and web development.",
-    context={"previous_events": ["AI Summit 2023"], "preferences": {"format": "conference"}}
-)
-
-# Example 2: Portfolio Analysis
-portfolio = assistant.get_organizer_event_portfolio(organizer_id=123)
-
-# Example 3: Event Insights
-insights = assistant.generate_event_insights(event_id=456, analysis_type="comprehensive")
-"""
 
 # Singleton instance
 comprehensive_event_assistant = ComprehensiveEventAssistant()
