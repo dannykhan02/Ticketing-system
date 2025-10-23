@@ -1138,6 +1138,357 @@ class ComprehensiveEventAssistant:
             logger.error(f"Failed to delete draft: {e}")
             db.session.rollback()
             return {"success": False, "error": "Could not delete draft"}
+
+    # ===== DRAFT FIELD MANAGEMENT =====
+
+    def update_draft_field(self, draft_id: int, field_name: str, value: Any, 
+                          regenerate: bool = False) -> Dict:
+        """
+        Update a specific field in an event draft
+        
+        Args:
+            draft_id: Draft ID to update
+            field_name: Field name to update
+            value: New value for the field
+            regenerate: Whether to regenerate AI suggestions for this field
+        
+        Returns:
+            dict: Update result
+        """
+        try:
+            # Get the draft
+            draft = AIEventDraft.query.get(draft_id)
+            if not draft:
+                return {"success": False, "error": "Draft not found"}
+            
+            # Map field names to draft attributes
+            field_mapping = {
+                'name': 'suggested_name',
+                'description': 'suggested_description',
+                'date': 'suggested_date',
+                'start_time': 'suggested_start_time',
+                'end_time': 'suggested_end_time',
+                'city': 'suggested_city',
+                'location': 'suggested_location',
+                'category_id': 'suggested_category_id',
+                'amenities': 'suggested_amenities'
+            }
+            
+            # Validate field name
+            if field_name not in field_mapping:
+                return {"success": False, "error": f"Invalid field name: {field_name}"}
+            
+            attribute_name = field_mapping[field_name]
+            
+            # Handle special field types
+            if field_name == 'date' and value:
+                try:
+                    value = datetime.strptime(value, '%Y-%m-%d').date()
+                except ValueError:
+                    return {"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}
+            
+            elif field_name in ['start_time', 'end_time'] and value:
+                try:
+                    value = datetime.strptime(value, '%H:%M').time()
+                except ValueError:
+                    return {"success": False, "error": "Invalid time format. Use HH:MM"}
+            
+            elif field_name == 'amenities' and value:
+                try:
+                    if isinstance(value, str):
+                        value = json.loads(value)
+                    elif not isinstance(value, list):
+                        return {"success": False, "error": "Amenities must be a list"}
+                except json.JSONDecodeError:
+                    return {"success": False, "error": "Invalid amenities format"}
+            
+            elif field_name == 'category_id' and value:
+                category = Category.query.get(value)
+                if not category:
+                    return {"success": False, "error": "Invalid category ID"}
+            
+            # Update the field
+            setattr(draft, attribute_name, value)
+            
+            # Update confidence and source
+            confidence_field = f"{field_name.split('_')[0]}_confidence"
+            source_field = f"{field_name.split('_')[0]}_source"
+            
+            if hasattr(draft, confidence_field):
+                if regenerate:
+                    # Set lower confidence for regenerated fields
+                    setattr(draft, confidence_field, 0.5)
+                    setattr(draft, source_field, 'ai_regenerated')
+                else:
+                    # User-provided values get highest confidence
+                    setattr(draft, confidence_field, 1.0)
+                    setattr(draft, source_field, 'user')
+            
+            draft.updated_at = datetime.utcnow()
+            db.session.commit()
+            
+            # Regenerate AI suggestions if requested
+            if regenerate:
+                regeneration_result = self._regenerate_field_suggestions(draft, field_name)
+                if regeneration_result.get('success'):
+                    return {
+                        "success": True,
+                        "message": f"Field {field_name} updated and regenerated",
+                        "draft": self._format_draft_for_response(draft),
+                        "regenerated_value": regeneration_result.get('value'),
+                        "regeneration_confidence": regeneration_result.get('confidence')
+                    }
+            
+            return {
+                "success": True,
+                "message": f"Field {field_name} updated successfully",
+                "draft": self._format_draft_for_response(draft),
+                "completion_status": self._get_completion_status(draft)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to update draft field: {e}")
+            db.session.rollback()
+            return {"success": False, "error": f"Could not update field: {str(e)}"}
+
+    def _regenerate_field_suggestions(self, draft: AIEventDraft, field_name: str) -> Dict:
+        """Regenerate AI suggestions for a specific field"""
+        try:
+            if not self.llm.is_enabled():
+                return {"success": False, "error": "AI service unavailable"}
+            
+            # Prepare context for regeneration
+            context = {
+                "current_draft": self._get_draft_summary(draft),
+                "field_to_regenerate": field_name
+            }
+            
+            messages = [
+                self.llm.build_system_message(
+                    f"Regenerate the {field_name} for this event draft. "
+                    "Provide a better, more engaging version based on the current event details. "
+                    "Respond with JSON: {\"value\": \"...\", \"confidence\": 0.0-1.0}"
+                ),
+                {
+                    "role": "user", 
+                    "content": f"Current event details: {json.dumps(context, default=str)}"
+                }
+            ]
+            
+            response = self.llm.chat_completion(
+                messages, 
+                temperature=0.7, 
+                max_tokens=200, 
+                quick_mode=True
+            )
+            
+            if response:
+                cleaned = self._clean_json_response(response)
+                result = json.loads(cleaned)
+                
+                # Update the draft with regenerated value
+                field_mapping = {
+                    'name': 'suggested_name',
+                    'description': 'suggested_description'
+                }
+                
+                if field_name in field_mapping:
+                    attribute_name = field_mapping[field_name]
+                    setattr(draft, attribute_name, result['value'])
+                    
+                    # Update confidence
+                    confidence_field = f"{field_name}_confidence"
+                    source_field = f"{field_name}_source"
+                    
+                    if hasattr(draft, confidence_field):
+                        setattr(draft, confidence_field, result.get('confidence', 0.7))
+                        setattr(draft, source_field, 'ai_regenerated')
+                    
+                    draft.updated_at = datetime.utcnow()
+                    db.session.commit()
+                    
+                    return {
+                        "success": True,
+                        "value": result['value'],
+                        "confidence": result.get('confidence', 0.7)
+                    }
+            
+            return {"success": False, "error": "Could not regenerate field"}
+            
+        except Exception as e:
+            logger.error(f"Field regeneration failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def review_draft(self, draft_id: int) -> Dict:
+        """
+        Provide comprehensive review and suggestions for a draft
+        
+        Args:
+            draft_id: Draft ID to review
+            
+        Returns:
+            dict: Review results with suggestions
+        """
+        try:
+            draft = AIEventDraft.query.get(draft_id)
+            if not draft:
+                return {"error": "Draft not found"}
+            
+            # Generate comprehensive review
+            review = {
+                "overall_score": self._calculate_draft_quality_score(draft),
+                "strengths": [],
+                "improvement_areas": [],
+                "completeness_check": self._get_completion_status(draft),
+                "market_analysis": self._analyze_draft_market_fit(draft),
+                "risk_assessment": self._assess_draft_risks(draft)
+            }
+            
+            # Identify strengths
+            if draft.name_confidence and draft.name_confidence > 0.8:
+                review["strengths"].append("Strong event name with high confidence")
+            
+            if draft.description_confidence and draft.description_confidence > 0.7:
+                review["strengths"].append("Well-crafted description")
+            
+            if draft.suggested_date and draft.suggested_date > date.today():
+                review["strengths"].append("Future-dated event allows for proper planning")
+            
+            # Identify improvement areas
+            missing_fields = self._identify_missing_required_fields(draft)
+            if missing_fields:
+                review["improvement_areas"].extend([
+                    f"Add {field} to complete event setup" for field in missing_fields
+                ])
+            
+            if not draft.suggested_amenities:
+                review["improvement_areas"].append("Consider adding amenities to attract attendees")
+            
+            return review
+            
+        except Exception as e:
+            logger.error(f"Draft review failed: {e}")
+            return {"error": "Could not generate review"}
+
+    def _calculate_draft_quality_score(self, draft: AIEventDraft) -> float:
+        """Calculate overall quality score for a draft"""
+        score = 0.0
+        max_score = 100
+        
+        # Field completeness (40 points)
+        missing_fields = self._identify_missing_required_fields(draft)
+        completeness_score = (1 - len(missing_fields) / len(self.required_fields)) * 40
+        score += completeness_score
+        
+        # Confidence scores (30 points)
+        confidences = []
+        if draft.name_confidence:
+            confidences.append(draft.name_confidence)
+        if draft.description_confidence:
+            confidences.append(draft.description_confidence)
+        if draft.category_confidence:
+            confidences.append(draft.category_confidence)
+        
+        if confidences:
+            confidence_score = (sum(confidences) / len(confidences)) * 30
+            score += confidence_score
+        
+        # Data quality (30 points)
+        if draft.suggested_date and draft.suggested_date > date.today():
+            score += 10
+        
+        if draft.suggested_start_time:
+            score += 10
+        
+        if draft.suggested_amenities and len(draft.suggested_amenities) > 2:
+            score += 10
+        
+        return min(score / max_score, 1.0)
+
+    def _analyze_draft_market_fit(self, draft: AIEventDraft) -> Dict:
+        """Analyze market fit for the draft"""
+        return {
+            "demand_indicator": "Medium",
+            "competition_level": "To be analyzed",
+            "target_audience": "General",
+            "seasonality_impact": "Neutral"
+        }
+
+    def _assess_draft_risks(self, draft: AIEventDraft) -> List[str]:
+        """Assess potential risks for the draft"""
+        risks = []
+        
+        if draft.suggested_date:
+            days_until = (draft.suggested_date - date.today()).days
+            if days_until < 7:
+                risks.append("Short timeline may limit marketing effectiveness")
+            elif days_until > 180:
+                risks.append("Long lead time may affect attendee interest")
+        
+        if not draft.suggested_location:
+            risks.append("Venue not specified - crucial for attendee planning")
+        
+        return risks
+
+    def publish_draft(self, draft_id: int, organizer_id: int = None) -> Dict:
+        """
+        Publish an event draft to create a live event
+        
+        Args:
+            draft_id: Draft ID to publish
+            organizer_id: Optional organizer ID for validation
+            
+        Returns:
+            dict: Publication result
+        """
+        try:
+            # Get draft with optional organizer validation
+            query = AIEventDraft.query.filter_by(id=draft_id)
+            if organizer_id:
+                query = query.filter_by(organizer_id=organizer_id)
+            
+            draft = query.first()
+            if not draft:
+                return {"success": False, "error": "Draft not found"}
+            
+            # Validate draft completeness
+            missing_fields = self._identify_missing_required_fields(draft)
+            if missing_fields:
+                return {
+                    "success": False,
+                    "error": "Cannot publish incomplete draft",
+                    "missing_fields": missing_fields
+                }
+            
+            # Use AIEventManager to publish the draft
+            event = AIEventManager.publish_draft(draft.id)
+            
+            if event:
+                # Log the successful publication
+                organizer = Organizer.query.get(draft.organizer_id)
+                if organizer:
+                    AIManager.log_action(
+                        user_id=organizer.user_id,
+                        action_type=AIIntentType.CREATE_EVENT,
+                        action_description=f"Published event from draft: {event.name}",
+                        target_table='event',
+                        target_id=event.id
+                    )
+                
+                return {
+                    "success": True,
+                    "message": "Event published successfully",
+                    "event_id": event.id,
+                    "event": event.as_dict(),
+                    "ai_assisted": True
+                }
+            else:
+                return {"success": False, "error": "Failed to publish draft"}
+                
+        except Exception as e:
+            logger.error(f"Failed to publish draft: {e}")
+            db.session.rollback()
+            return {"success": False, "error": f"Publication failed: {str(e)}"}
     
     # ===== ANALYTICS & INSIGHTS =====
     
