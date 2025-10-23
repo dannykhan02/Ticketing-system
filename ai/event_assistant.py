@@ -663,6 +663,395 @@ class ComprehensiveEventAssistant:
             advantages.append("Hands-on workshop format provides unique value")
         
         return advantages
+
+
+     # Add these methods to the ComprehensiveEventAssistant class
+    # Insert after the _identify_competitive_advantages method (around line 600)
+
+    def process_event_update_request(self, event_id: int, update_request: str, user_id: int) -> Dict:
+        """
+        Process natural language update request for an existing event
+        
+        Args:
+            event_id: Event ID to update
+            update_request: Natural language description of desired updates
+            user_id: User making the request
+            
+        Returns:
+            dict: Proposed updates with confirmation requirement
+        """
+        try:
+            # Get the event
+            event = Event.query.get(event_id)
+            if not event:
+                return {"error": "Event not found"}
+            
+            # Extract update intent from natural language
+            update_analysis = self._analyze_update_request(update_request, event)
+            
+            if not update_analysis.get('success'):
+                return {
+                    "error": update_analysis.get('error', 'Could not understand update request'),
+                    "suggestion": "Try being more specific about what you want to update"
+                }
+            
+            # Generate proposed updates
+            proposed_updates = self._generate_update_proposals(event, update_analysis)
+            
+            # Determine if confirmation is needed
+            requires_confirmation = self._requires_update_confirmation(proposed_updates)
+            
+            return {
+                "success": True,
+                "updates_proposed": proposed_updates,
+                "summary": self._generate_update_summary(proposed_updates),
+                "confirmation_required": requires_confirmation,
+                "impact_analysis": self._analyze_update_impact(event, proposed_updates)
+            }
+            
+        except Exception as e:
+            logger.error(f"Update request processing failed: {e}")
+            return {
+                "error": f"Failed to process update request: {str(e)}",
+                "fallback_suggestion": "Try updating fields manually"
+            }
+
+    def _analyze_update_request(self, update_request: str, event: Event) -> Dict:
+        """Analyze natural language update request"""
+        
+        if not self.llm.is_enabled():
+            return self._fallback_update_analysis(update_request, event)
+        
+        try:
+            messages = [
+                self.llm.build_system_message(
+                    "Analyze an event update request and extract specific changes needed. "
+                    "Respond with JSON containing: "
+                    "{\"success\": true, \"fields_to_update\": {\"field_name\": \"new_value\"}, "
+                    "\"update_type\": \"enhancement|correction|addition\", "
+                    "\"confidence\": 0.0-1.0}"
+                ),
+                {
+                    "role": "user",
+                    "content": f"Current event: {json.dumps(event.as_dict(), default=str)}\n"
+                            f"Update request: {update_request}"
+                }
+            ]
+            
+            response = self.llm.chat_completion(
+                messages,
+                temperature=0.3,
+                max_tokens=400,
+                quick_mode=False,
+                fallback_response=None
+            )
+            
+            if response:
+                cleaned = self._clean_json_response(response)
+                result = json.loads(cleaned)
+                return result
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error in update analysis: {e}")
+        except Exception as e:
+            logger.error(f"Update analysis failed: {e}")
+        
+        return self._fallback_update_analysis(update_request, event)
+
+    def _fallback_update_analysis(self, update_request: str, event: Event) -> Dict:
+        """Fallback update analysis using pattern matching"""
+        
+        request_lower = update_request.lower()
+        fields_to_update = {}
+        
+        # Pattern matching for common update requests
+        if 'premium' in request_lower or 'vip' in request_lower:
+            fields_to_update['amenities'] = (event.amenities or []) + ['VIP Lounge', 'Premium Seating']
+            fields_to_update['description'] = self._enhance_description_for_premium(event.description)
+        
+        if 'marketing' in request_lower or 'description' in request_lower:
+            fields_to_update['description'] = self._generate_marketing_description(event)
+        
+        if 'date' in request_lower or 'time' in request_lower:
+            # Extract date/time patterns
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', update_request)
+            if date_match:
+                fields_to_update['date'] = date_match.group(1)
+        
+        if fields_to_update:
+            return {
+                "success": True,
+                "fields_to_update": fields_to_update,
+                "update_type": "enhancement",
+                "confidence": 0.7
+            }
+        
+        return {
+            "success": False,
+            "error": "Could not identify specific updates from request"
+        }
+
+    def _enhance_description_for_premium(self, current_description: str) -> str:
+        """Enhance description with premium language"""
+        if not current_description:
+            return "Experience premium event amenities and VIP treatment."
+        
+        premium_additions = (
+            f"{current_description}\n\n"
+            "✨ Premium Features:\n"
+            "• VIP lounge access with complimentary refreshments\n"
+            "• Priority seating and exclusive viewing areas\n"
+            "• Meet & greet opportunities\n"
+            "• Premium gift bags for VIP ticket holders"
+        )
+        return premium_additions
+
+    def _generate_marketing_description(self, event: Event) -> str:
+        """Generate enhanced marketing description"""
+        
+        if not self.llm.is_enabled():
+            return self._fallback_marketing_description(event)
+        
+        try:
+            messages = [
+                self.llm.build_system_message(
+                    "Create an engaging marketing description for this event. "
+                    "Make it compelling, professional, and highlight key value propositions. "
+                    "Keep it under 300 words. Return only the description text, no JSON."
+                ),
+                {
+                    "role": "user",
+                    "content": f"Event details: {json.dumps(event.as_dict(), default=str)}"
+                }
+            ]
+            
+            response = self.llm.chat_completion(
+                messages,
+                temperature=0.7,
+                max_tokens=300,
+                quick_mode=True,
+                fallback_response=None
+            )
+            
+            if response:
+                return response.strip()
+                
+        except Exception as e:
+            logger.error(f"Marketing description generation failed: {e}")
+        
+        return self._fallback_marketing_description(event)
+
+    def _fallback_marketing_description(self, event: Event) -> str:
+        """Fallback marketing description"""
+        category = event.category.name if event.category else "event"
+        
+        return (
+            f"Join us for an exceptional {category.lower()} experience at {event.name}!\n\n"
+            f"{event.description}\n\n"
+            f"📍 Location: {event.location}, {event.city}\n"
+            f"📅 Date: {event.date.strftime('%B %d, %Y')}\n"
+            f"⏰ Time: {event.start_time.strftime('%I:%M %p')}\n\n"
+            "Don't miss this opportunity to be part of something special. "
+            "Reserve your spot today!"
+        )
+
+    def _generate_update_proposals(self, event: Event, update_analysis: Dict) -> Dict:
+        """Generate specific update proposals"""
+        
+        fields_to_update = update_analysis.get('fields_to_update', {})
+        proposals = {}
+        
+        for field, value in fields_to_update.items():
+            proposals[field] = {
+                "current_value": getattr(event, field, None),
+                "proposed_value": value,
+                "change_type": self._classify_change_type(
+                    getattr(event, field, None), 
+                    value
+                )
+            }
+        
+        return proposals
+
+    def _classify_change_type(self, current, proposed) -> str:
+        """Classify the type of change"""
+        if not current:
+            return "addition"
+        elif current != proposed:
+            return "modification"
+        else:
+            return "no_change"
+
+    def _requires_update_confirmation(self, proposed_updates: Dict) -> bool:
+        """Determine if updates require user confirmation"""
+        
+        # Critical fields that always require confirmation
+        critical_fields = ['date', 'start_time', 'end_time', 'location', 'name']
+        
+        for field in proposed_updates:
+            if field in critical_fields:
+                return True
+            
+            # Large changes require confirmation
+            change_type = proposed_updates[field].get('change_type')
+            if change_type == 'modification':
+                return True
+        
+        return False
+
+    def _generate_update_summary(self, proposed_updates: Dict) -> str:
+        """Generate human-readable update summary"""
+        
+        if not proposed_updates:
+            return "No updates identified"
+        
+        summary_parts = []
+        
+        for field, details in proposed_updates.items():
+            change_type = details.get('change_type')
+            
+            if change_type == 'addition':
+                summary_parts.append(f"Add {field.replace('_', ' ')}")
+            elif change_type == 'modification':
+                summary_parts.append(f"Update {field.replace('_', ' ')}")
+        
+        return "Proposed changes: " + ", ".join(summary_parts)
+
+    def _analyze_update_impact(self, event: Event, proposed_updates: Dict) -> Dict:
+        """Analyze impact of proposed updates"""
+        
+        impact = {
+            "attendee_impact": "low",
+            "booking_impact": "none",
+            "requires_notification": False,
+            "risk_level": "low"
+        }
+        
+        # Check if updates affect attendees
+        critical_fields = ['date', 'start_time', 'location']
+        if any(field in proposed_updates for field in critical_fields):
+            impact["attendee_impact"] = "high"
+            impact["requires_notification"] = True
+            impact["risk_level"] = "medium"
+        
+        # Check if event has existing bookings
+        if event.tickets:
+            total_bookings = sum(t.quantity for t in event.tickets)
+            if total_bookings > 0:
+                impact["booking_impact"] = "affected"
+                if impact["attendee_impact"] == "high":
+                    impact["risk_level"] = "high"
+        
+        return impact
+
+    # Fix the _regenerate_field_suggestions method to handle JSON parsing better
+    def _regenerate_field_suggestions(self, draft: AIEventDraft, field_name: str) -> Dict:
+        """Regenerate AI suggestions for a specific field with improved error handling"""
+        try:
+            if not self.llm.is_enabled():
+                return {"success": False, "error": "AI service unavailable"}
+            
+            # Prepare context for regeneration
+            context = {
+                "current_draft": self._get_draft_summary(draft),
+                "field_to_regenerate": field_name
+            }
+            
+            messages = [
+                self.llm.build_system_message(
+                    f"Regenerate the {field_name} for this event draft. "
+                    "Provide a better, more engaging version based on the current event details. "
+                    "Respond ONLY with valid JSON in this exact format: "
+                    '{"value": "your generated text here", "confidence": 0.8}'
+                ),
+                {
+                    "role": "user", 
+                    "content": f"Current event details: {json.dumps(context, default=str)}"
+                }
+            ]
+            
+            response = self.llm.chat_completion(
+                messages, 
+                temperature=0.7, 
+                max_tokens=200, 
+                quick_mode=True,
+                fallback_response=None
+            )
+            
+            if not response:
+                return {"success": False, "error": "No response from AI service"}
+            
+            # Enhanced JSON cleaning
+            cleaned = self._clean_json_response(response)
+            
+            # Additional validation
+            if not cleaned.strip():
+                return {"success": False, "error": "Empty response from AI"}
+            
+            try:
+                result = json.loads(cleaned)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parse error. Response: {response[:200]}, Cleaned: {cleaned[:200]}")
+                # Fallback: try to extract value manually
+                return self._manual_json_extraction(response, field_name)
+            
+            # Validate result structure
+            if 'value' not in result:
+                return {"success": False, "error": "Invalid response structure"}
+            
+            # Update the draft with regenerated value
+            field_mapping = {
+                'name': 'suggested_name',
+                'description': 'suggested_description'
+            }
+            
+            if field_name in field_mapping:
+                attribute_name = field_mapping[field_name]
+                setattr(draft, attribute_name, result['value'])
+                
+                # Update confidence
+                confidence_field = f"{field_name}_confidence"
+                source_field = f"{field_name}_source"
+                
+                if hasattr(draft, confidence_field):
+                    setattr(draft, confidence_field, result.get('confidence', 0.7))
+                    setattr(draft, source_field, 'ai_regenerated')
+                
+                draft.updated_at = datetime.utcnow()
+                db.session.commit()
+                
+                return {
+                    "success": True,
+                    "value": result['value'],
+                    "confidence": result.get('confidence', 0.7)
+                }
+            
+            return {"success": False, "error": "Unsupported field for regeneration"}
+            
+        except Exception as e:
+            logger.error(f"Field regeneration failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _manual_json_extraction(self, response: str, field_name: str) -> Dict:
+        """Manually extract value from malformed JSON response"""
+        try:
+            # Try to extract value using regex
+            value_match = re.search(r'"value"\s*:\s*"([^"]+)"', response)
+            confidence_match = re.search(r'"confidence"\s*:\s*([\d.]+)', response)
+            
+            if value_match:
+                value = value_match.group(1)
+                confidence = float(confidence_match.group(1)) if confidence_match else 0.7
+                
+                return {
+                    "success": True,
+                    "value": value,
+                    "confidence": confidence
+                }
+        except Exception as e:
+            logger.error(f"Manual extraction failed: {e}")
+        
+        return {"success": False, "error": "Could not parse AI response"}
     
     def _is_holiday_period(self, event_date: date) -> bool:
         """Check if date falls in holiday period"""
@@ -1251,74 +1640,7 @@ class ComprehensiveEventAssistant:
             db.session.rollback()
             return {"success": False, "error": f"Could not update field: {str(e)}"}
 
-    def _regenerate_field_suggestions(self, draft: AIEventDraft, field_name: str) -> Dict:
-        """Regenerate AI suggestions for a specific field"""
-        try:
-            if not self.llm.is_enabled():
-                return {"success": False, "error": "AI service unavailable"}
-            
-            # Prepare context for regeneration
-            context = {
-                "current_draft": self._get_draft_summary(draft),
-                "field_to_regenerate": field_name
-            }
-            
-            messages = [
-                self.llm.build_system_message(
-                    f"Regenerate the {field_name} for this event draft. "
-                    "Provide a better, more engaging version based on the current event details. "
-                    "Respond with JSON: {\"value\": \"...\", \"confidence\": 0.0-1.0}"
-                ),
-                {
-                    "role": "user", 
-                    "content": f"Current event details: {json.dumps(context, default=str)}"
-                }
-            ]
-            
-            response = self.llm.chat_completion(
-                messages, 
-                temperature=0.7, 
-                max_tokens=200, 
-                quick_mode=True
-            )
-            
-            if response:
-                cleaned = self._clean_json_response(response)
-                result = json.loads(cleaned)
-                
-                # Update the draft with regenerated value
-                field_mapping = {
-                    'name': 'suggested_name',
-                    'description': 'suggested_description'
-                }
-                
-                if field_name in field_mapping:
-                    attribute_name = field_mapping[field_name]
-                    setattr(draft, attribute_name, result['value'])
-                    
-                    # Update confidence
-                    confidence_field = f"{field_name}_confidence"
-                    source_field = f"{field_name}_source"
-                    
-                    if hasattr(draft, confidence_field):
-                        setattr(draft, confidence_field, result.get('confidence', 0.7))
-                        setattr(draft, source_field, 'ai_regenerated')
-                    
-                    draft.updated_at = datetime.utcnow()
-                    db.session.commit()
-                    
-                    return {
-                        "success": True,
-                        "value": result['value'],
-                        "confidence": result.get('confidence', 0.7)
-                    }
-            
-            return {"success": False, "error": "Could not regenerate field"}
-            
-        except Exception as e:
-            logger.error(f"Field regeneration failed: {e}")
-            return {"success": False, "error": str(e)}
-
+   
     def review_draft(self, draft_id: int) -> Dict:
         """
         Provide comprehensive review and suggestions for a draft
