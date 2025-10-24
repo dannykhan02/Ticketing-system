@@ -15,11 +15,11 @@ import time
 
 from ai.llm_client import llm_client
 from model import (
-    db, Event, AIEventDraft, AIEventAssistanceLog, Category, Organizer,
-    AIEventManager, AIManager, AIIntentType, AIActionStatus, TicketType,
-    TicketTypeEnum, Partner, EventCollaboration, CollaborationType,
-    AIAnalyticsCache, AIInsight, AIPricingRecommendation, CollaborationManager,
-    Currency, ExchangeRate, Report, Transaction, User
+db, Event, AIEventDraft, AIEventAssistanceLog, Category, Organizer,
+AIEventManager, AIManager, AIIntentType, AIActionStatus, TicketType,
+TicketTypeEnum, Partner, EventCollaboration, CollaborationType,
+AIAnalyticsCache, AIInsight, AIPricingRecommendation, CollaborationManager,
+Currency, ExchangeRate, Report, Transaction, User
 )
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class ComprehensiveEventAssistant:
     Comprehensive AI assistant for complete event lifecycle management
     Handles creation, optimization, partnerships, ticketing, and analytics
     """
-    
+
     def __init__(self):
         self.llm = llm_client
         self.required_fields = [
@@ -39,9 +39,9 @@ class ComprehensiveEventAssistant:
         self.optimization_fields = [
             'category_id', 'amenities', 'end_time', 'image', 'ticket_strategy'
         ]
-        
+
     # ===== RATE LIMITING & CACHING =====
-    
+
     def rate_limit(max_per_minute: int = 30):
         """Decorator for rate limiting method calls"""
         def decorator(func):
@@ -57,50 +57,53 @@ class ComprehensiveEventAssistant:
                 return func(self, *args, **kwargs)
             return wrapper
         return decorator
-    
+
     @lru_cache(maxsize=100)
     def _cached_category_suggestions(self, description: str) -> Optional[Dict]:
         """Cached category suggestions for similar descriptions"""
         from .category_assistant import category_assistant
         return category_assistant.suggest_category_from_description(description)
-    
+
     # ===== COMPREHENSIVE EVENT CREATION =====
-    
+
     @rate_limit(max_per_minute=20)
-    def create_event_conversational(self, organizer_id: int, user_input: str, 
-                                  context: Dict = None) -> Dict:
+    def create_event_conversational(self, organizer_id: int, user_input: str,
+                                   context: Dict = None) -> Dict:
         """
         Complete conversational event creation with context awareness
-        
+
         Args:
             organizer_id: Organizer creating the event
             user_input: Natural language event description
             context: Additional context (previous events, preferences, etc.)
-            
+
         Returns:
             dict: Complete creation result with draft and suggestions
         """
         try:
             # Step 1: Extract and structure data
             extraction_result = self._comprehensive_data_extraction(user_input, context)
-            
+
             # Step 2: Create enhanced draft
             draft = self._create_enhanced_draft(organizer_id, extraction_result, context)
-            
-            # Step 3: Generate intelligent suggestions
-            suggestions = self._generate_comprehensive_suggestions(draft, extraction_result)
-            
-            # Step 4: Create initial ticket strategy
+
+            # Step 3: Generate ACTUAL EVENT FIELD suggestions for auto-fill
+            event_field_suggestions = self._extract_event_fields_from_draft(draft)
+
+            # Step 4: Generate strategic suggestions (separate from event fields)
+            strategic_suggestions = self._generate_comprehensive_suggestions(draft, extraction_result)
+
+            # Step 5: Create initial ticket strategy
             ticket_strategy = self._suggest_initial_ticket_strategy(draft)
-            
-            # Step 5: Partner recommendations
+
+            # Step 6: Partner recommendations
             partner_recommendations = self._suggest_initial_partners(draft)
-            
-            # Step 6: Generate natural response
+
+            # Step 7: Generate natural response
             response = self._generate_conversational_response(
-                draft, suggestions, ticket_strategy, partner_recommendations
+                draft, strategic_suggestions, ticket_strategy, partner_recommendations
             )
-            
+
             # Log the creation
             AIManager.log_action(
                 user_id=Organizer.query.get(organizer_id).user_id,
@@ -109,31 +112,74 @@ class ComprehensiveEventAssistant:
                 target_table='ai_event_drafts',
                 target_id=draft.id
             )
-            
+
             return {
                 "success": True,
                 "draft_id": draft.id,
                 "draft_summary": self._get_draft_summary(draft),
-                "suggestions": suggestions,
+                "suggestions": event_field_suggestions,  # <-- CHANGED: Now returns actual event fields
+                "strategic_recommendations": strategic_suggestions,  # <-- NEW: Strategic suggestions here
                 "ticket_strategy": ticket_strategy,
                 "partner_recommendations": partner_recommendations,
                 "conversational_response": response,
                 "completion_status": self._get_completion_status(draft),
-                "next_steps": self._get_creation_next_steps(draft, suggestions),
+                "next_steps": self._get_creation_next_steps(draft, strategic_suggestions),
                 "ai_confidence": self._calculate_overall_confidence(draft)
             }
-            
+
         except Exception as e:
             logger.error(f"Comprehensive event creation failed: {e}")
             return self._handle_creation_error(e, user_input, organizer_id)
-    
+
+    def _extract_event_fields_from_draft(self, draft: AIEventDraft) -> Dict:
+        """
+        Extract actual event field data from draft for form auto-fill
+
+        This is what the frontend needs for auto-filling the form fields.
+        Returns actual field values, not strategic suggestions.
+        """
+        event_fields = {}
+
+        # Extract all available fields from the draft
+        if draft.suggested_name:
+            event_fields['name'] = draft.suggested_name
+
+        if draft.suggested_description:
+            event_fields['description'] = draft.suggested_description
+
+        if draft.suggested_date:
+            event_fields['date'] = draft.suggested_date.isoformat()
+
+        if draft.suggested_start_time:
+            event_fields['start_time'] = draft.suggested_start_time.strftime('%H:%M')
+
+        if draft.suggested_end_time:
+            event_fields['end_time'] = draft.suggested_end_time.strftime('%H:%M')
+
+        if draft.suggested_city:
+            event_fields['city'] = draft.suggested_city
+
+        if draft.suggested_location:
+            event_fields['location'] = draft.suggested_location
+
+        if draft.suggested_category_id:
+            event_fields['category_id'] = draft.suggested_category_id
+
+        if draft.suggested_amenities:
+            event_fields['amenities'] = draft.suggested_amenities
+
+        # Add featured flag if set
+        event_fields['featured'] = False
+
+        return event_fields
+
     def _comprehensive_data_extraction(self, user_input: str, context: Dict = None) -> Dict:
         """Advanced data extraction with context awareness"""
         if not self.llm.is_enabled():
             return self._advanced_fallback_extraction(user_input, context)
-        
+
         context_str = json.dumps(context, default=str) if context else "No context"
-        
+
         messages = [
             self.llm.build_system_message(
                 "You are an expert event data extractor with context awareness. "
@@ -151,7 +197,7 @@ class ComprehensiveEventAssistant:
                 "content": f"User input: {user_input}\nContext: {context_str}"
             }
         ]
-        
+
         try:
             response = self.llm.chat_completion(
                 messages,
@@ -160,17 +206,17 @@ class ComprehensiveEventAssistant:
                 quick_mode=False,
                 fallback_response=None
             )
-            
+
             if response:
                 cleaned = self._clean_json_response(response)
                 extracted = json.loads(cleaned)
                 return self._validate_and_enrich_extraction(extracted, context)
-                
+
         except Exception as e:
             logger.error(f"Advanced extraction failed: {e}")
-        
+
         return self._advanced_fallback_extraction(user_input, context)
-    
+
     def _advanced_fallback_extraction(self, user_input: str, context: Dict = None) -> Dict:
         """Sophisticated fallback extraction with pattern matching"""
         extracted = {
@@ -180,27 +226,27 @@ class ComprehensiveEventAssistant:
             "preferences": {},
             "inferred_details": {}
         }
-        
+
         text_lower = user_input.lower()
-        
+
         # Enhanced basic info extraction
         extracted["basic_info"] = self._extract_basic_info_advanced(user_input)
-        
+
         # Categorization
         extracted["categorization"] = self._categorize_event_advanced(text_lower)
-        
+
         # Logistics inference
         extracted["logistics"] = self._infer_logistics(text_lower, context)
-        
+
         # Preferences detection
         extracted["preferences"] = self._detect_preferences(text_lower)
-        
+
         return extracted
-    
+
     def _extract_basic_info_advanced(self, text: str) -> Dict:
         """Advanced pattern-based basic info extraction"""
         info = {}
-        
+
         # Date extraction with multiple formats
         date_patterns = [
             r'(\d{4}-\d{2}-\d{2})',
@@ -208,13 +254,13 @@ class ComprehensiveEventAssistant:
             r'(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})',
             r'(?:on|date)\s+(\d{1,2}(?:st|nd|rd|th)?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4})'
         ]
-        
+
         for pattern in date_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 info['date'] = match.group(1)
                 break
-        
+
         # Time extraction
         time_pattern = r'(\d{1,2}):(\d{2})\s*(?:(am|pm|AM|PM))?\b'
         times = re.findall(time_pattern, text)
@@ -222,7 +268,7 @@ class ComprehensiveEventAssistant:
             info['start_time'] = f"{times[0][0]}:{times[0][1]}{times[0][2] or ''}"
             if len(times) > 1:
                 info['end_time'] = f"{times[1][0]}:{times[1][1]}{times[1][2] or ''}"
-        
+
         # Location extraction with common venues
         nairobi_venues = ['kicc', 'carnivore', 'sarit', 'village market', 'two rivers', 'westgate']
         for venue in nairobi_venues:
@@ -230,9 +276,9 @@ class ComprehensiveEventAssistant:
                 info['city'] = 'Nairobi'
                 info['location'] = venue.title()
                 break
-        
+
         return info
-    
+
     def _categorize_event_advanced(self, text_lower: str) -> Dict:
         """Advanced event categorization from text"""
         categorization = {
@@ -241,7 +287,7 @@ class ComprehensiveEventAssistant:
             "tags": [],
             "audience_type": "general"
         }
-        
+
         # Category keywords mapping
         category_keywords = {
             "Technology": ["tech", "software", "developer", "coding", "ai", "digital", "startup"],
@@ -254,26 +300,26 @@ class ComprehensiveEventAssistant:
             "Arts & Culture": ["art", "culture", "exhibition", "gallery", "museum"],
             "Community": ["community", "charity", "fundraiser", "social", "volunteer"]
         }
-        
+
         # Score each category
         category_scores = {}
         for category, keywords in category_keywords.items():
             score = sum(1 for keyword in keywords if keyword in text_lower)
             if score > 0:
                 category_scores[category] = score
-        
+
         # Assign primary and secondary categories
         if category_scores:
             sorted_categories = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
             categorization["primary_category"] = sorted_categories[0][0]
             if len(sorted_categories) > 1:
                 categorization["secondary_categories"] = [cat for cat, _ in sorted_categories[1:3]]
-        
+
         # Extract tags
-        common_tags = ["networking", "workshop", "conference", "festival", "training", 
+        common_tags = ["networking", "workshop", "conference", "festival", "training",
                        "seminar", "meetup", "expo", "competition", "performance"]
         categorization["tags"] = [tag for tag in common_tags if tag in text_lower]
-        
+
         # Determine audience type
         if any(word in text_lower for word in ["professional", "business", "corporate"]):
             categorization["audience_type"] = "professional"
@@ -281,9 +327,9 @@ class ComprehensiveEventAssistant:
             categorization["audience_type"] = "family"
         elif any(word in text_lower for word in ["student", "university", "college"]):
             categorization["audience_type"] = "students"
-        
+
         return categorization
-    
+
     def _infer_logistics(self, text_lower: str, context: Dict = None) -> Dict:
         """Infer logistical details from text"""
         logistics = {
@@ -291,20 +337,20 @@ class ComprehensiveEventAssistant:
             "budget_range": None,
             "complexity_level": "medium"
         }
-        
+
         # Extract attendance numbers
         attendance_patterns = [
             r'(\d+)\s*(?:people|attendees|participants|guests)',
             r'(?:about|around|approximately)\s*(\d+)',
             r'capacity\s*(?:of|:)?\s*(\d+)'
         ]
-        
+
         for pattern in attendance_patterns:
             match = re.search(pattern, text_lower)
             if match:
                 logistics["expected_attendance"] = int(match.group(1))
                 break
-        
+
         # Infer budget range from event type
         if any(word in text_lower for word in ["conference", "expo", "summit"]):
             logistics["budget_range"] = "high"
@@ -315,14 +361,14 @@ class ComprehensiveEventAssistant:
         elif any(word in text_lower for word in ["meetup", "social", "gathering"]):
             logistics["budget_range"] = "low"
             logistics["complexity_level"] = "low"
-        
+
         # Use context if available
         if context and "previous_events" in context:
             # Could analyze previous events for patterns
             pass
-        
+
         return logistics
-    
+
     def _detect_preferences(self, text_lower: str) -> Dict:
         """Detect user preferences from text"""
         preferences = {
@@ -330,7 +376,7 @@ class ComprehensiveEventAssistant:
             "timing_preference": None,
             "location_preference": None
         }
-        
+
         # Format preferences
         if any(word in text_lower for word in ["virtual", "online", "remote", "webinar"]):
             preferences["format_preference"] = "virtual"
@@ -338,7 +384,7 @@ class ComprehensiveEventAssistant:
             preferences["format_preference"] = "hybrid"
         else:
             preferences["format_preference"] = "in_person"
-        
+
         # Timing preferences
         if any(word in text_lower for word in ["morning", "breakfast"]):
             preferences["timing_preference"] = "morning"
@@ -348,16 +394,16 @@ class ComprehensiveEventAssistant:
             preferences["timing_preference"] = "evening"
         elif any(word in text_lower for word in ["weekend", "saturday", "sunday"]):
             preferences["timing_preference"] = "weekend"
-        
+
         # Location preferences
         nairobi_areas = ["westlands", "cbd", "karen", "kilimani", "upper hill", "gigiri"]
         for area in nairobi_areas:
             if area in text_lower:
                 preferences["location_preference"] = area
                 break
-        
+
         return preferences
-    
+
     def _validate_and_enrich_extraction(self, extracted: Dict, context: Dict = None) -> Dict:
         """Validate and enrich extracted data"""
         # Ensure all required keys exist
@@ -365,7 +411,7 @@ class ComprehensiveEventAssistant:
         for key in required_keys:
             if key not in extracted:
                 extracted[key] = {}
-        
+
         # Enrich with context if available
         if context:
             # Add context-based enrichments
@@ -374,42 +420,42 @@ class ComprehensiveEventAssistant:
                     "has_event_history": True,
                     "previous_event_count": len(context["previous_events"])
                 }
-        
+
         return extracted
-    
+
     def _create_enhanced_draft(self, organizer_id: int, extraction_result: Dict, context: Dict) -> AIEventDraft:
         """Create a draft with comprehensive AI enhancements"""
         basic_info = extraction_result.get('basic_info', {})
-        
+
         # Create initial draft
         draft = AIEventManager.create_draft_from_conversation(
             organizer_id=organizer_id,
             user_input=basic_info,
             conversation_id=context.get('conversation_id') if context else None
         )
-        
+
         # Apply comprehensive enhancements
         draft = self._apply_ai_enhancements(draft, extraction_result, context)
-        
+
         return draft
-    
+
     def _apply_ai_enhancements(self, draft: AIEventDraft, extraction_result: Dict, context: Dict) -> AIEventDraft:
         """Apply all AI enhancements to the draft"""
-        
+
         # Name generation and enhancement
         if not draft.suggested_name or draft.name_confidence < 0.7:
             name_result = self._generate_optimized_event_name(draft, extraction_result)
             draft.suggested_name = name_result['name']
             draft.name_confidence = name_result['confidence']
             draft.name_source = 'ai_enhanced'
-        
+
         # Description enhancement
         if not draft.suggested_description or draft.description_confidence < 0.6:
             desc_result = self._generate_comprehensive_description(draft, extraction_result)
             draft.suggested_description = desc_result['description']
             draft.description_confidence = desc_result['confidence']
             draft.description_source = 'ai_enhanced'
-        
+
         # Category optimization
         if not draft.suggested_category_id or draft.category_confidence < 0.8:
             category_result = self._optimize_category_selection(draft, extraction_result)
@@ -417,33 +463,33 @@ class ComprehensiveEventAssistant:
                 draft.suggested_category_id = category_result['category_id']
                 draft.category_confidence = category_result['confidence']
                 draft.category_source = 'ai_optimized'
-        
+
         # Smart amenities suggestion
         amenities_result = self._suggest_contextual_amenities(draft, extraction_result, context)
         draft.suggested_amenities = amenities_result
-        
+
         # Timing optimization
         if draft.suggested_date and not draft.suggested_start_time:
             timing_result = self._optimize_event_timing(draft, extraction_result)
             if timing_result:
                 draft.suggested_start_time = timing_result['start_time']
                 draft.suggested_end_time = timing_result.get('end_time')
-        
+
         draft.updated_at = datetime.utcnow()
         draft.ai_iterations += 1
         db.session.commit()
-        
+
         return draft
-    
+
     def _generate_optimized_event_name(self, draft: AIEventDraft, extraction_result: Dict) -> Dict:
         """Generate an optimized event name"""
         categorization = extraction_result.get('categorization', {})
         primary_category = categorization.get('primary_category', 'Event')
-        
+
         # Fallback name generation
         name = f"{primary_category} Experience"
         confidence = 0.5
-        
+
         if self.llm.is_enabled():
             try:
                 messages = [
@@ -455,7 +501,7 @@ class ComprehensiveEventAssistant:
                         "content": f"Category: {primary_category}, Details: {json.dumps(extraction_result, default=str)}"
                     }
                 ]
-                
+
                 response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=100, quick_mode=True, fallback_response=None)
                 if response:
                     cleaned = self._clean_json_response(response)
@@ -463,14 +509,14 @@ class ComprehensiveEventAssistant:
                     return result
             except:
                 pass
-        
+
         return {"name": name, "confidence": confidence}
-    
+
     def _generate_comprehensive_description(self, draft: AIEventDraft, extraction_result: Dict) -> Dict:
         """Generate comprehensive event description"""
         description = "An exciting event experience."
         confidence = 0.5
-        
+
         if self.llm.is_enabled():
             try:
                 messages = [
@@ -482,7 +528,7 @@ class ComprehensiveEventAssistant:
                         "content": f"Event details: {json.dumps(extraction_result, default=str)}"
                     }
                 ]
-                
+
                 response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=200, quick_mode=True, fallback_response=None)
                 if response:
                     cleaned = self._clean_json_response(response)
@@ -490,51 +536,51 @@ class ComprehensiveEventAssistant:
                     return result
             except:
                 pass
-        
+
         return {"description": description, "confidence": confidence}
-    
+
     def _optimize_category_selection(self, draft: AIEventDraft, extraction_result: Dict) -> Optional[Dict]:
         """Optimize category selection"""
         categorization = extraction_result.get('categorization', {})
         primary_category = categorization.get('primary_category')
-        
+
         if not primary_category:
             return None
-        
+
         # Find matching category in database
         category = Category.query.filter(Category.name.ilike(f"%{primary_category}%")).first()
-        
+
         if category:
             return {
                 "category_id": category.id,
                 "confidence": 0.8
             }
-        
+
         return None
-    
+
     def _suggest_contextual_amenities(self, draft: AIEventDraft, extraction_result: Dict, context: Dict) -> List[str]:
         """Suggest contextual amenities"""
         amenities = []
-        
+
         categorization = extraction_result.get('categorization', {})
         primary_category = categorization.get('primary_category', '').lower()
-        
+
         if 'business' in primary_category or 'conference' in primary_category:
             amenities = ["WiFi", "Projector", "Microphone", "Parking", "Catering"]
         elif 'music' in primary_category or 'entertainment' in primary_category:
             amenities = ["Sound System", "Stage", "Lighting", "Security", "Parking"]
         else:
             amenities = ["Parking", "Restrooms", "Seating"]
-        
+
         return amenities
-    
+
     def _optimize_event_timing(self, draft: AIEventDraft, extraction_result: Dict) -> Optional[Dict]:
         """Optimize event timing"""
         preferences = extraction_result.get('preferences', {})
         timing_pref = preferences.get('timing_preference')
-        
+
         timing = {}
-        
+
         if timing_pref == 'morning':
             timing['start_time'] = time(9, 0)
             timing['end_time'] = time(12, 0)
@@ -547,11 +593,11 @@ class ComprehensiveEventAssistant:
         else:
             timing['start_time'] = time(10, 0)
             timing['end_time'] = time(16, 0)
-        
+
         return timing if timing else None
-    
+
     # ===== INTELLIGENT SUGGESTION SYSTEMS =====
-    
+
     def _generate_comprehensive_suggestions(self, draft: AIEventDraft, extraction_result: Dict) -> Dict:
         """Generate comprehensive suggestions for event improvement"""
         suggestions = {
@@ -561,40 +607,40 @@ class ComprehensiveEventAssistant:
             "growth_opportunities": [],
             "competitive_advantages": []
         }
-        
+
         # Immediate actions (missing required fields)
         missing_fields = self._identify_missing_required_fields(draft)
         if missing_fields:
             suggestions["immediate_actions"].extend([
                 f"Provide {field.replace('_', ' ')}" for field in missing_fields
             ])
-        
+
         # Optimization opportunities
         optimization_ops = self._identify_optimization_opportunities(draft, extraction_result)
         suggestions["optimization_opportunities"].extend(optimization_ops)
-        
+
         # Risk analysis
         risks = self._analyze_potential_risks(draft, extraction_result)
         suggestions["risk_mitigations"].extend(risks)
-        
+
         # Growth opportunities
         growth_ops = self._identify_growth_opportunities(draft, extraction_result)
         suggestions["growth_opportunities"].extend(growth_ops)
-        
+
         # Competitive advantages
         advantages = self._identify_competitive_advantages(draft, extraction_result)
         suggestions["competitive_advantages"].extend(advantages)
-        
+
         return suggestions
-    
+
     def _identify_optimization_opportunities(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
         """Identify opportunities for event optimization"""
         opportunities = []
-        
+
         # Pricing optimization
         if not hasattr(draft, 'ticket_strategy') or not draft.ticket_strategy:
             opportunities.append("Implement tiered ticket pricing strategy")
-        
+
         # Timing optimization
         if draft.suggested_date:
             days_until = (draft.suggested_date - date.today()).days
@@ -602,81 +648,81 @@ class ComprehensiveEventAssistant:
                 opportunities.append("Consider early bird pricing for long lead times")
             elif days_until < 14:
                 opportunities.append("Implement last-minute promotion strategy")
-        
+
         # Category optimization
         categorization = extraction_result.get('categorization', {})
         if len(categorization.get('secondary_categories', [])) < 2:
             opportunities.append("Add secondary categories to reach broader audience")
-        
+
         return opportunities
-    
+
     def _analyze_potential_risks(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
         """Analyze and suggest risk mitigations"""
         risks = []
-        
+
         # Date risks
         if draft.suggested_date:
             if (draft.suggested_date - date.today()).days < 7:
                 risks.append("Short timeline: Consider aggressive marketing or extend date")
-            
-            # Check for holiday conflicts
-            if self._is_holiday_period(draft.suggested_date):
-                risks.append("Event during holiday period: Plan for potential lower attendance")
-        
+
+        # Check for holiday conflicts
+        if self._is_holiday_period(draft.suggested_date):
+            risks.append("Event during holiday period: Plan for potential lower attendance")
+
         # Location risks
         if draft.suggested_city == 'Nairobi' and not draft.suggested_location:
             risks.append("Nairobi location not specified: Choose venue for better planning")
-        
+
         # Competition analysis
         similar_events = self._find_competing_events(draft)
         if similar_events:
             risks.append(f"Found {len(similar_events)} similar events: Differentiate your offering")
-        
+
         return risks
-    
+
     def _identify_growth_opportunities(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
         """Identify growth opportunities"""
         opportunities = []
-        
+
         logistics = extraction_result.get('logistics', {})
         expected_attendance = logistics.get('expected_attendance')
-        
+
         if expected_attendance and expected_attendance > 100:
             opportunities.append("Large attendance expected: Consider sponsorship opportunities")
-        
+
         opportunities.append("Create social media campaign to boost visibility")
         opportunities.append("Partner with local businesses for cross-promotion")
-        
+
         return opportunities
-    
+
     def _identify_competitive_advantages(self, draft: AIEventDraft, extraction_result: Dict) -> List[str]:
         """Identify competitive advantages"""
         advantages = []
-        
+
         categorization = extraction_result.get('categorization', {})
         tags = categorization.get('tags', [])
-        
+
         if 'networking' in tags:
             advantages.append("Networking focus can attract professional audience")
-        
+
         if 'workshop' in tags:
             advantages.append("Hands-on workshop format provides unique value")
-        
+
         return advantages
 
 
-     # Add these methods to the ComprehensiveEventAssistant class
+    # Add these methods to the ComprehensiveEventAssistant class
     # Insert after the _identify_competitive_advantages method (around line 600)
 
     def process_event_update_request(self, event_id: int, update_request: str, user_id: int) -> Dict:
         """
         Process natural language update request for an existing event
-        
+
         Args:
             event_id: Event ID to update
             update_request: Natural language description of desired updates
             user_id: User making the request
-            
+
         Returns:
             dict: Proposed updates with confirmation requirement
         """
@@ -685,22 +731,22 @@ class ComprehensiveEventAssistant:
             event = Event.query.get(event_id)
             if not event:
                 return {"error": "Event not found"}
-            
+
             # Extract update intent from natural language
             update_analysis = self._analyze_update_request(update_request, event)
-            
+
             if not update_analysis.get('success'):
                 return {
                     "error": update_analysis.get('error', 'Could not understand update request'),
                     "suggestion": "Try being more specific about what you want to update"
                 }
-            
+
             # Generate proposed updates
             proposed_updates = self._generate_update_proposals(event, update_analysis)
-            
+
             # Determine if confirmation is needed
             requires_confirmation = self._requires_update_confirmation(proposed_updates)
-            
+
             return {
                 "success": True,
                 "updates_proposed": proposed_updates,
@@ -708,7 +754,7 @@ class ComprehensiveEventAssistant:
                 "confirmation_required": requires_confirmation,
                 "impact_analysis": self._analyze_update_impact(event, proposed_updates)
             }
-            
+
         except Exception as e:
             logger.error(f"Update request processing failed: {e}")
             return {
@@ -718,10 +764,10 @@ class ComprehensiveEventAssistant:
 
     def _analyze_update_request(self, update_request: str, event: Event) -> Dict:
         """Analyze natural language update request"""
-        
+
         if not self.llm.is_enabled():
             return self._fallback_update_analysis(update_request, event)
-        
+
         try:
             messages = [
                 self.llm.build_system_message(
@@ -734,10 +780,10 @@ class ComprehensiveEventAssistant:
                 {
                     "role": "user",
                     "content": f"Current event: {json.dumps(event.as_dict(), default=str)}\n"
-                            f"Update request: {update_request}"
+                               f"Update request: {update_request}"
                 }
             ]
-            
+
             response = self.llm.chat_completion(
                 messages,
                 temperature=0.3,
@@ -745,39 +791,39 @@ class ComprehensiveEventAssistant:
                 quick_mode=False,
                 fallback_response=None
             )
-            
+
             if response:
                 cleaned = self._clean_json_response(response)
                 result = json.loads(cleaned)
                 return result
-                
+
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode error in update analysis: {e}")
         except Exception as e:
             logger.error(f"Update analysis failed: {e}")
-        
+
         return self._fallback_update_analysis(update_request, event)
 
     def _fallback_update_analysis(self, update_request: str, event: Event) -> Dict:
         """Fallback update analysis using pattern matching"""
-        
+
         request_lower = update_request.lower()
         fields_to_update = {}
-        
+
         # Pattern matching for common update requests
         if 'premium' in request_lower or 'vip' in request_lower:
             fields_to_update['amenities'] = (event.amenities or []) + ['VIP Lounge', 'Premium Seating']
             fields_to_update['description'] = self._enhance_description_for_premium(event.description)
-        
+
         if 'marketing' in request_lower or 'description' in request_lower:
             fields_to_update['description'] = self._generate_marketing_description(event)
-        
+
         if 'date' in request_lower or 'time' in request_lower:
             # Extract date/time patterns
             date_match = re.search(r'(\d{4}-\d{2}-\d{2})', update_request)
             if date_match:
                 fields_to_update['date'] = date_match.group(1)
-        
+
         if fields_to_update:
             return {
                 "success": True,
@@ -785,7 +831,7 @@ class ComprehensiveEventAssistant:
                 "update_type": "enhancement",
                 "confidence": 0.7
             }
-        
+
         return {
             "success": False,
             "error": "Could not identify specific updates from request"
@@ -795,7 +841,7 @@ class ComprehensiveEventAssistant:
         """Enhance description with premium language"""
         if not current_description:
             return "Experience premium event amenities and VIP treatment."
-        
+
         premium_additions = (
             f"{current_description}\n\n"
             "✨ Premium Features:\n"
@@ -808,10 +854,10 @@ class ComprehensiveEventAssistant:
 
     def _generate_marketing_description(self, event: Event) -> str:
         """Generate enhanced marketing description"""
-        
+
         if not self.llm.is_enabled():
             return self._fallback_marketing_description(event)
-        
+
         try:
             messages = [
                 self.llm.build_system_message(
@@ -824,7 +870,7 @@ class ComprehensiveEventAssistant:
                     "content": f"Event details: {json.dumps(event.as_dict(), default=str)}"
                 }
             ]
-            
+
             response = self.llm.chat_completion(
                 messages,
                 temperature=0.7,
@@ -832,19 +878,19 @@ class ComprehensiveEventAssistant:
                 quick_mode=True,
                 fallback_response=None
             )
-            
+
             if response:
                 return response.strip()
-                
+
         except Exception as e:
             logger.error(f"Marketing description generation failed: {e}")
-        
+
         return self._fallback_marketing_description(event)
 
     def _fallback_marketing_description(self, event: Event) -> str:
         """Fallback marketing description"""
         category = event.category.name if event.category else "event"
-        
+
         return (
             f"Join us for an exceptional {category.lower()} experience at {event.name}!\n\n"
             f"{event.description}\n\n"
@@ -857,20 +903,20 @@ class ComprehensiveEventAssistant:
 
     def _generate_update_proposals(self, event: Event, update_analysis: Dict) -> Dict:
         """Generate specific update proposals"""
-        
+
         fields_to_update = update_analysis.get('fields_to_update', {})
         proposals = {}
-        
+
         for field, value in fields_to_update.items():
             proposals[field] = {
                 "current_value": getattr(event, field, None),
                 "proposed_value": value,
                 "change_type": self._classify_change_type(
-                    getattr(event, field, None), 
+                    getattr(event, field, None),
                     value
                 )
             }
-        
+
         return proposals
 
     def _classify_change_type(self, current, proposed) -> str:
@@ -884,56 +930,56 @@ class ComprehensiveEventAssistant:
 
     def _requires_update_confirmation(self, proposed_updates: Dict) -> bool:
         """Determine if updates require user confirmation"""
-        
+
         # Critical fields that always require confirmation
         critical_fields = ['date', 'start_time', 'end_time', 'location', 'name']
-        
+
         for field in proposed_updates:
             if field in critical_fields:
                 return True
-            
-            # Large changes require confirmation
-            change_type = proposed_updates[field].get('change_type')
-            if change_type == 'modification':
-                return True
-        
+
+        # Large changes require confirmation
+        change_type = proposed_updates[field].get('change_type')
+        if change_type == 'modification':
+            return True
+
         return False
 
     def _generate_update_summary(self, proposed_updates: Dict) -> str:
         """Generate human-readable update summary"""
-        
+
         if not proposed_updates:
             return "No updates identified"
-        
+
         summary_parts = []
-        
+
         for field, details in proposed_updates.items():
             change_type = details.get('change_type')
-            
+
             if change_type == 'addition':
                 summary_parts.append(f"Add {field.replace('_', ' ')}")
             elif change_type == 'modification':
                 summary_parts.append(f"Update {field.replace('_', ' ')}")
-        
+
         return "Proposed changes: " + ", ".join(summary_parts)
 
     def _analyze_update_impact(self, event: Event, proposed_updates: Dict) -> Dict:
         """Analyze impact of proposed updates"""
-        
+
         impact = {
             "attendee_impact": "low",
             "booking_impact": "none",
             "requires_notification": False,
             "risk_level": "low"
         }
-        
+
         # Check if updates affect attendees
         critical_fields = ['date', 'start_time', 'location']
         if any(field in proposed_updates for field in critical_fields):
             impact["attendee_impact"] = "high"
             impact["requires_notification"] = True
             impact["risk_level"] = "medium"
-        
+
         # Check if event has existing bookings
         if event.tickets:
             total_bookings = sum(t.quantity for t in event.tickets)
@@ -941,7 +987,7 @@ class ComprehensiveEventAssistant:
                 impact["booking_impact"] = "affected"
                 if impact["attendee_impact"] == "high":
                     impact["risk_level"] = "high"
-        
+
         return impact
 
     # Fix the _regenerate_field_suggestions method to handle JSON parsing better
@@ -950,13 +996,13 @@ class ComprehensiveEventAssistant:
         try:
             if not self.llm.is_enabled():
                 return {"success": False, "error": "AI service unavailable"}
-            
+
             # Prepare context for regeneration
             context = {
                 "current_draft": self._get_draft_summary(draft),
                 "field_to_regenerate": field_name
             }
-            
+
             messages = [
                 self.llm.build_system_message(
                     f"Regenerate the {field_name} for this event draft. "
@@ -965,69 +1011,69 @@ class ComprehensiveEventAssistant:
                     '{"value": "your generated text here", "confidence": 0.8}'
                 ),
                 {
-                    "role": "user", 
+                    "role": "user",
                     "content": f"Current event details: {json.dumps(context, default=str)}"
                 }
             ]
-            
+
             response = self.llm.chat_completion(
-                messages, 
-                temperature=0.7, 
-                max_tokens=200, 
+                messages,
+                temperature=0.7,
+                max_tokens=200,
                 quick_mode=True,
                 fallback_response=None
             )
-            
+
             if not response:
                 return {"success": False, "error": "No response from AI service"}
-            
+
             # Enhanced JSON cleaning
             cleaned = self._clean_json_response(response)
-            
+
             # Additional validation
             if not cleaned.strip():
                 return {"success": False, "error": "Empty response from AI"}
-            
+
             try:
                 result = json.loads(cleaned)
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parse error. Response: {response[:200]}, Cleaned: {cleaned[:200]}")
                 # Fallback: try to extract value manually
                 return self._manual_json_extraction(response, field_name)
-            
+
             # Validate result structure
             if 'value' not in result:
                 return {"success": False, "error": "Invalid response structure"}
-            
+
             # Update the draft with regenerated value
             field_mapping = {
                 'name': 'suggested_name',
                 'description': 'suggested_description'
             }
-            
+
             if field_name in field_mapping:
                 attribute_name = field_mapping[field_name]
                 setattr(draft, attribute_name, result['value'])
-                
+
                 # Update confidence
                 confidence_field = f"{field_name}_confidence"
                 source_field = f"{field_name}_source"
-                
+
                 if hasattr(draft, confidence_field):
                     setattr(draft, confidence_field, result.get('confidence', 0.7))
                     setattr(draft, source_field, 'ai_regenerated')
-                
+
                 draft.updated_at = datetime.utcnow()
                 db.session.commit()
-                
+
                 return {
                     "success": True,
                     "value": result['value'],
                     "confidence": result.get('confidence', 0.7)
                 }
-            
+
             return {"success": False, "error": "Unsupported field for regeneration"}
-            
+
         except Exception as e:
             logger.error(f"Field regeneration failed: {e}")
             return {"success": False, "error": str(e)}
@@ -1038,11 +1084,11 @@ class ComprehensiveEventAssistant:
             # Try to extract value using regex
             value_match = re.search(r'"value"\s*:\s*"([^"]+)"', response)
             confidence_match = re.search(r'"confidence"\s*:\s*([\d.]+)', response)
-            
+
             if value_match:
                 value = value_match.group(1)
                 confidence = float(confidence_match.group(1)) if confidence_match else 0.7
-                
+
                 return {
                     "success": True,
                     "value": value,
@@ -1050,39 +1096,39 @@ class ComprehensiveEventAssistant:
                 }
         except Exception as e:
             logger.error(f"Manual extraction failed: {e}")
-        
+
         return {"success": False, "error": "Could not parse AI response"}
-    
+
     def _is_holiday_period(self, event_date: date) -> bool:
         """Check if date falls in holiday period"""
         # Kenyan holidays (simplified)
         holidays = [
             (12, 25),  # Christmas
             (12, 26),  # Boxing Day
-            (1, 1),    # New Year
+            (1, 1),  # New Year
         ]
-        
+
         return (event_date.month, event_date.day) in holidays
-    
+
     def _find_competing_events(self, draft: AIEventDraft) -> List[Event]:
         """Find competing events"""
         if not draft.suggested_date or not draft.suggested_category_id:
             return []
-        
+
         # Find events in same category around same date
         date_range = 7  # days
         start_date = draft.suggested_date - timedelta(days=date_range)
         end_date = draft.suggested_date + timedelta(days=date_range)
-        
+
         competing = Event.query.filter(
             Event.category_id == draft.suggested_category_id,
             Event.date.between(start_date, end_date)
         ).limit(5).all()
-        
+
         return competing
-    
+
     # ===== TICKETING & PRICING INTELLIGENCE =====
-    
+
     def _suggest_initial_ticket_strategy(self, draft: AIEventDraft) -> Dict:
         """Suggest comprehensive ticket strategy"""
         strategy = {
@@ -1091,28 +1137,28 @@ class ComprehensiveEventAssistant:
             "sales_forecast": {},
             "recommendations": []
         }
-        
+
         # Base ticket tiers based on event type
         base_tiers = self._get_base_ticket_tiers(draft)
         strategy["ticket_tiers"] = base_tiers
-        
+
         # Pricing strategy
         strategy["pricing_strategy"] = self._suggest_pricing_strategy(draft, base_tiers)
-        
+
         # Sales forecast
         strategy["sales_forecast"] = self._generate_sales_forecast(draft, base_tiers)
-        
+
         # Recommendations
         strategy["recommendations"] = self._generate_ticket_recommendations(draft, base_tiers)
-        
+
         return strategy
-    
+
     def _get_base_ticket_tiers(self, draft: AIEventDraft) -> List[Dict]:
         """Get appropriate ticket tiers for event type"""
         tiers = []
         category = Category.query.get(draft.suggested_category_id) if draft.suggested_category_id else None
         category_name = category.name.lower() if category else ""
-        
+
         if 'conference' in category_name or 'business' in category_name:
             tiers = [
                 {"type": "EARLY_BIRD", "name": "Early Bird", "percentage": 0.2, "description": "Limited early pricing"},
@@ -1132,9 +1178,9 @@ class ComprehensiveEventAssistant:
                 {"type": "REGULAR", "name": "General Admission", "percentage": 0.8, "description": "Standard access"},
                 {"type": "VIP", "name": "VIP", "percentage": 0.2, "description": "Enhanced experience"}
             ]
-        
+
         return tiers
-    
+
     def _suggest_pricing_strategy(self, draft: AIEventDraft, tiers: List[Dict]) -> Dict:
         """Suggest pricing strategy with market analysis"""
         strategy = {
@@ -1143,28 +1189,28 @@ class ComprehensiveEventAssistant:
             "discount_strategy": {},
             "currency_recommendation": "KES"
         }
-        
+
         category = Category.query.get(draft.suggested_category_id) if draft.suggested_category_id else None
-        
+
         # Market-based pricing
         if category:
             market_data = self._get_market_pricing_data(category.name)
             strategy["base_price_range"] = market_data.get('price_range', {"min": 1000, "max": 5000})
-        
+
         # Dynamic pricing recommendation
         if draft.suggested_date:
             days_until = (draft.suggested_date - date.today()).days
             strategy["dynamic_pricing"] = days_until > 30
-        
+
         # Discount strategy
         strategy["discount_strategy"] = {
             "early_bird_days": 30,
             "group_discount_threshold": 5,
             "last_minute_discount_days": 7
         }
-        
+
         return strategy
-    
+
     def _get_market_pricing_data(self, category_name: str) -> Dict:
         """Get market pricing data for category"""
         # Simplified market data
@@ -1175,13 +1221,13 @@ class ComprehensiveEventAssistant:
             "Sports": {"price_range": {"min": 500, "max": 3000}},
             "Education": {"price_range": {"min": 1500, "max": 8000}},
         }
-        
+
         for key, data in pricing_map.items():
             if key.lower() in category_name.lower():
                 return data
-        
+
         return {"price_range": {"min": 1000, "max": 5000}}
-    
+
     def _generate_sales_forecast(self, draft: AIEventDraft, tiers: List[Dict]) -> Dict:
         """Generate sales forecast"""
         return {
@@ -1190,25 +1236,25 @@ class ComprehensiveEventAssistant:
             "confidence": 0.6,
             "factors": ["Market analysis", "Historical data", "Category trends"]
         }
-    
+
     def _generate_ticket_recommendations(self, draft: AIEventDraft, tiers: List[Dict]) -> List[str]:
         """Generate ticket recommendations"""
         recommendations = []
-        
+
         if len(tiers) < 2:
             recommendations.append("Consider adding multiple ticket tiers to maximize revenue")
-        
+
         if draft.suggested_date:
             days_until = (draft.suggested_date - date.today()).days
             if days_until > 45:
                 recommendations.append("Launch early bird pricing to drive early sales")
-        
+
         recommendations.append("Implement group discounts to encourage bulk purchases")
-        
+
         return recommendations
-    
+
     # ===== PARTNERSHIP INTELLIGENCE =====
-    
+
     def _suggest_initial_partners(self, draft: AIEventDraft) -> Dict:
         """Suggest potential partners and collaborations"""
         recommendations = {
@@ -1217,40 +1263,40 @@ class ComprehensiveEventAssistant:
             "venue_partners": [],
             "sponsorship_opportunities": []
         }
-        
+
         organizer = Organizer.query.get(draft.organizer_id)
         if not organizer:
             return recommendations
-        
+
         # Strategic partners
         strategic_partners = self._find_strategic_partners(draft, organizer)
         recommendations["strategic_partners"] = strategic_partners
-        
+
         # Media partners
         media_partners = self._find_media_partners(draft, organizer)
         recommendations["media_partners"] = media_partners
-        
+
         # Venue partners (if location not set)
         if not draft.suggested_location and draft.suggested_city:
             venue_suggestions = self._suggest_venues(draft)
             recommendations["venue_partners"] = venue_suggestions
-        
+
         # Sponsorship opportunities
         sponsorship_ops = self._identify_sponsorship_opportunities(draft)
         recommendations["sponsorship_opportunities"] = sponsorship_ops
-        
+
         return recommendations
-    
+
     def _find_strategic_partners(self, draft: AIEventDraft, organizer: Organizer) -> List[Dict]:
         """Find strategic partners for the event"""
         partners = []
-        
+
         # Get organizer's existing partners
         existing_partners = Partner.query.filter_by(
             organizer_id=organizer.id,
             is_active=True
         ).all()
-        
+
         for partner in existing_partners:
             match_score = self._calculate_partner_match_score(partner, draft)
             if match_score > 0.6:  # Good match threshold
@@ -1261,80 +1307,80 @@ class ComprehensiveEventAssistant:
                     "collaboration_type": "Strategic Partner",
                     "potential_value": partner.ai_partnership_score or 0.5
                 })
-        
+
         return sorted(partners, key=lambda x: x['match_score'], reverse=True)[:5]
-    
+
     def _calculate_partner_match_score(self, partner: Partner, draft: AIEventDraft) -> float:
         """Calculate partner match score"""
         score = 0.5  # Base score
-        
+
         # Add scoring logic based on partner type, category match, etc.
         if draft.suggested_category_id:
             # Simple match - could be enhanced with actual partner category data
             score += 0.2
-        
+
         return min(score, 1.0)
-    
+
     def _find_media_partners(self, draft: AIEventDraft, organizer: Organizer) -> List[Dict]:
         """Find media partners"""
         # Simplified - would query actual media partners
         return []
-    
+
     def _suggest_venues(self, draft: AIEventDraft) -> List[Dict]:
         """Suggest venues"""
         venues = []
-        
+
         if draft.suggested_city == 'Nairobi':
             venues = [
                 {"name": "KICC", "capacity": 1000, "type": "Conference Center"},
                 {"name": "Sarit Centre", "capacity": 500, "type": "Shopping Mall"},
                 {"name": "Two Rivers Mall", "capacity": 800, "type": "Shopping Mall"}
             ]
-        
+
         return venues
-    
+
     def _identify_sponsorship_opportunities(self, draft: AIEventDraft) -> List[str]:
         """Identify sponsorship opportunities"""
         opportunities = []
-        
+
         category = Category.query.get(draft.suggested_category_id) if draft.suggested_category_id else None
-        
+
         if category:
             category_name = category.name.lower()
-            
+
             if 'tech' in category_name:
                 opportunities = ["Tech companies", "Software vendors", "Cloud providers"]
             elif 'business' in category_name:
                 opportunities = ["Banks", "Professional services", "Business software"]
             else:
                 opportunities = ["Local businesses", "Brands", "Service providers"]
-        
+
         return opportunities
-    
+
     # ===== DRAFT MANAGEMENT =====
 
     def get_organizer_drafts(self, organizer_id: int, status: str = None) -> Dict:
         """
         Get all drafts for an organizer with optional status filtering
-        
+
         Args:
             organizer_id: Organizer ID to get drafts for
             status: Optional status filter ('in_progress', 'completed', 'archived')
-        
+
         Returns:
             dict: Organized drafts with metadata
         """
         try:
             # Build query
             query = AIEventDraft.query.filter_by(organizer_id=organizer_id)
-            
+
             # Apply status filter if provided
             if status:
                 query = query.filter_by(draft_status=status)
-            
+
             # Get drafts ordered by latest first
             drafts = query.order_by(AIEventDraft.updated_at.desc()).all()
-            
+
             # Organize drafts by status
             organized_drafts = {
                 "in_progress": [],
@@ -1342,16 +1388,16 @@ class ComprehensiveEventAssistant:
                 "archived": [],
                 "all": []
             }
-            
+
             for draft in drafts:
                 draft_data = self._format_draft_for_response(draft)
                 status_key = draft.draft_status or "in_progress"
-                
+
                 # Add to appropriate status list
                 if status_key in organized_drafts:
                     organized_drafts[status_key].append(draft_data)
-                organized_drafts["all"].append(draft_data)
-            
+                    organized_drafts["all"].append(draft_data)
+
             # Calculate statistics
             stats = {
                 "total_drafts": len(drafts),
@@ -1360,14 +1406,14 @@ class ComprehensiveEventAssistant:
                 "archived_count": len(organized_drafts["archived"]),
                 "completion_rate": len(organized_drafts["completed"]) / len(drafts) if drafts else 0
             }
-            
+
             return {
                 "success": True,
                 "drafts": organized_drafts,
                 "statistics": stats,
                 "filters_applied": {"status": status} if status else {}
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get organizer drafts: {e}")
             return {
@@ -1393,8 +1439,8 @@ class ComprehensiveEventAssistant:
             "suggested_city": draft.suggested_city,
             "suggested_location": draft.suggested_location,
             "suggested_category_id": draft.suggested_category_id,
-            "category_name": Category.query.get(draft.suggested_category_id).name 
-                if draft.suggested_category_id else None,
+            "category_name": Category.query.get(draft.suggested_category_id).name
+            if draft.suggested_category_id else None,
             "draft_status": draft.draft_status or "in_progress",
             "completion_percentage": self._calculate_draft_completion(draft),
             "created_at": draft.created_at.isoformat(),
@@ -1405,34 +1451,34 @@ class ComprehensiveEventAssistant:
 
     def _calculate_draft_completion(self, draft: AIEventDraft) -> float:
         """Calculate draft completion percentage"""
-        required_fields = ['suggested_name', 'suggested_description', 'suggested_date', 
+        required_fields = ['suggested_name', 'suggested_description', 'suggested_date',
                           'suggested_start_time', 'suggested_city', 'suggested_location']
-        
+
         completed = sum(1 for field in required_fields if getattr(draft, field))
         return (completed / len(required_fields)) * 100
 
     def _calculate_draft_confidence(self, draft: AIEventDraft) -> float:
         """Calculate overall confidence for a draft"""
         confidences = []
-        
+
         if draft.name_confidence:
             confidences.append(draft.name_confidence)
         if draft.description_confidence:
             confidences.append(draft.description_confidence)
         if draft.category_confidence:
             confidences.append(draft.category_confidence)
-        
+
         return sum(confidences) / len(confidences) if confidences else 0.0
 
     def update_draft_status(self, draft_id: int, status: str, organizer_id: int = None) -> Dict:
         """
         Update draft status with validation
-        
+
         Args:
             draft_id: Draft ID to update
             status: New status ('in_progress', 'completed', 'archived')
             organizer_id: Optional organizer ID for validation
-        
+
         Returns:
             dict: Update result
         """
@@ -1441,22 +1487,22 @@ class ComprehensiveEventAssistant:
             query = AIEventDraft.query.filter_by(id=draft_id)
             if organizer_id:
                 query = query.filter_by(organizer_id=organizer_id)
-            
+
             draft = query.first()
-            
+
             if not draft:
                 return {"success": False, "error": "Draft not found"}
-            
+
             # Validate status
             valid_statuses = ['in_progress', 'completed', 'archived']
             if status not in valid_statuses:
                 return {"success": False, "error": f"Invalid status. Must be one of: {valid_statuses}"}
-            
+
             # Update status
             draft.draft_status = status
             draft.updated_at = datetime.utcnow()
             db.session.commit()
-            
+
             # Log the action
             organizer = Organizer.query.get(draft.organizer_id)
             if organizer:
@@ -1467,14 +1513,14 @@ class ComprehensiveEventAssistant:
                     target_table='ai_event_drafts',
                     target_id=draft.id
                 )
-            
+
             return {
                 "success": True,
                 "draft_id": draft.id,
                 "new_status": status,
                 "completion_percentage": self._calculate_draft_completion(draft)
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to update draft status: {e}")
             db.session.rollback()
@@ -1483,11 +1529,11 @@ class ComprehensiveEventAssistant:
     def delete_draft(self, draft_id: int, organizer_id: int = None) -> Dict:
         """
         Delete a draft with validation
-        
+
         Args:
             draft_id: Draft ID to delete
             organizer_id: Optional organizer ID for validation
-        
+
         Returns:
             dict: Delete result
         """
@@ -1496,12 +1542,12 @@ class ComprehensiveEventAssistant:
             query = AIEventDraft.query.filter_by(id=draft_id)
             if organizer_id:
                 query = query.filter_by(organizer_id=organizer_id)
-            
+
             draft = query.first()
-            
+
             if not draft:
                 return {"success": False, "error": "Draft not found"}
-            
+
             # Log before deletion
             organizer = Organizer.query.get(draft.organizer_id)
             if organizer:
@@ -1512,17 +1558,17 @@ class ComprehensiveEventAssistant:
                     target_table='ai_event_drafts',
                     target_id=draft.id
                 )
-            
+
             # Delete the draft
             db.session.delete(draft)
             db.session.commit()
-            
+
             return {
                 "success": True,
                 "deleted_draft_id": draft_id,
                 "message": "Draft deleted successfully"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to delete draft: {e}")
             db.session.rollback()
@@ -1530,17 +1576,17 @@ class ComprehensiveEventAssistant:
 
     # ===== DRAFT FIELD MANAGEMENT =====
 
-    def update_draft_field(self, draft_id: int, field_name: str, value: Any, 
+    def update_draft_field(self, draft_id: int, field_name: str, value: Any,
                           regenerate: bool = False) -> Dict:
         """
         Update a specific field in an event draft
-        
+
         Args:
             draft_id: Draft ID to update
             field_name: Field name to update
             value: New value for the field
             regenerate: Whether to regenerate AI suggestions for this field
-        
+
         Returns:
             dict: Update result
         """
@@ -1549,7 +1595,7 @@ class ComprehensiveEventAssistant:
             draft = AIEventDraft.query.get(draft_id)
             if not draft:
                 return {"success": False, "error": "Draft not found"}
-            
+
             # Map field names to draft attributes
             field_mapping = {
                 'name': 'suggested_name',
@@ -1562,26 +1608,26 @@ class ComprehensiveEventAssistant:
                 'category_id': 'suggested_category_id',
                 'amenities': 'suggested_amenities'
             }
-            
+
             # Validate field name
             if field_name not in field_mapping:
                 return {"success": False, "error": f"Invalid field name: {field_name}"}
-            
+
             attribute_name = field_mapping[field_name]
-            
+
             # Handle special field types
             if field_name == 'date' and value:
                 try:
                     value = datetime.strptime(value, '%Y-%m-%d').date()
                 except ValueError:
                     return {"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}
-            
+
             elif field_name in ['start_time', 'end_time'] and value:
                 try:
                     value = datetime.strptime(value, '%H:%M').time()
                 except ValueError:
                     return {"success": False, "error": "Invalid time format. Use HH:MM"}
-            
+
             elif field_name == 'amenities' and value:
                 try:
                     if isinstance(value, str):
@@ -1590,19 +1636,19 @@ class ComprehensiveEventAssistant:
                         return {"success": False, "error": "Amenities must be a list"}
                 except json.JSONDecodeError:
                     return {"success": False, "error": "Invalid amenities format"}
-            
+
             elif field_name == 'category_id' and value:
                 category = Category.query.get(value)
                 if not category:
                     return {"success": False, "error": "Invalid category ID"}
-            
+
             # Update the field
             setattr(draft, attribute_name, value)
-            
+
             # Update confidence and source
             confidence_field = f"{field_name.split('_')[0]}_confidence"
             source_field = f"{field_name.split('_')[0]}_source"
-            
+
             if hasattr(draft, confidence_field):
                 if regenerate:
                     # Set lower confidence for regenerated fields
@@ -1612,10 +1658,10 @@ class ComprehensiveEventAssistant:
                     # User-provided values get highest confidence
                     setattr(draft, confidence_field, 1.0)
                     setattr(draft, source_field, 'user')
-            
+
             draft.updated_at = datetime.utcnow()
             db.session.commit()
-            
+
             # Regenerate AI suggestions if requested
             if regenerate:
                 regeneration_result = self._regenerate_field_suggestions(draft, field_name)
@@ -1627,27 +1673,27 @@ class ComprehensiveEventAssistant:
                         "regenerated_value": regeneration_result.get('value'),
                         "regeneration_confidence": regeneration_result.get('confidence')
                     }
-            
+
             return {
                 "success": True,
                 "message": f"Field {field_name} updated successfully",
                 "draft": self._format_draft_for_response(draft),
                 "completion_status": self._get_completion_status(draft)
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to update draft field: {e}")
             db.session.rollback()
             return {"success": False, "error": f"Could not update field: {str(e)}"}
 
-   
+
     def review_draft(self, draft_id: int) -> Dict:
         """
         Provide comprehensive review and suggestions for a draft
-        
+
         Args:
             draft_id: Draft ID to review
-            
+
         Returns:
             dict: Review results with suggestions
         """
@@ -1655,7 +1701,7 @@ class ComprehensiveEventAssistant:
             draft = AIEventDraft.query.get(draft_id)
             if not draft:
                 return {"error": "Draft not found"}
-            
+
             # Generate comprehensive review
             review = {
                 "overall_score": self._calculate_draft_quality_score(draft),
@@ -1665,29 +1711,29 @@ class ComprehensiveEventAssistant:
                 "market_analysis": self._analyze_draft_market_fit(draft),
                 "risk_assessment": self._assess_draft_risks(draft)
             }
-            
+
             # Identify strengths
             if draft.name_confidence and draft.name_confidence > 0.8:
                 review["strengths"].append("Strong event name with high confidence")
-            
+
             if draft.description_confidence and draft.description_confidence > 0.7:
                 review["strengths"].append("Well-crafted description")
-            
+
             if draft.suggested_date and draft.suggested_date > date.today():
                 review["strengths"].append("Future-dated event allows for proper planning")
-            
+
             # Identify improvement areas
             missing_fields = self._identify_missing_required_fields(draft)
             if missing_fields:
                 review["improvement_areas"].extend([
                     f"Add {field} to complete event setup" for field in missing_fields
                 ])
-            
+
             if not draft.suggested_amenities:
                 review["improvement_areas"].append("Consider adding amenities to attract attendees")
-            
+
             return review
-            
+
         except Exception as e:
             logger.error(f"Draft review failed: {e}")
             return {"error": "Could not generate review"}
@@ -1696,12 +1742,12 @@ class ComprehensiveEventAssistant:
         """Calculate overall quality score for a draft"""
         score = 0.0
         max_score = 100
-        
+
         # Field completeness (40 points)
         missing_fields = self._identify_missing_required_fields(draft)
         completeness_score = (1 - len(missing_fields) / len(self.required_fields)) * 40
         score += completeness_score
-        
+
         # Confidence scores (30 points)
         confidences = []
         if draft.name_confidence:
@@ -1710,21 +1756,21 @@ class ComprehensiveEventAssistant:
             confidences.append(draft.description_confidence)
         if draft.category_confidence:
             confidences.append(draft.category_confidence)
-        
+
         if confidences:
             confidence_score = (sum(confidences) / len(confidences)) * 30
             score += confidence_score
-        
+
         # Data quality (30 points)
         if draft.suggested_date and draft.suggested_date > date.today():
             score += 10
-        
+
         if draft.suggested_start_time:
             score += 10
-        
+
         if draft.suggested_amenities and len(draft.suggested_amenities) > 2:
             score += 10
-        
+
         return min(score / max_score, 1.0)
 
     def _analyze_draft_market_fit(self, draft: AIEventDraft) -> Dict:
@@ -1739,27 +1785,27 @@ class ComprehensiveEventAssistant:
     def _assess_draft_risks(self, draft: AIEventDraft) -> List[str]:
         """Assess potential risks for the draft"""
         risks = []
-        
+
         if draft.suggested_date:
             days_until = (draft.suggested_date - date.today()).days
             if days_until < 7:
                 risks.append("Short timeline may limit marketing effectiveness")
             elif days_until > 180:
                 risks.append("Long lead time may affect attendee interest")
-        
+
         if not draft.suggested_location:
             risks.append("Venue not specified - crucial for attendee planning")
-        
+
         return risks
 
     def publish_draft(self, draft_id: int, organizer_id: int = None) -> Dict:
         """
         Publish an event draft to create a live event
-        
+
         Args:
             draft_id: Draft ID to publish
             organizer_id: Optional organizer ID for validation
-            
+
         Returns:
             dict: Publication result
         """
@@ -1768,11 +1814,11 @@ class ComprehensiveEventAssistant:
             query = AIEventDraft.query.filter_by(id=draft_id)
             if organizer_id:
                 query = query.filter_by(organizer_id=organizer_id)
-            
+
             draft = query.first()
             if not draft:
                 return {"success": False, "error": "Draft not found"}
-            
+
             # Validate draft completeness
             missing_fields = self._identify_missing_required_fields(draft)
             if missing_fields:
@@ -1781,10 +1827,10 @@ class ComprehensiveEventAssistant:
                     "error": "Cannot publish incomplete draft",
                     "missing_fields": missing_fields
                 }
-            
+
             # Use AIEventManager to publish the draft
             event = AIEventManager.publish_draft(draft.id)
-            
+
             if event:
                 # Log the successful publication
                 organizer = Organizer.query.get(draft.organizer_id)
@@ -1796,7 +1842,7 @@ class ComprehensiveEventAssistant:
                         target_table='event',
                         target_id=event.id
                     )
-                
+
                 return {
                     "success": True,
                     "message": "Event published successfully",
@@ -1806,26 +1852,26 @@ class ComprehensiveEventAssistant:
                 }
             else:
                 return {"success": False, "error": "Failed to publish draft"}
-                
+
         except Exception as e:
             logger.error(f"Failed to publish draft: {e}")
             db.session.rollback()
             return {"success": False, "error": f"Publication failed: {str(e)}"}
-    
+
     # ===== ANALYTICS & INSIGHTS =====
-    
+
     def generate_event_insights(self, event_id: int, analysis_type: str = "comprehensive") -> Dict:
         """Generate comprehensive insights for an event"""
         event = Event.query.get(event_id)
         if not event:
             return {"error": "Event not found"}
-        
+
         # Check cache first
         cache_key = f"event_insights_{event_id}_{analysis_type}"
         cached = AIManager.get_cached_analytics(cache_key)
         if cached:
             return cached
-        
+
         insights = {
             "performance_metrics": {},
             "audience_insights": {},
@@ -1833,22 +1879,22 @@ class ComprehensiveEventAssistant:
             "optimization_opportunities": {},
             "predictive_analytics": {}
         }
-        
+
         # Performance metrics
         insights["performance_metrics"] = self._calculate_performance_metrics(event)
-        
+
         # Audience insights
         insights["audience_insights"] = self._analyze_audience_behavior(event)
-        
+
         # Financial analysis
         insights["financial_analysis"] = self._analyze_financial_performance(event)
-        
+
         # Optimization opportunities
         insights["optimization_opportunities"] = self._identify_event_optimizations(event)
-        
+
         # Predictive analytics
         insights["predictive_analytics"] = self._generate_predictive_insights(event)
-        
+
         # Cache the results
         AIManager.cache_analytics(
             cache_key=cache_key,
@@ -1857,9 +1903,9 @@ class ComprehensiveEventAssistant:
             expires_in_hours=24,
             event_id=event_id
         )
-        
+
         return insights
-    
+
     def _calculate_performance_metrics(self, event: Event) -> Dict:
         """Calculate comprehensive performance metrics"""
         metrics = {
@@ -1868,30 +1914,30 @@ class ComprehensiveEventAssistant:
             "conversion_metrics": {},
             "financial_metrics": {}
         }
-        
+
         # Attendance metrics
         total_tickets = sum(t.quantity for t in event.tickets)
         scanned_tickets = sum(t.quantity for t in event.tickets if t.scanned)
-        
+
         metrics["attendance_metrics"] = {
             "total_tickets": total_tickets,
             "scanned_tickets": scanned_tickets,
             "attendance_rate": scanned_tickets / total_tickets if total_tickets > 0 else 0,
             "no_show_rate": (total_tickets - scanned_tickets) / total_tickets if total_tickets > 0 else 0
         }
-        
+
         # Financial metrics
         total_revenue = sum(float(t.ticket_type.price) * t.quantity for t in event.tickets)
         avg_ticket_price = total_revenue / total_tickets if total_tickets > 0 else 0
-        
+
         metrics["financial_metrics"] = {
             "total_revenue": total_revenue,
             "average_ticket_price": avg_ticket_price,
             "revenue_per_attendee": total_revenue / scanned_tickets if scanned_tickets > 0 else 0
         }
-        
+
         return metrics
-    
+
     def _analyze_audience_behavior(self, event: Event) -> Dict:
         """Analyze audience behavior"""
         return {
@@ -1899,34 +1945,34 @@ class ComprehensiveEventAssistant:
             "engagement_level": "Medium",
             "retention_rate": 0.75
         }
-    
+
     def _analyze_financial_performance(self, event: Event) -> Dict:
         """Analyze financial performance"""
         total_revenue = sum(float(t.ticket_type.price) * t.quantity for t in event.tickets)
-        
+
         return {
             "total_revenue": total_revenue,
             "profit_margin": 0.3,  # Placeholder
             "roi": 1.5  # Placeholder
         }
-    
+
     def _identify_event_optimizations(self, event: Event) -> List[str]:
         """Identify optimization opportunities"""
         optimizations = []
-        
+
         # Check attendance rate
         total_tickets = sum(t.quantity for t in event.tickets)
         scanned_tickets = sum(t.quantity for t in event.tickets if t.scanned)
-        
+
         if total_tickets > 0:
             attendance_rate = scanned_tickets / total_tickets
             if attendance_rate < 0.7:
                 optimizations.append("Low attendance rate - consider better reminder system")
-        
+
         optimizations.append("Implement post-event survey to gather feedback")
-        
+
         return optimizations
-    
+
     def _generate_predictive_insights(self, event: Event) -> Dict:
         """Generate predictive insights"""
         return {
@@ -1934,16 +1980,16 @@ class ComprehensiveEventAssistant:
             "revenue_forecast": "Stable growth",
             "risk_factors": ["Weather dependency", "Competition"]
         }
-    
+
     # ===== CONVERSATIONAL INTERFACE =====
-    
+
     def _generate_conversational_response(self, draft: AIEventDraft, suggestions: Dict,
-                                        ticket_strategy: Dict, partner_recommendations: Dict) -> str:
+                                         ticket_strategy: Dict, partner_recommendations: Dict) -> str:
         """Generate natural, conversational response for the user"""
-        
+
         if not self.llm.is_enabled():
             return self._fallback_conversational_response(draft, suggestions)
-        
+
         context = {
             "draft_summary": self._get_draft_summary(draft),
             "suggestions": suggestions,
@@ -1951,7 +1997,7 @@ class ComprehensiveEventAssistant:
             "partner_count": len(partner_recommendations.get('strategic_partners', [])),
             "completion_status": self._get_completion_status(draft)
         }
-        
+
         messages = [
             self.llm.build_system_message(
                 "You are an enthusiastic event planning assistant. Generate a warm, engaging response "
@@ -1961,10 +2007,10 @@ class ComprehensiveEventAssistant:
             {
                 "role": "user",
                 "content": f"Event creation progress: {json.dumps(context, default=str)}. "
-                          f"Generate a conversational response that guides the user forward."
+                           f"Generate a conversational response that guides the user forward."
             }
         ]
-        
+
         try:
             response = self.llm.chat_completion(
                 messages,
@@ -1974,49 +2020,49 @@ class ComprehensiveEventAssistant:
                 fallback_response=None
             )
             return response if response else self._fallback_conversational_response(draft, suggestions)
-            
+
         except Exception as e:
             logger.error(f"Conversational response generation failed: {e}")
             return self._fallback_conversational_response(draft, suggestions)
-    
+
     def _get_creation_next_steps(self, draft: AIEventDraft, suggestions: Dict) -> List[str]:
         """Get next steps for event creation"""
         next_steps = []
-        
+
         missing_fields = self._identify_missing_required_fields(draft)
         if missing_fields:
             next_steps.append(f"Complete required fields: {', '.join(missing_fields)}")
-        
+
         if suggestions.get('immediate_actions'):
             next_steps.extend(suggestions['immediate_actions'][:2])
-        
+
         if not missing_fields:
             next_steps.append("Review and publish your event")
-        
+
         return next_steps
-    
+
     # ===== HELPER METHODS =====
-    
+
     def _get_draft_summary(self, draft: AIEventDraft) -> Dict:
         """Get clean draft summary for responses"""
         return {
             "name": draft.suggested_name,
-            "description_preview": (draft.suggested_description[:100] + "...") 
-                if draft.suggested_description and len(draft.suggested_description) > 100 
-                else draft.suggested_description,
+            "description_preview": (draft.suggested_description[:100] + "...")
+            if draft.suggested_description and len(draft.suggested_description) > 100
+            else draft.suggested_description,
             "date": draft.suggested_date.isoformat() if draft.suggested_date else None,
             "city": draft.suggested_city,
             "location": draft.suggested_location,
-            "category": Category.query.get(draft.suggested_category_id).name 
-                if draft.suggested_category_id else None
+            "category": Category.query.get(draft.suggested_category_id).name
+            if draft.suggested_category_id else None
         }
-    
+
     def _get_completion_status(self, draft: AIEventDraft) -> Dict:
         """Get detailed completion status"""
         missing_fields = self._identify_missing_required_fields(draft)
         total_fields = len(self.required_fields)
         completed_fields = total_fields - len(missing_fields)
-        
+
         return {
             "percent_complete": (completed_fields / total_fields) * 100,
             "completed_fields": completed_fields,
@@ -2024,24 +2070,24 @@ class ComprehensiveEventAssistant:
             "missing_fields": missing_fields,
             "ready_to_publish": len(missing_fields) == 0
         }
-    
+
     def _calculate_overall_confidence(self, draft: AIEventDraft) -> float:
         """Calculate overall AI confidence score"""
         confidences = []
-        
+
         if draft.name_confidence:
             confidences.append(draft.name_confidence)
         if draft.description_confidence:
             confidences.append(draft.description_confidence)
         if draft.category_confidence:
             confidences.append(draft.category_confidence)
-        
+
         return sum(confidences) / len(confidences) if confidences else 0.5
-    
+
     def _identify_missing_required_fields(self, draft: AIEventDraft) -> List[str]:
         """Identify missing required fields"""
         missing = []
-        
+
         field_mapping = {
             'name': 'suggested_name',
             'description': 'suggested_description',
@@ -2050,13 +2096,13 @@ class ComprehensiveEventAssistant:
             'city': 'suggested_city',
             'location': 'suggested_location'
         }
-        
+
         for required, attr in field_mapping.items():
             if not getattr(draft, attr, None):
                 missing.append(required)
-        
+
         return missing
-    
+
     def _clean_json_response(self, response: str) -> str:
         """Clean JSON response from markdown"""
         cleaned = response.strip()
@@ -2067,37 +2113,37 @@ class ComprehensiveEventAssistant:
             else:
                 cleaned = cleaned.replace('```json', '').replace('```', '').strip()
         return cleaned
-    
+
     def _fallback_conversational_response(self, draft: AIEventDraft, suggestions: Dict) -> str:
         """Fallback conversational response"""
         parts = ["Great progress on your event!"]
-        
+
         if draft.suggested_name:
             parts.append(f"Your event '{draft.suggested_name}' is taking shape.")
-        
+
         missing = self._identify_missing_required_fields(draft)
         if missing:
             parts.append(f"To complete your event, I need: {', '.join(missing)}.")
-        
+
         if suggestions.get('immediate_actions'):
             parts.append("Here are some suggestions to improve your event.")
-        
+
         parts.append("Let me know what you'd like to work on next!")
-        
+
         return " ".join(parts)
-    
+
     def _handle_creation_error(self, error: Exception, user_input: str, organizer_id: int) -> Dict:
         """Handle creation errors gracefully"""
         error_id = f"event_creation_{int(datetime.utcnow().timestamp())}"
         logger.error(f"Creation Error {error_id}: {str(error)}")
-        
+
         # Create basic draft as fallback
         try:
             draft = AIEventManager.create_draft_from_conversation(
                 organizer_id=organizer_id,
                 user_input={"raw_text": user_input}
             )
-            
+
             return {
                 "success": False,
                 "error": "We encountered a technical issue",
@@ -2113,33 +2159,33 @@ class ComprehensiveEventAssistant:
                 "error_id": error_id,
                 "recovery_suggestion": "Please try again or contact support if the issue persists."
             }
-    
+
     # ===== BATCH OPERATIONS & MANAGEMENT =====
-    
+
     def get_organizer_event_portfolio(self, organizer_id: int) -> Dict:
         """Get comprehensive portfolio view of organizer's events"""
         try:
             organizer = Organizer.query.get(organizer_id)
             if not organizer:
                 return {"error": "Organizer not found"}
-            
+
             # Get all events and drafts
             events = Event.query.filter_by(organizer_id=organizer_id).all()
             drafts = AIEventDraft.query.filter_by(organizer_id=organizer_id).all()
-            
+
             # Calculate metrics
             total_revenue = sum(
                 sum(float(t.ticket_type.price) * t.quantity for t in event.tickets)
                 for event in events
             )
-            
+
             total_attendees = sum(
                 sum(t.quantity for t in event.tickets if t.scanned)
                 for event in events
             )
-            
+
             ai_assisted_events = [e for e in events if e.ai_assisted_creation]
-            
+
             portfolio = {
                 "summary": {
                     "total_events": len(events),
@@ -2156,13 +2202,13 @@ class ComprehensiveEventAssistant:
                 },
                 "recommendations": self._generate_portfolio_recommendations(events, drafts)
             }
-            
+
             return portfolio
-            
+
         except Exception as e:
             logger.error(f"Portfolio analysis failed: {e}")
             return {"error": "Could not generate portfolio analysis"}
-    
+
     def _categorize_events(self, events: List[Event]) -> Dict:
         """Categorize events by category"""
         by_category = {}
@@ -2170,7 +2216,7 @@ class ComprehensiveEventAssistant:
             category_name = event.category.name if event.category else "Uncategorized"
             by_category[category_name] = by_category.get(category_name, 0) + 1
         return by_category
-    
+
     def _categorize_drafts(self, drafts: List[AIEventDraft]) -> Dict:
         """Categorize drafts by status"""
         by_status = {}
@@ -2178,7 +2224,7 @@ class ComprehensiveEventAssistant:
             status = draft.draft_status or "unknown"
             by_status[status] = by_status.get(status, 0) + 1
         return by_status
-    
+
     def _calculate_revenue_trends(self, events: List[Event]) -> Dict:
         """Calculate revenue trends"""
         return {
@@ -2186,11 +2232,11 @@ class ComprehensiveEventAssistant:
             "monthly_average": 50000,
             "growth_rate": 0.15
         }
-    
+
     def _generate_portfolio_recommendations(self, events: List[Event], drafts: List[AIEventDraft]) -> List[str]:
         """Generate portfolio-level recommendations"""
         recommendations = []
-        
+
         # Analyze event frequency
         if len(events) > 0:
             avg_events_per_month = len(events) / 12  # Assuming 12 month history
@@ -2198,18 +2244,18 @@ class ComprehensiveEventAssistant:
                 recommendations.append("Consider increasing event frequency to build audience loyalty")
             elif avg_events_per_month > 4:
                 recommendations.append("High event frequency detected. Ensure quality isn't compromised")
-        
+
         # Draft analysis
         if drafts:
             inactive_drafts = [d for d in drafts if d.draft_status == 'in_progress']
             if len(inactive_drafts) > 3:
                 recommendations.append(f"You have {len(inactive_drafts)} incomplete drafts. Consider reviewing or cleaning them up")
-        
+
         # Category diversification
         categories = set(e.category_id for e in events if e.category_id)
         if len(categories) < 2 and len(events) > 3:
             recommendations.append("Consider diversifying into new event categories to reach broader audiences")
-        
+
         return recommendations
 
 

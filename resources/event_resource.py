@@ -1,4 +1,3 @@
-
 import json
 from flask import request, jsonify
 from flask_restful import Resource
@@ -479,9 +478,11 @@ class EventResource(Resource):
                     "draft_created": True,
                     "draft_id": result['draft_id'],
                     "conversational_response": result['conversational_response'],
-                    "suggestions": result['suggestions'],
+                    "suggestions": result['suggestions'],  # <-- Now contains actual event fields
+                    "strategic_recommendations": result.get('strategic_recommendations', {}),  # <-- Strategic suggestions here
                     "completion_status": result['completion_status'],
-                    "next_steps": result['next_steps']
+                    "next_steps": result['next_steps'],
+                    "ai_confidence": result.get('ai_confidence', 0.5)
                 }, 201
             else:
                 return {
@@ -1462,12 +1463,3 @@ def register_event_resources(api):
     # --- AI Event Assistant Routes ---
     api.add_resource(EventDraftResource, "/events/drafts", "/events/drafts/<int:draft_id>")
     api.add_resource(EventPublishResource, "/events/drafts/<int:draft_id>/publish")
-
-
-
-
-
-
-
-
-
