@@ -209,8 +209,16 @@ class ComprehensiveEventAssistant:
 
             if response:
                 cleaned = self._clean_json_response(response)
-                extracted = json.loads(cleaned)
-                return self._validate_and_enrich_extraction(extracted, context)
+                if not cleaned:
+                    logger.warning("Empty response from LLM after cleaning")
+                    return self._advanced_fallback_extraction(user_input, context)
+                
+                try:
+                    extracted = json.loads(cleaned)
+                    return self._validate_and_enrich_extraction(extracted, context)
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decode error in comprehensive extraction: {e}")
+                    return self._advanced_fallback_extraction(user_input, context)
 
         except Exception as e:
             logger.error(f"Advanced extraction failed: {e}")
@@ -505,10 +513,11 @@ class ComprehensiveEventAssistant:
                 response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=100, quick_mode=True, fallback_response=None)
                 if response:
                     cleaned = self._clean_json_response(response)
-                    result = json.loads(cleaned)
-                    return result
-            except:
-                pass
+                    if cleaned:
+                        result = json.loads(cleaned)
+                        return result
+            except Exception as e:
+                logger.error(f"Error generating optimized event name: {e}")
 
         return {"name": name, "confidence": confidence}
 
@@ -532,10 +541,11 @@ class ComprehensiveEventAssistant:
                 response = self.llm.chat_completion(messages, temperature=0.7, max_tokens=200, quick_mode=True, fallback_response=None)
                 if response:
                     cleaned = self._clean_json_response(response)
-                    result = json.loads(cleaned)
-                    return result
-            except:
-                pass
+                    if cleaned:
+                        result = json.loads(cleaned)
+                        return result
+            except Exception as e:
+                logger.error(f"Error generating comprehensive description: {e}")
 
         return {"description": description, "confidence": confidence}
 
@@ -662,12 +672,13 @@ class ComprehensiveEventAssistant:
 
         # Date risks
         if draft.suggested_date:
-            if (draft.suggested_date - date.today()).days < 7:
+            days_until = (draft.suggested_date - date.today()).days
+            if days_until < 7:
                 risks.append("Short timeline: Consider aggressive marketing or extend date")
 
-        # Check for holiday conflicts
-        if self._is_holiday_period(draft.suggested_date):
-            risks.append("Event during holiday period: Plan for potential lower attendance")
+            # Check for holiday conflicts - FIX: Check if date is not None
+            if self._is_holiday_period(draft.suggested_date):
+                risks.append("Event during holiday period: Plan for potential lower attendance")
 
         # Location risks
         if draft.suggested_city == 'Nairobi' and not draft.suggested_location:
@@ -794,8 +805,9 @@ class ComprehensiveEventAssistant:
 
             if response:
                 cleaned = self._clean_json_response(response)
-                result = json.loads(cleaned)
-                return result
+                if cleaned:
+                    result = json.loads(cleaned)
+                    return result
 
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode error in update analysis: {e}")
@@ -1056,8 +1068,8 @@ class ComprehensiveEventAssistant:
                 setattr(draft, attribute_name, result['value'])
 
                 # Update confidence
-                confidence_field = f"{field_name}_confidence"
-                source_field = f"{field_name}_source"
+                confidence_field = f"{field_name.split('_')[0]}_confidence"
+                source_field = f"{field_name.split('_')[0]}_source"
 
                 if hasattr(draft, confidence_field):
                     setattr(draft, confidence_field, result.get('confidence', 0.7))
@@ -1101,6 +1113,10 @@ class ComprehensiveEventAssistant:
 
     def _is_holiday_period(self, event_date: date) -> bool:
         """Check if date falls in holiday period"""
+        # FIX: Check if event_date is not None
+        if not event_date:
+            return False
+            
         # Kenyan holidays (simplified)
         holidays = [
             (12, 25),  # Christmas
